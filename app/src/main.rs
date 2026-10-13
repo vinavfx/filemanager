@@ -12,6 +12,9 @@ use std::sync::mpsc;
 
 const ACCENT: Color32 = Color32::from_rgb(112, 168, 157);
 const MUTED: Color32 = Color32::from_rgb(125, 132, 143);
+const TREE_SIZE_WIDTH: f32 = 110.0;
+const TREE_DATE_WIDTH: f32 = 156.0;
+const PREVIEW_BAR_HEIGHT: f32 = 6.0;
 
 fn apply_theme(context: &egui::Context, dark_mode: bool) {
     let mut visuals = if dark_mode {
@@ -38,14 +41,26 @@ enum View {
     Media,
 }
 
+#[derive(Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum TreeSort {
+    #[default]
+    Name,
+    Size,
+    Modified,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
     bookmarks: Vec<PathBuf>,
     removed_places: Vec<PathBuf>,
     view: View,
+    tree_sort: TreeSort,
+    tree_descending: bool,
     zoom: f32,
+    media_margin: u32,
     hidden: bool,
+    sequences: bool,
     dark_mode: bool,
 }
 
@@ -55,8 +70,12 @@ impl Default for Settings {
             bookmarks: Vec::new(),
             removed_places: Vec::new(),
             view: View::Grid,
+            tree_sort: TreeSort::Name,
+            tree_descending: false,
             zoom: 1.0,
+            media_margin: 4,
             hidden: false,
+            sequences: true,
             dark_mode: true,
         }
     }
@@ -137,6 +156,7 @@ impl FileManager {
         } else {
             1.0
         };
+        settings.media_margin = settings.media_margin.min(24);
         let requested = std::env::args_os()
             .nth(1)
             .map_or_else(|| home.clone(), PathBuf::from);
@@ -192,7 +212,7 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
-        match files::entries(&self.current, self.settings.hidden) {
+        match files::entries(&self.current, self.settings.hidden, self.settings.sequences) {
             Ok(entries) => self.entries = entries,
             Err(error) => {
                 self.entries.clear();
@@ -227,7 +247,8 @@ impl FileManager {
 
     fn navigate(&mut self, path: PathBuf, context: &egui::Context) {
         match path.canonicalize().and_then(|path| {
-            files::entries(&path, self.settings.hidden).map(|entries| (path, entries))
+            files::entries(&path, self.settings.hidden, self.settings.sequences)
+                .map(|entries| (path, entries))
         }) {
             Ok((path, entries)) => {
                 self.thumbnails.cancel();
@@ -266,7 +287,7 @@ impl FileManager {
         };
         if let Some(next) = next {
             let path = self.history[next].clone();
-            match files::entries(&path, self.settings.hidden) {
+            match files::entries(&path, self.settings.hidden, self.settings.sequences) {
                 Ok(entries) => {
                     self.thumbnails.cancel();
                     self.new_folder = None;
@@ -293,6 +314,16 @@ impl FileManager {
         if let Some(path) = &path {
             if path.is_dir() {
                 self.size_job = Some(files::folder_size(path.clone(), context.clone()));
+            } else if let Some(entry) = self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .find(|entry| &entry.path == path && entry.sequence.is_some())
+            {
+                self.selection_size = Some(SizeResult {
+                    bytes: entry.size,
+                    incomplete: false,
+                });
             } else {
                 match std::fs::symlink_metadata(path) {
                     Ok(metadata) => {
@@ -582,7 +613,7 @@ impl FileManager {
             let navigation =
                 egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
             let options =
-                egui::Rect::from_min_max(egui::pos2(row.right() - 256.0, row.top()), row.max);
+                egui::Rect::from_min_max(egui::pos2(row.right() - 356.0, row.top()), row.max);
             let address = egui::Rect::from_min_max(
                 egui::pos2(navigation.right() + 16.0, row.top()),
                 egui::pos2(options.left() - 16.0, row.bottom()),
@@ -665,6 +696,23 @@ impl FileManager {
                         .clicked()
                     {
                         self.settings.hidden = !self.settings.hidden;
+                        self.refresh(context);
+                        self.save();
+                    }
+                    if ui
+                        .add_sized(
+                            [92.0, 32.0],
+                            egui::Button::new(if self.settings.sequences {
+                                "Sequences"
+                            } else {
+                                "Images"
+                            })
+                            .selected(self.settings.sequences),
+                        )
+                        .on_hover_text("Toggle numbered image sequences / individual images")
+                        .clicked()
+                    {
+                        self.settings.sequences = !self.settings.sequences;
                         self.refresh(context);
                         self.save();
                     }
@@ -935,6 +983,23 @@ impl FileManager {
                             .size(12.0)
                             .color(MUTED),
                     );
+                    if self.settings.view == View::Media {
+                        ui.separator();
+                        let response = ui
+                            .add(
+                                egui::Slider::new(&mut self.settings.media_margin, 0..=24)
+                                    .show_value(false),
+                            )
+                            .on_hover_text("Media thumbnail margin · 0–24 px per side");
+                        if response.changed() {
+                            self.save();
+                        }
+                        ui.label(
+                            RichText::new(format!("Margin: {} px", self.settings.media_margin))
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                    }
                     ui.separator();
                     if let Some(disk) = &self.disk {
                         ui.label(
@@ -986,13 +1051,25 @@ impl FileManager {
         if response.double_clicked() {
             self.open(entry.path.clone(), context);
         }
-        let tooltip = if let Some(error) = self.thumbnails.error(&entry.path) {
-            format!("{}\nThumbnail unavailable: {error}", entry.path.display())
+        let response = if self.settings.view != View::Media || entry.directory {
+            let tooltip = if let Some(error) = self.thumbnails.entry_error(entry) {
+                format!("{}\nThumbnail unavailable: {error}", entry.path.display())
+            } else {
+                entry.path.to_string_lossy().into_owned()
+            };
+            response.on_hover_text(tooltip)
         } else {
-            entry.path.to_string_lossy().into_owned()
+            response
         };
-        response.on_hover_text(tooltip).context_menu(|ui| {
-            if ui.button("Open").clicked() {
+        response.context_menu(|ui| {
+            if ui
+                .button(if entry.sequence.is_some() {
+                    "Open first frame"
+                } else {
+                    "Open"
+                })
+                .clicked()
+            {
                 self.open(entry.path.clone(), context);
                 ui.close_menu();
             }
@@ -1006,7 +1083,8 @@ impl FileManager {
                     ui.close_menu();
                 }
             }
-            if (entry.directory || files::image_file(&entry.path))
+            if entry.sequence.is_none()
+                && (entry.directory || files::image_file(&entry.path))
                 && ui
                     .add_enabled(
                         self.compression_job.is_none(),
@@ -1036,7 +1114,7 @@ impl FileManager {
         entry: &Entry,
         response: &egui::Response,
     ) -> bool {
-        let video = files::video_file(&entry.path);
+        let video = entry.animated();
         if entry.directory
             || (!files::image_file(&entry.path) && !video)
             || !ui.is_rect_visible(rect)
@@ -1054,16 +1132,19 @@ impl FileManager {
         let frame = progress.map_or(poster, |progress| {
             ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
         });
-        if video && frame != poster {
-            self.thumbnails.get(&entry.path, poster);
-        }
-        let Some(texture) = self.thumbnails.get(&entry.path, frame) else {
+        let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
             return false;
         };
         let dimensions = texture.size_vec2();
-        let media = self.settings.view == View::Media;
-        let scale = (rect.width() / dimensions.x).min(rect.height() / dimensions.y);
-        let image_rect = egui::Rect::from_center_size(rect.center(), dimensions * scale);
+        let image_bounds = if self.settings.view == View::Media {
+            rect.shrink(
+                (self.settings.media_margin as f32).min(rect.width().min(rect.height()) / 4.0),
+            )
+        } else {
+            rect
+        };
+        let scale = (image_bounds.width() / dimensions.x).min(image_bounds.height() / dimensions.y);
+        let image_rect = egui::Rect::from_center_size(image_bounds.center(), dimensions * scale);
         let uv_size = image_rect.size() / (dimensions * scale);
         ui.painter().image(
             texture.id(),
@@ -1071,21 +1152,38 @@ impl FileManager {
             egui::Rect::from_center_size(egui::pos2(0.5, 0.5), uv_size),
             Color32::WHITE,
         );
-        if let Some(progress) = progress {
-            let left = egui::pos2(
-                rect.left(),
-                if media {
-                    rect.top() + 2.0
+        if progress.is_some() {
+            let displayed = self
+                .thumbnails
+                .displayed_frame(entry, frame)
+                .unwrap_or(poster);
+            let progress = if let Some(paths) = &entry.sequence {
+                let index = if displayed == images::VIDEO_POSTER {
+                    paths.len() / 2
                 } else {
-                    rect.bottom() + 2.0
-                },
-            );
-            let right = egui::pos2(rect.right(), left.y);
-            ui.painter()
-                .line_segment([left, right], Stroke::new(2.0, MUTED));
-            ui.painter().line_segment(
-                [left, egui::pos2(left.x + rect.width() * progress, left.y)],
-                Stroke::new(2.0, ACCENT),
+                    (paths.len() - 1) * displayed / (images::VIDEO_FRAMES - 1)
+                };
+                index as f32 / (paths.len() - 1) as f32
+            } else if displayed == images::VIDEO_POSTER {
+                0.5
+            } else {
+                displayed as f32 / (images::VIDEO_FRAMES - 1) as f32
+            };
+            let inset = image_bounds.shrink(4.0);
+            let height = PREVIEW_BAR_HEIGHT.min(inset.height()).max(0.0);
+            let left = egui::pos2(inset.left(), inset.bottom() - height);
+            let width = inset.width().max(0.0);
+            let track = egui::Rect::from_min_size(left, Vec2::new(width, height));
+            let background = if ui.visuals().dark_mode {
+                Color32::from_rgb(55, 62, 70)
+            } else {
+                Color32::from_rgb(208, 214, 220)
+            };
+            ui.painter().rect_filled(track, 2.0, background);
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(left, Vec2::new(width * progress, height)),
+                2.0,
+                ACCENT,
             );
         }
         true
@@ -1189,7 +1287,7 @@ impl FileManager {
                 if entry.directory {
                     1.0
                 } else {
-                    self.thumbnails.aspect_ratio(&entry.path)
+                    self.thumbnails.entry_aspect_ratio(entry)
                 }
             })
             .collect();
@@ -1237,20 +1335,29 @@ impl FileManager {
                                 entry,
                             );
                         }
-                        if entry.directory || highlighted {
+                        if entry.directory {
                             let label = egui::Rect::from_min_max(
                                 egui::pos2(rect.left(), (rect.bottom() - 26.0).max(rect.top())),
                                 rect.max,
                             );
                             ui.painter()
                                 .rect_filled(label, 0.0, ui.visuals().panel_fill);
-                            paint_name(
-                                ui,
-                                &entry.name,
-                                egui::pos2(label.left() + 6.0, label.center().y),
-                                label.width() - 12.0,
-                                12.0,
+                            let mut job = egui::text::LayoutJob::simple(
+                                entry.name.clone(),
+                                egui::FontId::proportional(12.0),
+                                ui.visuals().text_color(),
+                                (label.width() - 12.0).max(1.0),
                             );
+                            job.wrap.max_rows = 1;
+                            job.halign = egui::Align::Center;
+                            let galley = ui.painter().layout_job(job);
+                            let position = egui::pos2(
+                                label.center().x,
+                                label.center().y - galley.size().y / 2.0,
+                            );
+                            ui.painter()
+                                .with_clip_rect(ui.clip_rect().intersect(label))
+                                .galley(position, galley, ui.visuals().text_color());
                         }
                         if highlighted {
                             ui.painter().rect_stroke(
@@ -1267,13 +1374,149 @@ impl FileManager {
             });
     }
 
+    fn tree_header(&mut self, ui: &mut egui::Ui) {
+        let width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+        let (row, _) = ui.allocate_exact_size(Vec2::new(width, 32.0), egui::Sense::hover());
+        let date_left = row.right() - TREE_DATE_WIDTH;
+        let size_left = date_left - TREE_SIZE_WIDTH;
+        for (label, column, left, right, x, align) in [
+            (
+                "Name",
+                TreeSort::Name,
+                row.left(),
+                size_left,
+                row.left() + 36.0,
+                egui::Align2::LEFT_CENTER,
+            ),
+            (
+                "Size",
+                TreeSort::Size,
+                size_left,
+                date_left,
+                date_left - 12.0,
+                egui::Align2::RIGHT_CENTER,
+            ),
+            (
+                "Date Modified",
+                TreeSort::Modified,
+                date_left,
+                row.right(),
+                date_left + 8.0,
+                egui::Align2::LEFT_CENTER,
+            ),
+        ] {
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(left, row.top()),
+                egui::pos2(right, row.bottom()),
+            );
+            let response = ui.interact(
+                rect,
+                ui.id().with(("tree-sort", label)),
+                egui::Sense::click(),
+            );
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            }
+            if response.clicked() {
+                if self.settings.tree_sort == column {
+                    self.settings.tree_descending = !self.settings.tree_descending;
+                } else {
+                    self.settings.tree_sort = column;
+                    self.settings.tree_descending = false;
+                }
+                self.save();
+            }
+            let active = self.settings.tree_sort == column;
+            let text_x = if active && align == egui::Align2::RIGHT_CENTER {
+                x - 16.0
+            } else {
+                x
+            };
+            let text_rect = ui.painter().text(
+                egui::pos2(text_x, row.center().y),
+                align,
+                label,
+                egui::FontId::proportional(12.0),
+                if active { ACCENT } else { MUTED },
+            );
+            if active {
+                paint_arrow(
+                    ui,
+                    egui::Rect::from_center_size(
+                        egui::pos2(text_rect.right() + 10.0, row.center().y),
+                        Vec2::splat(14.0),
+                    ),
+                    ACCENT,
+                    Vec2::new(
+                        0.0,
+                        if self.settings.tree_descending {
+                            1.0
+                        } else {
+                            -1.0
+                        },
+                    ),
+                );
+            }
+            response.on_hover_text(match column {
+                TreeSort::Name => "Sort by name; click again to reverse",
+                TreeSort::Size => "Sort by folder item count or file bytes; click again to reverse",
+                TreeSort::Modified => {
+                    "Sort by modification date (local time); click again to reverse"
+                }
+            });
+        }
+        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        for x in [date_left - TREE_SIZE_WIDTH, date_left] {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(x, row.top() + 6.0),
+                    egui::pos2(x, row.bottom() - 6.0),
+                ],
+                stroke,
+            );
+        }
+        ui.painter()
+            .line_segment([row.left_bottom(), row.right_bottom()], stroke);
+    }
+
     fn tree(
         &mut self,
         ui: &mut egui::Ui,
-        entries: Vec<Entry>,
+        mut entries: Vec<Entry>,
         depth: usize,
+        row_index: &mut usize,
         context: &egui::Context,
     ) {
+        entries.sort_by(|a, b| {
+            let name_order = || {
+                a.name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.name.cmp(&b.name))
+            };
+            let order = match self.settings.tree_sort {
+                TreeSort::Name => name_order(),
+                TreeSort::Size => {
+                    let size = |entry: &Entry| {
+                        if entry.directory {
+                            entry.item_count.map(|count| count as u64)
+                        } else {
+                            Some(entry.size)
+                        }
+                    };
+                    size(a).cmp(&size(b)).then_with(name_order)
+                }
+                TreeSort::Modified => a.modified.cmp(&b.modified).then_with(name_order),
+            };
+            b.directory
+                .cmp(&a.directory)
+                .then(if self.settings.tree_descending {
+                    order.reverse()
+                } else {
+                    order
+                })
+        });
         for entry in entries {
             ui.push_id(&entry.path, |ui| {
                 let height = (30.0 * self.settings.zoom).max(32.0);
@@ -1281,6 +1524,16 @@ impl FileManager {
                     Vec2::new(ui.available_width(), height),
                     egui::Sense::hover(),
                 );
+                ui.painter().rect_filled(
+                    row,
+                    0.0,
+                    if *row_index % 2 == 0 {
+                        ui.visuals().panel_fill
+                    } else {
+                        ui.visuals().faint_bg_color
+                    },
+                );
+                *row_index += 1;
                 let left = row.left() + depth as f32 * 20.0 * self.settings.zoom;
                 let disclosure = egui::Rect::from_center_size(
                     egui::pos2(left + 14.0, row.center().y),
@@ -1304,7 +1557,11 @@ impl FileManager {
                         if expanded {
                             self.expanded.remove(&entry.path);
                         } else {
-                            match files::entries(&entry.path, self.settings.hidden) {
+                            match files::entries(
+                                &entry.path,
+                                self.settings.hidden,
+                                self.settings.sequences,
+                            ) {
                                 Ok(children) => {
                                     self.tree_cache.insert(entry.path.clone(), children);
                                     self.expanded.insert(entry.path.clone());
@@ -1341,27 +1598,41 @@ impl FileManager {
                     paint_icon(ui, icon, &entry);
                 }
                 let name_left = icon.right() + 10.0;
-                let size_width = if entry.directory { 0.0 } else { 90.0 };
+                let date_left = row.right() - TREE_DATE_WIDTH;
+                let name_right = date_left - TREE_SIZE_WIDTH;
                 paint_name(
                     ui,
                     &entry.name,
                     egui::pos2(name_left, row.center().y),
-                    (row.right() - name_left - size_width - 8.0).max(1.0),
+                    (name_right - name_left - 8.0).max(1.0),
                     14.0,
                 );
-                if !entry.directory {
-                    ui.painter().text(
-                        egui::pos2(row.right() - 8.0, row.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        files::size_label(entry.size),
-                        egui::FontId::proportional(11.0),
-                        MUTED,
-                    );
-                }
+                let size = if entry.directory {
+                    entry.item_count.map_or_else(
+                        || "—".to_owned(),
+                        |count| format!("{count} {}", if count == 1 { "item" } else { "items" }),
+                    )
+                } else {
+                    files::size_label(entry.size)
+                };
+                ui.painter().text(
+                    egui::pos2(date_left - 12.0, row.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    size,
+                    egui::FontId::proportional(11.0),
+                    MUTED,
+                );
+                ui.painter().text(
+                    egui::pos2(date_left + 8.0, row.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &entry.modified_label,
+                    egui::FontId::proportional(11.0),
+                    MUTED,
+                );
                 self.entry_response(response, &entry, context);
                 if self.expanded.contains(&entry.path) && depth < 64 {
                     if let Some(children) = self.tree_cache.get(&entry.path).cloned() {
-                        self.tree(ui, children, depth + 1, context);
+                        self.tree(ui, children, depth + 1, row_index, context);
                     }
                 }
             });
@@ -1452,12 +1723,17 @@ impl eframe::App for FileManager {
                         View::Grid => self.grid(ui, context),
                         View::Media => self.media(ui, context),
                         View::Tree => {
-                            egui::ScrollArea::both()
+                            self.tree_header(ui);
+                            egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .id_salt("tree")
                                 .drag_to_scroll(false)
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                )
                                 .show(ui, |ui| {
-                                    self.tree(ui, self.entries.clone(), 0, context);
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    self.tree(ui, self.entries.clone(), 0, &mut 0, context);
                                 });
                         }
                     }

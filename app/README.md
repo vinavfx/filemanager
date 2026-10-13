@@ -25,10 +25,22 @@ inglés.
 - Arrastra una carpeta desde `Grid` o `Tree` a la barra de marcadores, o selecciónala y pulsa `D` o `Ctrl+D`.
 - Los accesos a la carpeta personal y sus carpetas principales aparecen arriba, con iconos propios y rutas XDG. Clic derecho permite
   quitarlos sin borrar carpetas; el menú `...` restaura los accesos predeterminados.
-- `Tree` muestra carpetas expandibles y `Grid` muestra todos los archivos con iconos. `Media` muestra solo imágenes y vídeos en un mosaico
-  sin separación, recortados al centro para llenar cada celda; el nombre aparece al pasar el cursor o seleccionar. Las tres vistas cargan
-  miniaturas en segundo plano. Los vídeos muestran una imagen del centro; mueve el cursor de izquierda a derecha para recorrer muestras
-  desde el inicio hasta el final, sin reproducción continua. El zoom cambia el tamaño de las miniaturas y los iconos, no el de la letra.
+- `Tree` muestra carpetas expandibles, filas con fondos alternos y las columnas `Name`, `Size` y `Date Modified`. En carpetas, `Size` indica
+  el número de elementos inmediatos, incluidos los ocultos; en archivos, el tamaño en bytes. Las fechas se muestran en la zona horaria local
+  mediante `date`; en secuencias se usa la modificación más reciente. Pulsar un encabezado ordena cada nivel del árbol por esa columna;
+  pulsarlo de nuevo invierte el orden. Una flecha indica el sentido y las carpetas permanecen primero. La elección se conserva al reiniciar.
+  `F5` actualiza estos datos. `Grid` muestra todos los archivos con iconos. `Media` muestra solo imágenes y vídeos en un mosaico con margen
+  entre miniaturas; solo las carpetas muestran el nombre, centrado. Los archivos no muestran títulos ni rutas al pasar el cursor o
+  seleccionar. Las tres vistas cargan miniaturas en segundo plano. Los vídeos muestran una imagen del centro; mueve el cursor de izquierda a
+  derecha para recorrer muestras desde el inicio hasta el final, sin reproducción continua. El zoom cambia el tamaño de las miniaturas y los
+  iconos, no el de la letra.
+- Solo en `Media`, el control `Margin` junto al zoom ajusta el margen de las miniaturas de 0 a 24 píxeles por lado; el valor inicial es 4.
+  La elección se conserva al reiniciar y no afecta a `Grid` ni a `Tree`.
+- `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes con el mismo nombre y numeración consecutiva o mostrarlas
+  individualmente. Cada grupo aparece como una sola entrada, con rango y número de fotogramas; admite explorar hasta ocho muestras con el
+  cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los grupos. La barra
+  dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado, indica la posición
+  de la muestra mostrada, incluso mientras se carga otra.
 - `Ctrl+L` o `Edit` activa la dirección editable; `Path` vuelve a los botones de ruta. Admite rutas relativas y `~`. Al pulsar un directorio
   anterior se conservan los botones siguientes hasta abrir otra ruta.
 - Clic derecho en el espacio vacío, sin seleccionar nada, permite abrir Konsole, crear una carpeta, añadir el directorio a marcadores,
@@ -45,8 +57,8 @@ seleccionar, muestra el tamaño del archivo o la suma recursiva de los archivos 
 en segundo plano, no sigue enlaces simbólicos y señala resultados parciales cuando hay elementos inaccesibles. Los tamaños son lógicos, no
 bloques ocupados.
 
-Los marcadores, la vista, el zoom, el tema y la visibilidad de archivos ocultos se guardan en `$XDG_CONFIG_HOME/still-files/settings.json`
-o, si la variable no está definida, en `~/.config/still-files/settings.json`.
+Los marcadores, la vista, el zoom, el margen de Media, el tema, la agrupación de secuencias y la visibilidad de archivos ocultos se guardan
+en `$XDG_CONFIG_HOME/still-files/settings.json` o, si la variable no está definida, en `~/.config/still-files/settings.json`.
 
 Las miniaturas se guardan en WebP, con un máximo de 192 píxeles por lado, en `$XDG_CACHE_HOME/still-files/thumbnails` o
 `~/.cache/still-files/thumbnails`. Se reutilizan entre ejecuciones y se regeneran si cambia el tamaño o la fecha de modificación del

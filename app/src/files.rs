@@ -1,9 +1,12 @@
 use eframe::egui;
+use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 pub struct Entry {
@@ -12,9 +15,33 @@ pub struct Entry {
     pub directory: bool,
     pub symlink: bool,
     pub size: u64,
+    pub item_count: Option<usize>,
+    pub modified: Option<SystemTime>,
+    pub modified_label: String,
+    pub sequence: Option<Arc<Vec<PathBuf>>>,
 }
 
-pub fn entries(path: &Path, hidden: bool) -> io::Result<Vec<Entry>> {
+impl Entry {
+    pub fn animated(&self) -> bool {
+        self.sequence.is_some() || video_file(&self.path)
+    }
+
+    pub fn thumbnail(&self, frame: usize) -> (&Path, usize) {
+        if let Some(paths) = &self.sequence {
+            let index = if frame == crate::images::VIDEO_POSTER {
+                paths.len() / 2
+            } else {
+                (paths.len() - 1) * frame.min(crate::images::VIDEO_FRAMES - 1)
+                    / (crate::images::VIDEO_FRAMES - 1)
+            };
+            (&paths[index], 0)
+        } else {
+            (&self.path, if self.animated() { frame } else { 0 })
+        }
+    }
+}
+
+pub fn entries(path: &Path, hidden: bool, sequences: bool) -> io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for item in fs::read_dir(path)? {
         let item = item?;
@@ -24,14 +51,32 @@ pub fn entries(path: &Path, hidden: bool) -> io::Result<Vec<Entry>> {
         }
         let kind = item.file_type()?;
         let metadata = item.metadata().ok();
+        let directory = item.path().is_dir();
+        let item_count = if directory {
+            fs::read_dir(item.path()).ok().and_then(|mut items| {
+                items
+                    .try_fold(0, |count, item| item.map(|_| count + 1))
+                    .ok()
+            })
+        } else {
+            None
+        };
         entries.push(Entry {
-            directory: item.path().is_dir(),
+            directory,
             symlink: kind.is_symlink(),
-            size: metadata.map_or(0, |value| value.len()),
+            size: metadata.as_ref().map_or(0, |value| value.len()),
+            item_count,
+            modified: metadata.and_then(|value| value.modified().ok()),
+            modified_label: "—".to_owned(),
+            sequence: None,
             path: item.path(),
             name,
         });
     }
+    if sequences {
+        entries = group_sequences(entries);
+    }
+    format_modified(&mut entries);
     entries.sort_by(|a, b| {
         b.directory.cmp(&a.directory).then_with(|| {
             a.name
@@ -41,6 +86,114 @@ pub fn entries(path: &Path, hidden: bool) -> io::Result<Vec<Entry>> {
         })
     });
     Ok(entries)
+}
+
+fn format_modified(entries: &mut [Entry]) -> Option<()> {
+    let mut timestamps = String::new();
+    let mut indices = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some(modified) = entry.modified {
+            let seconds = match modified.duration_since(UNIX_EPOCH) {
+                Ok(duration) => i128::from(duration.as_secs()),
+                Err(error) => {
+                    -i128::from(error.duration().as_secs())
+                        - i128::from(error.duration().subsec_nanos() > 0)
+                }
+            };
+            timestamps.push_str(&format!("@{seconds}\n"));
+            indices.push(index);
+        }
+    }
+    if indices.is_empty() {
+        return Some(());
+    }
+    let mut child = Command::new("date")
+        .args(["-f", "-", "+%Y-%m-%d %H:%M"])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut input = child.stdin.take()?;
+    let writer = std::thread::spawn(move || input.write_all(timestamps.as_bytes()));
+    let output = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    for (index, label) in indices
+        .into_iter()
+        .zip(String::from_utf8_lossy(&output.stdout).lines())
+    {
+        entries[index].modified_label = label.to_owned();
+    }
+    Some(())
+}
+
+fn sequence_number(entry: &Entry) -> Option<(String, String, u64)> {
+    if entry.directory || !image_file(&entry.path) {
+        return None;
+    }
+    let stem = entry.path.file_stem()?.to_str()?;
+    let end = stem.rfind(|character: char| character.is_ascii_digit())? + 1;
+    let start = stem[..end]
+        .rfind(|character: char| !character.is_ascii_digit())
+        .map_or(0, |index| {
+            index + stem[index..].chars().next().map_or(0, char::len_utf8)
+        });
+    let digits = &stem[start..end];
+    Some((
+        stem[..start].to_owned(),
+        format!("{}.{}", &stem[end..], entry.path.extension()?.to_str()?),
+        digits.parse().ok()?,
+    ))
+}
+
+fn group_sequences(entries: Vec<Entry>) -> Vec<Entry> {
+    let mut groups: HashMap<(String, String), Vec<(u64, Entry)>> = HashMap::new();
+    let mut result = Vec::new();
+    for entry in entries {
+        if let Some((prefix, suffix, number)) = sequence_number(&entry) {
+            groups
+                .entry((prefix, suffix))
+                .or_default()
+                .push((number, entry));
+        } else {
+            result.push(entry);
+        }
+    }
+    for ((prefix, suffix), mut group) in groups {
+        group.sort_by(|(a, entry_a), (b, entry_b)| {
+            a.cmp(b).then_with(|| entry_a.name.cmp(&entry_b.name))
+        });
+        let mut remaining = group.as_slice();
+        while !remaining.is_empty() {
+            let length = remaining
+                .windows(2)
+                .position(|pair| pair[0].0.checked_add(1) != Some(pair[1].0))
+                .map_or(remaining.len(), |index| index + 1);
+            let run = &remaining[..length];
+            let mut entry = run[0].1.clone();
+            if length > 1 {
+                entry.name = format!(
+                    "{prefix}[{}–{}]{suffix} ({length} frames)",
+                    run[0].0,
+                    run[length - 1].0
+                );
+                entry.size = run
+                    .iter()
+                    .fold(0_u64, |size, (_, entry)| size.saturating_add(entry.size));
+                entry.modified = run.iter().filter_map(|(_, entry)| entry.modified).max();
+                entry.sequence = Some(Arc::new(
+                    run.iter().map(|(_, entry)| entry.path.clone()).collect(),
+                ));
+            }
+            result.push(entry);
+            remaining = &remaining[length..];
+        }
+    }
+    result
 }
 
 pub fn image_file(path: &Path) -> bool {

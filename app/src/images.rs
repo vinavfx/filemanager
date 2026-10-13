@@ -438,6 +438,43 @@ impl Thumbnails {
             })
     }
 
+    pub fn get_entry(
+        &mut self,
+        entry: &crate::files::Entry,
+        frame: usize,
+    ) -> Option<&egui::TextureHandle> {
+        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
+        let (path, source_frame) = entry.thumbnail(poster);
+        self.get(path, source_frame);
+        let (path, source_frame) = entry.thumbnail(frame);
+        self.get(path, source_frame);
+        let displayed = self.displayed_frame(entry, frame)?;
+        let (path, source_frame) = entry.thumbnail(displayed);
+        self.cache
+            .get(&(path.to_path_buf(), source_frame))?
+            .as_ref()
+            .ok()
+    }
+
+    pub fn displayed_frame(&self, entry: &crate::files::Entry, frame: usize) -> Option<usize> {
+        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
+        [frame, poster].into_iter().find(|frame| {
+            let (path, source_frame) = entry.thumbnail(*frame);
+            self.cache
+                .get(&(path.to_path_buf(), source_frame))
+                .is_some_and(|image| image.is_ok())
+        })
+    }
+
+    pub fn entry_aspect_ratio(&self, entry: &crate::files::Entry) -> f32 {
+        let (path, _) = entry.thumbnail(VIDEO_POSTER);
+        self.aspect_ratio(path)
+    }
+
+    pub fn entry_error(&self, entry: &crate::files::Entry) -> Option<&str> {
+        (0..VIDEO_FRAMES).find_map(|frame| self.error(entry.thumbnail(frame).0))
+    }
+
     pub fn aspect_ratio(&self, path: &Path) -> f32 {
         let frame = if crate::files::video_file(path) {
             VIDEO_POSTER
