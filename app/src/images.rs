@@ -113,7 +113,7 @@ fn video_frame(
                 "-an",
                 "-sn",
                 "-vf",
-                "scale=192:192:force_original_aspect_ratio=decrease,setsar=1",
+                "scale=w='max(1,round(192*min(1,dar)))':h='max(1,round(192/max(1,dar)))',setsar=1",
                 "-threads",
                 "1",
                 "-f",
@@ -221,7 +221,7 @@ fn cached_thumbnail(
     let key = fingerprint(path)?;
     let video = crate::files::video_file(path);
     let suffix = if video {
-        format!("-video-v2-{VIDEO_FRAMES}-{frame}")
+        format!("-video-v3-{VIDEO_FRAMES}-{frame}")
     } else {
         String::new()
     };
@@ -435,6 +435,21 @@ impl Thumbnails {
                 self.cache
                     .get(&fallback)
                     .and_then(|result| result.as_ref().ok())
+            })
+    }
+
+    pub fn aspect_ratio(&self, path: &Path) -> f32 {
+        let frame = if crate::files::video_file(path) {
+            VIDEO_POSTER
+        } else {
+            0
+        };
+        self.cache
+            .get(&(path.to_path_buf(), frame))
+            .and_then(|result| result.as_ref().ok())
+            .map_or(1.0, |texture| {
+                let size = texture.size_vec2();
+                size.x / size.y
             })
     }
 

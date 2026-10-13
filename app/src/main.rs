@@ -1,5 +1,6 @@
 mod files;
 mod images;
+mod layout;
 mod places;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
@@ -240,7 +241,6 @@ impl FileManager {
                 self.current = path;
                 self.entries = entries;
                 self.address = self.current.to_string_lossy().into_owned();
-                self.editing_path = false;
                 self.expanded.clear();
                 self.tree_cache.clear();
                 self.select(None, context);
@@ -277,7 +277,6 @@ impl FileManager {
                     self.current = path;
                     self.entries = entries;
                     self.address = self.current.to_string_lossy().into_owned();
-                    self.editing_path = false;
                     self.expanded.clear();
                     self.tree_cache.clear();
                     self.select(None, context);
@@ -370,6 +369,40 @@ impl FileManager {
         }
     }
 
+    fn show_properties(&mut self, path: &Path) {
+        let mut uri = String::from("file://");
+        for &byte in path.as_os_str().as_encoded_bytes() {
+            if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+                uri.push(char::from(byte));
+            } else {
+                uri.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        if let Err(error) = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.mate.Caja",
+                "--object-path",
+                "/org/freedesktop/FileManager1",
+                "--method",
+                "org.freedesktop.FileManager1.ShowItemProperties",
+            ])
+            .arg(format!("['{uri}']"))
+            .arg("")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .map(|mut child| {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            })
+        {
+            self.message = Some(format!("Cannot open Caja properties: {error}"));
+        }
+    }
+
     fn directory_menu(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         if ui.button("Open Konsole here").clicked() {
             self.open_terminal(&self.current.clone());
@@ -403,7 +436,7 @@ impl FileManager {
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("Refresh · F5").clicked() {
+        if ui.button("Refresh · Ctrl+R / F5").clicked() {
             self.refresh(context);
             ui.close_menu();
         }
@@ -413,6 +446,11 @@ impl FileManager {
         {
             self.refresh(context);
             self.save();
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("Properties").clicked() {
+            self.show_properties(&self.current.clone());
             ui.close_menu();
         }
     }
@@ -467,6 +505,23 @@ impl FileManager {
     }
 
     fn shortcuts(&mut self, context: &egui::Context) {
+        let scroll = context.input_mut(|input| {
+            if input.modifiers.ctrl {
+                let scroll = input.raw_scroll_delta.y;
+                input.raw_scroll_delta = Vec2::ZERO;
+                input.smooth_scroll_delta = Vec2::ZERO;
+                scroll
+            } else {
+                0.0
+            }
+        });
+        if scroll != 0.0 {
+            let zoom = (self.settings.zoom * (scroll * 0.003).exp()).clamp(0.65, 3.6);
+            if self.settings.zoom != zoom {
+                self.settings.zoom = zoom;
+                self.save();
+            }
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
             self.address = self.current.to_string_lossy().into_owned();
             self.editing_path = true;
@@ -500,7 +555,9 @@ impl FileManager {
                 self.navigate_breadcrumb(parent.to_path_buf(), context);
             }
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5)) {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5))
+            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R))
+        {
             self.refresh(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
@@ -508,7 +565,9 @@ impl FileManager {
             self.refresh(context);
             self.save();
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter))
+            || context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Space))
+        {
             if let Some(path) = self.selected.clone() {
                 self.open(path, context);
             }
@@ -523,7 +582,7 @@ impl FileManager {
             let navigation =
                 egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
             let options =
-                egui::Rect::from_min_max(egui::pos2(row.right() - 336.0, row.top()), row.max);
+                egui::Rect::from_min_max(egui::pos2(row.right() - 256.0, row.top()), row.max);
             let address = egui::Rect::from_min_max(
                 egui::pos2(navigation.right() + 16.0, row.top()),
                 egui::pos2(options.left() - 16.0, row.bottom()),
@@ -560,9 +619,9 @@ impl FileManager {
                     if ui
                         .add_sized(
                             [48.0, 32.0],
-                            egui::Button::new(if self.editing_path { "Path" } else { "Edit" }),
+                            egui::Button::new("Edit").selected(self.editing_path),
                         )
-                        .on_hover_text("Toggle address / breadcrumbs · Ctrl+L")
+                        .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
                         .clicked()
                     {
                         self.editing_path = !self.editing_path;
@@ -592,18 +651,7 @@ impl FileManager {
                     .max_rect(options)
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
-                    if ui
-                        .add_sized(
-                            [64.0, 32.0],
-                            egui::Button::new(if self.settings.dark_mode {
-                                "Light"
-                            } else {
-                                "Dark"
-                            }),
-                        )
-                        .on_hover_text("Toggle light / dark theme")
-                        .clicked()
-                    {
+                    if theme_button(ui, self.settings.dark_mode).clicked() {
                         self.settings.dark_mode = !self.settings.dark_mode;
                         apply_theme(context, self.settings.dark_mode);
                         self.save();
@@ -620,36 +668,14 @@ impl FileManager {
                         self.refresh(context);
                         self.save();
                     }
-                    if ui
-                        .add_sized(
-                            [64.0, 32.0],
-                            egui::Button::new("Media").selected(self.settings.view == View::Media),
-                        )
-                        .on_hover_text("Images and videos without gaps")
-                        .clicked()
-                    {
-                        self.settings.view = View::Media;
-                        self.save();
-                    }
-                    if ui
-                        .add_sized(
-                            [52.0, 32.0],
-                            egui::Button::new("Grid").selected(self.settings.view == View::Grid),
-                        )
-                        .clicked()
-                    {
-                        self.settings.view = View::Grid;
-                        self.save();
-                    }
-                    if ui
-                        .add_sized(
-                            [52.0, 32.0],
-                            egui::Button::new("Tree").selected(self.settings.view == View::Tree),
-                        )
-                        .clicked()
-                    {
-                        self.settings.view = View::Tree;
-                        self.save();
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    for view in [View::Media, View::Grid, View::Tree] {
+                        if view_button(ui, view, self.settings.view == view).clicked() {
+                            self.settings.view = view;
+                            self.save();
+                        }
                     }
                 },
             );
@@ -712,12 +738,6 @@ impl FileManager {
                         let trail = self.breadcrumb_path.clone();
                         let mut path = PathBuf::new();
                         for component in trail.components() {
-                            if !path.as_os_str().is_empty() && path != Path::new("/") {
-                                ui.add_sized(
-                                    [8.0, 32.0],
-                                    egui::Label::new(RichText::new("/").color(MUTED)),
-                                );
-                            }
                             path.push(component);
                             let label = component.as_os_str().to_string_lossy();
                             if ui
@@ -906,7 +926,7 @@ impl FileManager {
                             egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
                                 .show_value(false),
                         )
-                        .on_hover_text("Icon and tree zoom · up to 360%");
+                        .on_hover_text("Icon and tree zoom · Ctrl+wheel · up to 360%");
                     if response.changed() {
                         self.save();
                     }
@@ -1001,6 +1021,11 @@ impl FileManager {
                 context.copy_text(entry.path.to_string_lossy().into_owned());
                 ui.close_menu();
             }
+            ui.separator();
+            if ui.button("Properties").clicked() {
+                self.show_properties(&entry.path);
+                ui.close_menu();
+            }
         });
     }
 
@@ -1037,16 +1062,8 @@ impl FileManager {
         };
         let dimensions = texture.size_vec2();
         let media = self.settings.view == View::Media;
-        let scale = if media {
-            (rect.width() / dimensions.x).max(rect.height() / dimensions.y)
-        } else {
-            (rect.width() / dimensions.x).min(rect.height() / dimensions.y)
-        };
-        let image_rect = if media {
-            rect
-        } else {
-            egui::Rect::from_center_size(rect.center(), dimensions * scale)
-        };
+        let scale = (rect.width() / dimensions.x).min(rect.height() / dimensions.y);
+        let image_rect = egui::Rect::from_center_size(rect.center(), dimensions * scale);
         let uv_size = image_rect.size() / (dimensions * scale);
         ui.painter().image(
             texture.id(),
@@ -1075,50 +1092,16 @@ impl FileManager {
     }
 
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        let media = self.settings.view == View::Media;
-        let entries: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                !media
-                    || (!entry.directory
-                        && (files::image_file(&entry.path) || files::video_file(&entry.path)))
-            })
-            .cloned()
-            .collect();
-        if entries.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("No images or videos in this folder").color(MUTED));
-            });
-            return;
-        }
-        let available = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
-        let target_width = if media { 192.0 } else { 116.0 } * self.settings.zoom;
-        let columns = if media {
-            (available / target_width).floor().max(1.0) as usize
-        } else {
-            ((available - 16.0 + 8.0) / (target_width + 8.0))
-                .floor()
-                .max(1.0) as usize
-        };
-        let width = if media {
-            available / columns as f32
-        } else {
-            target_width
-        };
-        let height = if media {
-            width
-        } else {
-            126.0 * self.settings.zoom
-        };
+        let entries = self.entries.clone();
+        let width = 116.0 * self.settings.zoom;
+        let height = 126.0 * self.settings.zoom;
+        let available = ui.available_width() - ui.spacing().scroll.allocated_width();
+        let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
         let rows = entries.len().div_ceil(columns);
         ui.scope(|ui| {
-            if media {
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-            }
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .id_salt(if media { "media" } else { "grid" })
+                .id_salt("grid")
                 .drag_to_scroll(false)
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .show_rows(ui, height, rows, |ui, range| {
@@ -1126,9 +1109,7 @@ impl FileManager {
                     let end = (range.end * columns).min(entries.len());
                     for row in entries[start..end].chunks(columns) {
                         ui.horizontal(|ui| {
-                            if !media {
-                                ui.add_space(8.0);
-                            }
+                            ui.add_space(8.0);
                             for entry in row {
                                 let (rect, response) = ui.allocate_exact_size(
                                     Vec2::new(width, height),
@@ -1140,59 +1121,29 @@ impl FileManager {
                                 );
                                 let selected = self.selected.as_ref() == Some(&entry.path);
                                 let highlighted = selected || response.hovered();
-                                if media || highlighted {
+                                if highlighted {
                                     ui.painter().rect_filled(
-                                        if media { rect } else { rect.shrink(2.0) },
-                                        if media { 0.0 } else { 8.0 },
-                                        if media {
-                                            Color32::BLACK
-                                        } else if selected {
+                                        rect.shrink(2.0),
+                                        8.0,
+                                        if selected {
                                             ui.visuals().selection.bg_fill
                                         } else {
                                             ui.visuals().widgets.hovered.weak_bg_fill
                                         },
                                     );
                                 }
-                                let icon_rect = if media {
-                                    rect
-                                } else {
-                                    egui::Rect::from_center_size(
-                                        rect.center_top() + Vec2::new(0.0, height * 0.34),
-                                        Vec2::splat(64.0 * self.settings.zoom),
-                                    )
-                                };
+                                let icon_rect = egui::Rect::from_center_size(
+                                    rect.center_top() + Vec2::new(0.0, height * 0.34),
+                                    Vec2::splat(64.0 * self.settings.zoom),
+                                );
                                 if !self.paint_thumbnail(ui, icon_rect, entry, &response) {
                                     paint_icon(
                                         ui,
-                                        icon_rect.shrink(if media {
-                                            width * 0.3
-                                        } else {
-                                            8.0 * self.settings.zoom
-                                        }),
+                                        icon_rect.shrink(8.0 * self.settings.zoom),
                                         entry,
                                     );
                                 }
-                                if media && highlighted {
-                                    let label = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left(), rect.bottom() - 26.0),
-                                        rect.max,
-                                    );
-                                    ui.painter()
-                                        .rect_filled(label, 0.0, ui.visuals().panel_fill);
-                                    paint_name(
-                                        ui,
-                                        &entry.name,
-                                        egui::pos2(label.left() + 6.0, label.center().y),
-                                        label.width() - 12.0,
-                                        12.0,
-                                    );
-                                    ui.painter().rect_stroke(
-                                        rect.shrink(1.0),
-                                        0.0,
-                                        Stroke::new(2.0, ACCENT),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                } else if !media {
+                                {
                                     let mut job = egui::text::LayoutJob::simple(
                                         entry.name.clone(),
                                         egui::FontId::proportional(12.0),
@@ -1214,6 +1165,106 @@ impl FileManager {
                     }
                 });
         });
+    }
+
+    fn media(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.directory || files::image_file(&entry.path) || files::video_file(&entry.path)
+            })
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("No folders, images or videos in this folder").color(MUTED));
+            });
+            return;
+        }
+        let width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+        let aspects: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                if entry.directory {
+                    1.0
+                } else {
+                    self.thumbnails.aspect_ratio(&entry.path)
+                }
+            })
+            .collect();
+        let rows = layout::justified_rows(&aspects, width, 192.0 * self.settings.zoom);
+        let total_height: f32 = rows.iter().map(|(_, height)| height).sum();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt("media")
+            .drag_to_scroll(false)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show_viewport(ui, |ui, _| {
+                ui.set_min_size(Vec2::new(width, total_height));
+                let origin = ui.min_rect().min;
+                let mut y = origin.y;
+                for (range, height) in rows {
+                    let mut x = origin.x;
+                    for index in range {
+                        let entry = &entries[index];
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(x, y),
+                            Vec2::new(aspects[index] * height, height),
+                        );
+                        x = rect.right();
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
+                        let response = ui.interact(
+                            rect,
+                            ui.id().with(&entry.path),
+                            if entry.directory {
+                                egui::Sense::click_and_drag()
+                            } else {
+                                egui::Sense::click()
+                            },
+                        );
+                        let highlighted =
+                            self.selected.as_ref() == Some(&entry.path) || response.hovered();
+                        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+                        if !self.paint_thumbnail(ui, rect, entry, &response) {
+                            let edge = (64.0 * self.settings.zoom)
+                                .min(rect.width().min(rect.height()) * 0.5);
+                            paint_icon(
+                                ui,
+                                egui::Rect::from_center_size(rect.center(), Vec2::splat(edge)),
+                                entry,
+                            );
+                        }
+                        if entry.directory || highlighted {
+                            let label = egui::Rect::from_min_max(
+                                egui::pos2(rect.left(), (rect.bottom() - 26.0).max(rect.top())),
+                                rect.max,
+                            );
+                            ui.painter()
+                                .rect_filled(label, 0.0, ui.visuals().panel_fill);
+                            paint_name(
+                                ui,
+                                &entry.name,
+                                egui::pos2(label.left() + 6.0, label.center().y),
+                                label.width() - 12.0,
+                                12.0,
+                            );
+                        }
+                        if highlighted {
+                            ui.painter().rect_stroke(
+                                rect.shrink(1.0),
+                                0.0,
+                                Stroke::new(2.0, ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        self.entry_response(response, entry, context);
+                    }
+                    y += height;
+                }
+            });
     }
 
     fn tree(
@@ -1398,7 +1449,8 @@ impl eframe::App for FileManager {
                     });
                 } else {
                     match self.settings.view {
-                        View::Grid | View::Media => self.grid(ui, context),
+                        View::Grid => self.grid(ui, context),
+                        View::Media => self.media(ui, context),
                         View::Tree => {
                             egui::ScrollArea::both()
                                 .auto_shrink([false, false])
@@ -1431,6 +1483,79 @@ impl eframe::App for FileManager {
             }
         }
     }
+}
+
+fn view_button(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").selected(selected));
+    let icon = egui::Rect::from_center_size(response.rect.center(), Vec2::splat(16.0));
+    let stroke = Stroke::new(1.5, ui.visuals().text_color());
+    let point = |x, y| icon.min + icon.size() * Vec2::new(x, y);
+    match view {
+        View::Tree => {
+            ui.painter()
+                .line_segment([point(0.1, 0.1), point(0.1, 0.9)], stroke);
+            for y in [0.1, 0.5, 0.9] {
+                ui.painter()
+                    .line_segment([point(0.1, y), point(0.9, y)], stroke);
+            }
+        }
+        View::Grid => {
+            for x in [0.0, 0.6] {
+                for y in [0.0, 0.6] {
+                    ui.painter().rect_stroke(
+                        egui::Rect::from_min_max(point(x, y), point(x + 0.4, y + 0.4)),
+                        0.0,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+        View::Media => {
+            for (left, top, right, bottom) in [
+                (0.0, 0.0, 0.6, 0.4),
+                (0.7, 0.0, 1.0, 0.4),
+                (0.0, 0.5, 0.3, 1.0),
+                (0.4, 0.5, 1.0, 1.0),
+            ] {
+                ui.painter().rect_stroke(
+                    egui::Rect::from_min_max(point(left, top), point(right, bottom)),
+                    0.0,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+    response.on_hover_text(match view {
+        View::Tree => "Tree",
+        View::Grid => "Grid",
+        View::Media => "Media",
+    })
+}
+
+fn theme_button(ui: &mut egui::Ui, dark_mode: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new(""));
+    let center = response.rect.center();
+    let radius = 8.0;
+    ui.painter().circle_filled(center, radius, Color32::WHITE);
+    let mut half = vec![center];
+    for step in 0..=16 {
+        let angle = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * step as f32 / 16.0;
+        half.push(center + Vec2::new(angle.cos(), angle.sin()) * radius);
+    }
+    ui.painter().add(egui::Shape::convex_polygon(
+        half,
+        Color32::BLACK,
+        Stroke::NONE,
+    ));
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(1.0, ui.visuals().text_color()));
+    response.on_hover_text(if dark_mode {
+        "Switch to light theme"
+    } else {
+        "Switch to dark theme"
+    })
 }
 
 fn arrow_button(ui: &mut egui::Ui, enabled: bool, direction: Vec2) -> egui::Response {
