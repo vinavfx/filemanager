@@ -1,10 +1,11 @@
 mod files;
 mod images;
+mod places;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
 use files::{Entry, SizeJob, SizeResult};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -22,6 +23,7 @@ enum View {
 #[serde(default)]
 struct Settings {
     bookmarks: Vec<PathBuf>,
+    removed_places: Vec<PathBuf>,
     view: View,
     zoom: f32,
     hidden: bool,
@@ -31,6 +33,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             bookmarks: Vec::new(),
+            removed_places: Vec::new(),
             view: View::Grid,
             zoom: 1.0,
             hidden: false,
@@ -44,13 +47,11 @@ struct Disk {
     free: u64,
 }
 
-struct Preview {
-    path: PathBuf,
-    receiver: Option<mpsc::Receiver<Result<egui::ColorImage, String>>>,
-    key: Option<u64>,
-    texture: Option<egui::TextureHandle>,
+struct NewFolder {
+    parent: PathBuf,
+    name: String,
+    focus: bool,
     error: Option<String>,
-    zoom: f32,
 }
 
 struct FileManager {
@@ -72,9 +73,9 @@ struct FileManager {
     selection_size: Option<SizeResult>,
     disk_job: Option<mpsc::Receiver<Result<Disk, String>>>,
     disk: Option<Disk>,
-    preview: Option<Preview>,
-    preview_cache: HashMap<u64, egui::TextureHandle>,
-    preview_order: VecDeque<u64>,
+    home_places: Vec<places::Place>,
+    new_folder: Option<NewFolder>,
+    compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
 
@@ -110,8 +111,12 @@ impl FileManager {
                 Some(format!("Cannot read settings: {error}")),
             ),
         };
+        let home_places = places::defaults(&home);
+        settings
+            .bookmarks
+            .retain(|path| !home_places.iter().any(|place| &place.path == path));
         settings.zoom = if settings.zoom.is_finite() {
-            settings.zoom.clamp(0.65, 1.8)
+            settings.zoom.clamp(0.65, 3.6)
         } else {
             1.0
         };
@@ -139,9 +144,9 @@ impl FileManager {
             selection_size: None,
             disk_job: None,
             disk: None,
-            preview: None,
-            preview_cache: HashMap::new(),
-            preview_order: VecDeque::new(),
+            home_places,
+            new_folder: None,
+            compression_job: None,
             message: config_error,
         };
         app.refresh(&context.egui_ctx);
@@ -179,7 +184,6 @@ impl FileManager {
         }
         self.tree_cache.clear();
         self.thumbnails.cancel();
-        self.preview = None;
         self.select(None, context);
         self.refresh_disk(context);
     }
@@ -210,7 +214,7 @@ impl FileManager {
         }) {
             Ok((path, entries)) => {
                 self.thumbnails.cancel();
-                self.preview = None;
+                self.new_folder = None;
                 if path != self.current {
                     self.history.truncate(self.position + 1);
                     self.history.push(path.clone());
@@ -249,7 +253,7 @@ impl FileManager {
             match files::entries(&path, self.settings.hidden) {
                 Ok(entries) => {
                     self.thumbnails.cancel();
-                    self.preview = None;
+                    self.new_folder = None;
                     self.position = next;
                     if !self.breadcrumb_path.starts_with(&path) {
                         self.breadcrumb_path = path.clone();
@@ -291,7 +295,15 @@ impl FileManager {
 
     fn add_bookmark(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
-        if !self.settings.bookmarks.contains(&path) {
+        if !path.is_dir() {
+            return;
+        }
+        if self.home_places.iter().any(|place| place.path == path) {
+            self.settings
+                .removed_places
+                .retain(|removed| removed != &path);
+            self.save();
+        } else if !self.settings.bookmarks.contains(&path) {
             self.settings.bookmarks.push(path);
             self.save();
         }
@@ -313,8 +325,6 @@ impl FileManager {
     fn open(&mut self, path: PathBuf, context: &egui::Context) {
         if path.is_dir() {
             self.navigate(path, context);
-        } else if files::image_file(&path) {
-            self.open_preview(path, context);
         } else if let Err(error) = std::process::Command::new("xdg-open")
             .arg(&path)
             .spawn()
@@ -349,8 +359,27 @@ impl FileManager {
             self.open_terminal(&self.current.clone());
             ui.close_menu();
         }
+        if ui.button("New folder…").clicked() {
+            self.new_folder = Some(NewFolder {
+                parent: self.current.clone(),
+                name: String::new(),
+                focus: true,
+                error: None,
+            });
+            ui.close_menu();
+        }
         if ui.button("Bookmark this folder").clicked() {
             self.add_bookmark(self.current.clone());
+            ui.close_menu();
+        }
+        if ui
+            .add_enabled(
+                self.compression_job.is_none(),
+                egui::Button::new("Compress this folder to ZIP"),
+            )
+            .clicked()
+        {
+            self.compress(self.current.clone(), context);
             ui.close_menu();
         }
         if ui.button("Copy directory path").clicked() {
@@ -372,33 +401,17 @@ impl FileManager {
         }
     }
 
-    fn open_preview(&mut self, path: PathBuf, context: &egui::Context) {
-        let key = images::fingerprint(&path).ok();
-        let cached = key.and_then(|key| self.preview_cache.get(&key)).cloned();
-        if let Some(key) = key.filter(|_| cached.is_some()) {
-            self.preview_order.retain(|cached| *cached != key);
-            self.preview_order.push_back(key);
+    fn compress(&mut self, path: PathBuf, context: &egui::Context) {
+        if self.compression_job.is_some() {
+            return;
         }
-        let receiver = if cached.is_none() {
-            let (sender, receiver) = mpsc::channel();
-            let worker_path = path.clone();
-            let context = context.clone();
-            std::thread::spawn(move || {
-                let result = images::load(&worker_path, 4096);
-                let _ = sender.send(result);
-                context.request_repaint();
-            });
-            Some(receiver)
-        } else {
-            None
-        };
-        self.preview = Some(Preview {
-            texture: cached.or_else(|| self.thumbnails.get(&path).cloned()),
-            path,
-            receiver,
-            key,
-            error: None,
-            zoom: 1.0,
+        let (sender, receiver) = mpsc::channel();
+        let context = context.clone();
+        self.compression_job = Some(receiver);
+        std::thread::spawn(move || {
+            let result = files::compress(&path).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+            context.request_repaint();
         });
     }
 
@@ -419,36 +432,20 @@ impl FileManager {
                 self.disk_job = None;
             }
         }
-        if let Some(preview) = &mut self.preview {
-            if let Some(result) = preview
-                .receiver
-                .as_ref()
-                .and_then(|receiver| receiver.try_recv().ok())
-            {
-                preview.receiver = None;
-                match result {
-                    Ok(image) => {
-                        let texture = context.load_texture(
-                            preview.path.to_string_lossy(),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        if let Some(key) = preview.key {
-                            if self.preview_cache.len() >= 4 {
-                                if let Some(oldest) = self.preview_order.pop_front() {
-                                    self.preview_cache.remove(&oldest);
-                                }
-                            }
-                            self.preview_cache.insert(key, texture.clone());
-                            self.preview_order.push_back(key);
-                        }
-                        preview.texture = Some(texture);
+        if let Some(result) = self
+            .compression_job
+            .as_ref()
+            .and_then(|job| job.try_recv().ok())
+        {
+            self.compression_job = None;
+            match result {
+                Ok(path) => {
+                    if path.parent() == Some(self.current.as_path()) {
+                        self.refresh(context);
                     }
-                    Err(error) => {
-                        preview.texture = None;
-                        preview.error = Some(error);
-                    }
+                    self.message = Some(format!("Archive created: {}", path.display()));
                 }
+                Err(error) => self.message = Some(format!("Cannot compress: {error}")),
             }
         }
     }
@@ -460,15 +457,15 @@ impl FileManager {
             self.focus_path = true;
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            if self.preview.is_some() {
-                self.preview = None;
+            if self.new_folder.is_some() {
+                self.new_folder = None;
             } else if self.editing_path {
                 self.editing_path = false;
             } else {
                 self.select(None, context);
             }
         }
-        if self.preview.is_some() || context.wants_keyboard_input() {
+        if self.new_folder.is_some() || context.wants_keyboard_input() {
             return;
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::D))
@@ -696,11 +693,67 @@ impl FileManager {
         }
     }
 
+    fn bookmark_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        path: &Path,
+        label: &str,
+        kind: Option<places::Kind>,
+        context: &egui::Context,
+    ) {
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
+        paint_selection(ui, rect, self.current == path, response.hovered());
+        let icon = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 16.0, rect.center().y),
+            Vec2::splat(18.0),
+        );
+        if let Some(kind) = kind {
+            places::paint_icon(ui, icon, kind, ACCENT);
+        } else {
+            paint_folder(ui, icon);
+        }
+        paint_name(
+            ui,
+            label,
+            egui::pos2(rect.left() + 34.0, rect.center().y),
+            rect.width() - 40.0,
+            13.0,
+        );
+        let response = response.on_hover_text(path.to_string_lossy());
+        if response.clicked() {
+            self.navigate(path.to_path_buf(), context);
+        }
+        response.context_menu(|ui| {
+            if ui.button("Remove bookmark").clicked() {
+                if kind.is_some() {
+                    if !self
+                        .settings
+                        .removed_places
+                        .iter()
+                        .any(|removed| removed == path)
+                    {
+                        self.settings.removed_places.push(path.to_path_buf());
+                    }
+                } else {
+                    self.settings.bookmarks.retain(|bookmark| bookmark != path);
+                }
+                self.save();
+                ui.close_menu();
+            }
+        });
+    }
+
     fn sidebar(&mut self, context: &egui::Context) {
         egui::SidePanel::left("bookmarks")
             .default_width(180.0)
             .width_range(140.0..=280.0)
             .show(context, |ui| {
+                let drop = ui.interact(
+                    ui.max_rect(),
+                    ui.id().with("bookmark-drop"),
+                    egui::Sense::hover(),
+                );
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("BOOKMARKS").size(11.0).color(MUTED));
@@ -711,50 +764,59 @@ impl FileManager {
                     {
                         self.bookmark();
                     }
+                    ui.menu_button("...", |ui| {
+                        if ui
+                            .add_enabled(
+                                !self.settings.removed_places.is_empty(),
+                                egui::Button::new("Restore default folders"),
+                            )
+                            .clicked()
+                        {
+                            self.settings.removed_places.clear();
+                            self.save();
+                            ui.close_menu();
+                        }
+                    });
                 });
                 ui.add_space(12.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for path in self.settings.bookmarks.clone() {
-                        let label = path
-                            .file_name()
-                            .map_or_else(|| "/".into(), |name| name.to_string_lossy());
-                        let (rect, response) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), 32.0),
-                            egui::Sense::click(),
-                        );
-                        paint_selection(ui, rect, self.current == path, response.hovered());
-                        let icon = egui::Rect::from_center_size(
-                            egui::pos2(rect.left() + 16.0, rect.center().y),
-                            Vec2::splat(18.0),
-                        );
-                        paint_folder(ui, icon);
-                        paint_name(
-                            ui,
-                            label.as_ref(),
-                            egui::pos2(rect.left() + 34.0, rect.center().y),
-                            rect.width() - 40.0,
-                            13.0,
-                        );
-                        let response = response.on_hover_text(path.to_string_lossy());
-                        if response.clicked() {
-                            self.navigate(path.clone(), context);
-                        }
-                        response.context_menu(|ui| {
-                            if ui.button("Remove bookmark").clicked() {
-                                self.settings.bookmarks.retain(|bookmark| bookmark != &path);
-                                self.save();
-                                ui.close_menu();
+                egui::ScrollArea::vertical()
+                    .drag_to_scroll(false)
+                    .show(ui, |ui| {
+                        for place in self.home_places.clone() {
+                            if !self.settings.removed_places.contains(&place.path) {
+                                self.bookmark_row(
+                                    ui,
+                                    &place.path,
+                                    place.label,
+                                    Some(place.kind),
+                                    context,
+                                );
                             }
-                        });
-                    }
-                    if self.settings.bookmarks.is_empty() {
+                        }
+                        ui.separator();
+                        for path in self.settings.bookmarks.clone() {
+                            let label = path
+                                .file_name()
+                                .map_or_else(|| "/".into(), |name| name.to_string_lossy());
+                            self.bookmark_row(ui, &path, &label, None, context);
+                        }
                         ui.label(
-                            RichText::new("Press D to bookmark\nthis or a selected folder")
+                            RichText::new("Drag folders here\nor press D to bookmark")
                                 .size(12.0)
                                 .color(MUTED),
                         );
-                    }
-                });
+                    });
+                if drop.dnd_hover_payload::<PathBuf>().is_some() {
+                    ui.painter().rect_stroke(
+                        ui.max_rect().shrink(2.0),
+                        4.0,
+                        Stroke::new(2.0, ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if let Some(path) = drop.dnd_release_payload::<PathBuf>() {
+                    self.add_bookmark((*path).clone());
+                }
             });
     }
 
@@ -798,10 +860,10 @@ impl FileManager {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let response = ui
                         .add(
-                            egui::Slider::new(&mut self.settings.zoom, 0.65..=1.8)
+                            egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
                                 .show_value(false),
                         )
-                        .on_hover_text("Icon and tree zoom");
+                        .on_hover_text("Icon and tree zoom · up to 360%");
                     if response.changed() {
                         self.save();
                     }
@@ -820,6 +882,12 @@ impl FileManager {
                     }
                 });
             });
+            if self.compression_job.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Compressing to ZIP…");
+                });
+            }
             if let Some((completed, total)) = self.thumbnails.progress(context) {
                 let label = if completed == total {
                     "Thumbnails ready"
@@ -846,6 +914,9 @@ impl FileManager {
     }
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
+        if entry.directory {
+            response.dnd_set_drag_payload(entry.path.clone());
+        }
         if response.clicked() || response.secondary_clicked() {
             self.select(Some(entry.path.clone()), context);
         }
@@ -871,6 +942,17 @@ impl FileManager {
                     self.add_bookmark(entry.path.clone());
                     ui.close_menu();
                 }
+            }
+            if (entry.directory || files::image_file(&entry.path))
+                && ui
+                    .add_enabled(
+                        self.compression_job.is_none(),
+                        egui::Button::new("Compress to ZIP"),
+                    )
+                    .clicked()
+            {
+                self.compress(entry.path.clone(), context);
+                ui.close_menu();
             }
             if ui.button("Copy path").clicked() {
                 context.copy_text(entry.path.to_string_lossy().into_owned());
@@ -908,6 +990,7 @@ impl FileManager {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .id_salt("grid")
+            .drag_to_scroll(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show_rows(ui, height, rows, |ui, range| {
                 let start = (range.start * columns).min(self.entries.len());
@@ -919,7 +1002,11 @@ impl FileManager {
                         for entry in row {
                             let (rect, response) = ui.allocate_exact_size(
                                 Vec2::new(width, height),
-                                egui::Sense::click(),
+                                if entry.directory {
+                                    egui::Sense::click_and_drag()
+                                } else {
+                                    egui::Sense::click()
+                                },
                             );
                             let selected = self.selected.as_ref() == Some(&entry.path);
                             if selected || response.hovered() {
@@ -1012,7 +1099,15 @@ impl FileManager {
                     }
                 }
                 let content = egui::Rect::from_min_max(egui::pos2(left + 30.0, row.top()), row.max);
-                let response = ui.interact(content, ui.id().with("entry"), egui::Sense::click());
+                let response = ui.interact(
+                    content,
+                    ui.id().with("entry"),
+                    if entry.directory {
+                        egui::Sense::click_and_drag()
+                    } else {
+                        egui::Sense::click()
+                    },
+                );
                 paint_selection(
                     ui,
                     content,
@@ -1055,81 +1150,51 @@ impl FileManager {
         }
     }
 
-    fn preview_window(&mut self, context: &egui::Context) {
+    fn new_folder_window(&mut self, context: &egui::Context) {
         let mut open = true;
-        let mut step = 0;
-        if let Some(preview) = &mut self.preview {
-            egui::Window::new(format!(
-                "Image · {}",
-                preview
-                    .path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ))
-            .id(egui::Id::new("image-viewer"))
-            .open(&mut open)
-            .default_size(Vec2::new(800.0, 600.0))
-            .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    if arrow_button(ui, true, Vec2::new(-1.0, 0.0))
-                        .on_hover_text("Previous image")
-                        .clicked()
-                    {
-                        step = -1;
+        let mut create = false;
+        let mut cancel = false;
+        if let Some(folder) = &mut self.new_folder {
+            egui::Window::new("New folder")
+                .id(egui::Id::new("new-folder"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(context, |ui| {
+                    ui.label(folder.parent.to_string_lossy());
+                    let response = ui
+                        .add(egui::TextEdit::singleline(&mut folder.name).hint_text("Folder name"));
+                    if folder.focus {
+                        response.request_focus();
+                        folder.focus = false;
                     }
-                    if arrow_button(ui, true, Vec2::new(1.0, 0.0))
-                        .on_hover_text("Next image")
-                        .clicked()
-                    {
-                        step = 1;
+                    create = (response.has_focus() || response.lost_focus())
+                        && ui.input(|input| input.key_pressed(Key::Enter));
+                    if let Some(error) = &folder.error {
+                        ui.colored_label(Color32::LIGHT_RED, error);
                     }
-                    if ui.button("Fit").clicked() {
-                        preview.zoom = 1.0;
-                    }
-                    ui.add(egui::Slider::new(&mut preview.zoom, 0.25..=4.0).text("Zoom"));
-                    if preview.receiver.is_some() {
-                        ui.spinner();
-                        ui.label("Loading full image…");
-                    }
-                });
-                if let Some(texture) = &preview.texture {
-                    let available = ui.available_size().max(Vec2::splat(1.0));
-                    let dimensions = texture.size_vec2();
-                    let fit = (available.x / dimensions.x)
-                        .min(available.y / dimensions.y)
-                        .min(1.0);
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        ui.add(
-                            egui::Image::new(texture)
-                                .fit_to_exact_size(dimensions * fit * preview.zoom),
-                        );
+                    ui.horizontal(|ui| {
+                        create |= ui
+                            .add_enabled(
+                                !folder.name.trim().is_empty(),
+                                egui::Button::new("Create"),
+                            )
+                            .clicked();
+                        cancel = ui.button("Cancel").clicked();
                     });
-                } else if let Some(error) = &preview.error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
-                } else {
-                    ui.spinner();
-                    ui.label("Loading image…");
-                }
-            });
+                });
         }
-        if !open {
-            self.preview = None;
-        }
-        if step != 0 {
-            if let Some(preview) = &self.preview {
-                let parent = preview.path.parent().unwrap_or(Path::new("/"));
-                if let Ok(entries) = files::entries(parent, self.settings.hidden) {
-                    let images: Vec<_> = entries
-                        .into_iter()
-                        .filter(|entry| !entry.directory && files::image_file(&entry.path))
-                        .collect();
-                    if let Some(index) = images.iter().position(|entry| entry.path == preview.path)
-                    {
-                        let next =
-                            (index as isize + step).rem_euclid(images.len() as isize) as usize;
-                        self.open_preview(images[next].path.clone(), context);
+        if !open || cancel {
+            self.new_folder = None;
+        } else if create {
+            if let Some(folder) = &mut self.new_folder {
+                match files::create_directory(&folder.parent, &folder.name) {
+                    Ok(path) => {
+                        self.new_folder = None;
+                        self.refresh(context);
+                        self.select(Some(path), context);
                     }
+                    Err(error) => folder.error = Some(format!("Cannot create folder: {error}")),
                 }
             }
         }
@@ -1171,6 +1236,7 @@ impl eframe::App for FileManager {
                             egui::ScrollArea::both()
                                 .auto_shrink([false, false])
                                 .id_salt("tree")
+                                .drag_to_scroll(false)
                                 .show(ui, |ui| {
                                     self.tree(ui, self.entries.clone(), 0, context);
                                 });
@@ -1182,7 +1248,21 @@ impl eframe::App for FileManager {
                 }
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
-        self.preview_window(context);
+        self.new_folder_window(context);
+        if let Some(path) = egui::DragAndDrop::payload::<PathBuf>(context) {
+            context.set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(pointer) = context.pointer_hover_pos() {
+                egui::Area::new(egui::Id::new("dragged-folder"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(pointer + Vec2::new(12.0, 12.0))
+                    .interactable(false)
+                    .show(context, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                        });
+                    });
+            }
+        }
     }
 }
 

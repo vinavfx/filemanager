@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 const THUMBNAIL_EDGE: u32 = 192;
+const THUMBNAIL_VERSION: u32 = 2;
 const MEMORY_CAPACITY: usize = 512;
 
 pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
@@ -30,7 +31,7 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
                 let pixel = float.get_pixel(x, y);
                 let mut rgba = [0; 4];
                 for channel in 0..3 {
-                    let linear = 1.0 - 1.0 / (1.0 + pixel[channel].max(0.0));
+                    let linear = pixel[channel].clamp(0.0, 1.0);
                     let srgb = if linear <= 0.0031308 {
                         linear * 12.92
                     } else {
@@ -93,7 +94,9 @@ fn cached_thumbnail(
         return Ok(None);
     }
     let key = fingerprint(path)?;
-    let cached = directory.join(format!("{key:016x}-{THUMBNAIL_EDGE}.webp"));
+    let cached = directory.join(format!(
+        "{key:016x}-{THUMBNAIL_EDGE}-v{THUMBNAIL_VERSION}.webp"
+    ));
     if let Ok(image) = load(&cached, THUMBNAIL_EDGE) {
         return Ok(active().then_some(CachedImage {
             key,

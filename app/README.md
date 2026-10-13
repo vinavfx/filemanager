@@ -6,7 +6,7 @@ Gestor de archivos minimalista para Linux, escrito en Rust con egui. Todo está 
 ## Arranque
 
 Requiere Rust 1.89 o superior, un escritorio X11 o Wayland y OpenGL. Para abrir otros archivos utiliza `xdg-open`; la opción de terminal
-requiere Konsole.
+requiere Konsole. La compresión utiliza `zip`.
 
 Desde la raíz:
 
@@ -21,17 +21,21 @@ inglés.
 ## Uso
 
 - Un clic selecciona; doble clic o `Enter` abre.
-- Selecciona una carpeta y pulsa `Ctrl+D` para crear un marcador. Clic derecho sobre el marcador permite quitarlo.
+- Arrastra una carpeta desde `Grid` o `Tree` a la barra de marcadores, o selecciónala y pulsa `D` o `Ctrl+D`.
+- Los accesos a la carpeta personal y sus carpetas principales aparecen arriba, con iconos propios y rutas XDG. Clic derecho permite
+  quitarlos sin borrar carpetas; el menú `...` restaura los accesos predeterminados.
 - `Tree` muestra carpetas expandibles; ambas vistas, `Tree` y `Grid`, muestran miniaturas cargadas en segundo plano para las imágenes
-  visibles. El deslizador inferior cambia su tamaño.
+  visibles. El deslizador inferior cambia su tamaño hasta un 360 %.
 - `Ctrl+L` o `Edit` activa la dirección editable; `Path` vuelve a los botones de ruta. Admite rutas relativas y `~`. Al pulsar un directorio
   anterior se conservan los botones siguientes hasta abrir otra ruta.
-- Clic derecho en el espacio vacío permite abrir Konsole en el directorio actual, añadirlo a marcadores, copiar la ruta, actualizar y
-  alternar archivos ocultos. Las carpetas también permiten abrir Konsole desde su menú.
+- Clic derecho en el espacio vacío, sin seleccionar nada, permite abrir Konsole, crear una carpeta, añadir el directorio a marcadores,
+  comprimirlo, copiar su ruta, actualizar y alternar archivos ocultos.
+- El menú de carpetas e imágenes permite comprimirlas a ZIP en segundo plano. El archivo queda junto al original, sin sobrescribir archivos
+  existentes; los enlaces simbólicos se conservan como enlaces.
 - `Alt+←` y `Alt+→` recorren el historial; `Alt+↑` abre el directorio superior.
 - `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos.
-- Las imágenes se abren en un visor con zoom, ajuste y botones anterior/siguiente. `Esc` cierra el visor, cancela la edición o limpia la
-  selección.
+- El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
+  la creación de carpetas, la edición de la dirección o la selección.
 
 La barra de estado muestra el espacio disponible del sistema de archivos actual. Sin selección muestra espacio usado y total; al
 seleccionar, muestra el tamaño del archivo o la suma recursiva de los archivos de la carpeta, incluidos los ocultos. Este cálculo se ejecuta
@@ -46,9 +50,10 @@ Las miniaturas se guardan en WebP, con un máximo de 192 píxeles por lado, en `
 original. La barra inferior muestra el progreso. Al salir de una carpeta se cancelan sus solicitudes pendientes; una decodificación en curso
 puede terminar, pero su resultado se descarta sin guardarlo. Las miniaturas terminadas permanecen disponibles.
 
-El visor muestra inmediatamente la miniatura disponible mientras carga la imagen y conserva las cuatro últimas vistas en memoria. Admite
-PNG, JPEG, GIF (primer fotograma), WebP, BMP, TIFF, ICO y EXR, con conversión HDR para pantalla. Limita la memoria de decodificación a 256
-MiB y la vista a 4096 píxeles por lado. No modifica originales; no implementa operaciones de copia, movimiento ni borrado.
+Las miniaturas admiten PNG, JPEG, GIF (primer fotograma), WebP, BMP, TIFF, ICO y EXR. Los EXR se convierten de RGB lineal a sRGB, sin mapeo
+tonal, recortando al rango de pantalla; las miniaturas anteriores se regeneran. La memoria de decodificación se limita a 256 MiB. Para abrir
+EXR, la aplicación externa asociada también debe admitirlos. No se modifican los originales ni se implementan operaciones de copia,
+movimiento o borrado.
 
 ## Verificación
 

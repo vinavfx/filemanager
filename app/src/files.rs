@@ -54,6 +54,76 @@ pub fn image_file(path: &Path) -> bool {
         })
 }
 
+pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
+    let mut components = Path::new(name).components();
+    if name.trim().is_empty()
+        || !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+        || Path::new(name).file_name() != Some(std::ffi::OsStr::new(name))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Enter a single folder name without path separators.",
+        ));
+    }
+    let path = parent.join(name);
+    fs::create_dir(&path)?;
+    Ok(path)
+}
+
+pub fn compress(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Cannot compress the filesystem root.",
+        )
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "The source has no file name.")
+    })?;
+    for index in 0.. {
+        let mut archive_name = name.to_os_string();
+        if index > 0 {
+            archive_name.push(format!(" ({index})"));
+        }
+        archive_name.push(".zip");
+        let archive = parent.join(archive_name);
+        let output = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive)
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = std::process::Command::new("zip")
+            .args(["-q", "-r", "-y", "-", "--"])
+            .arg(name)
+            .current_dir(parent)
+            .stdout(std::process::Stdio::from(output))
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|child| child.wait_with_output())
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok(archive.clone())
+                } else {
+                    Err(io::Error::other(format!(
+                        "ZIP compression failed ({}): {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    )))
+                }
+            });
+        if result.is_err() {
+            fs::remove_file(&archive)?;
+        }
+        return result;
+    }
+    Err(io::Error::other("No available archive name."))
+}
+
 pub fn size_label(bytes: u64) -> String {
     let mut size = bytes as f64;
     let units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
