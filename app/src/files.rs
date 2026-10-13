@@ -54,6 +54,35 @@ pub fn image_file(path: &Path) -> bool {
         })
 }
 
+pub fn video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "mpg"
+                    | "mpeg"
+                    | "mpe"
+                    | "mp4"
+                    | "m4v"
+                    | "mov"
+                    | "mkv"
+                    | "avi"
+                    | "webm"
+                    | "ogv"
+                    | "mts"
+                    | "m2ts"
+                    | "ts"
+                    | "mxf"
+                    | "wmv"
+                    | "flv"
+                    | "vob"
+                    | "3gp"
+                    | "prores"
+            )
+        })
+}
+
 pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let mut components = Path::new(name).components();
     if name.trim().is_empty()

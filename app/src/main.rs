@@ -10,13 +10,31 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 const ACCENT: Color32 = Color32::from_rgb(112, 168, 157);
-const MUTED: Color32 = Color32::from_rgb(145, 151, 163);
+const MUTED: Color32 = Color32::from_rgb(125, 132, 143);
+
+fn apply_theme(context: &egui::Context, dark_mode: bool) {
+    let mut visuals = if dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    if dark_mode {
+        visuals.panel_fill = Color32::from_rgb(25, 28, 34);
+        visuals.window_fill = Color32::from_rgb(30, 34, 41);
+        visuals.selection.bg_fill = Color32::from_rgb(49, 76, 73);
+    } else {
+        visuals.selection.bg_fill = Color32::from_rgb(191, 222, 215);
+    }
+    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    context.set_visuals(visuals);
+}
 
 #[derive(Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum View {
     Tree,
     #[default]
     Grid,
+    Media,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -27,6 +45,7 @@ struct Settings {
     view: View,
     zoom: f32,
     hidden: bool,
+    dark_mode: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +56,7 @@ impl Default for Settings {
             view: View::Grid,
             zoom: 1.0,
             hidden: false,
+            dark_mode: true,
         }
     }
 }
@@ -82,11 +102,6 @@ struct FileManager {
 impl FileManager {
     fn new(context: &eframe::CreationContext<'_>) -> Self {
         let mut style = (*context.egui_ctx.style()).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = Color32::from_rgb(25, 28, 34);
-        style.visuals.window_fill = Color32::from_rgb(30, 34, 41);
-        style.visuals.selection.bg_fill = Color32::from_rgb(49, 76, 73);
-        style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
         style.spacing.item_spacing = Vec2::new(8.0, 8.0);
         style.spacing.button_padding = Vec2::new(10.0, 7.0);
         style.spacing.scroll = egui::style::ScrollStyle::solid();
@@ -111,6 +126,7 @@ impl FileManager {
                 Some(format!("Cannot read settings: {error}")),
             ),
         };
+        apply_theme(&context.egui_ctx, settings.dark_mode);
         let home_places = places::defaults(&home);
         settings
             .bookmarks
@@ -507,7 +523,7 @@ impl FileManager {
             let navigation =
                 egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
             let options =
-                egui::Rect::from_min_max(egui::pos2(row.right() - 192.0, row.top()), row.max);
+                egui::Rect::from_min_max(egui::pos2(row.right() - 336.0, row.top()), row.max);
             let address = egui::Rect::from_min_max(
                 egui::pos2(navigation.right() + 16.0, row.top()),
                 egui::pos2(options.left() - 16.0, row.bottom()),
@@ -569,13 +585,29 @@ impl FileManager {
                     egui::pos2(options.left() - 8.0, row.top() + 6.0),
                     egui::pos2(options.left() - 8.0, row.bottom() - 6.0),
                 ],
-                Stroke::new(1.0, Color32::from_rgb(54, 59, 68)),
+                ui.visuals().widgets.noninteractive.bg_stroke,
             );
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(options)
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
+                    if ui
+                        .add_sized(
+                            [64.0, 32.0],
+                            egui::Button::new(if self.settings.dark_mode {
+                                "Light"
+                            } else {
+                                "Dark"
+                            }),
+                        )
+                        .on_hover_text("Toggle light / dark theme")
+                        .clicked()
+                    {
+                        self.settings.dark_mode = !self.settings.dark_mode;
+                        apply_theme(context, self.settings.dark_mode);
+                        self.save();
+                    }
                     if ui
                         .add_sized(
                             [64.0, 32.0],
@@ -586,6 +618,17 @@ impl FileManager {
                     {
                         self.settings.hidden = !self.settings.hidden;
                         self.refresh(context);
+                        self.save();
+                    }
+                    if ui
+                        .add_sized(
+                            [64.0, 32.0],
+                            egui::Button::new("Media").selected(self.settings.view == View::Media),
+                        )
+                        .on_hover_text("Images and videos without gaps")
+                        .clicked()
+                    {
+                        self.settings.view = View::Media;
                         self.save();
                     }
                     if ui
@@ -961,92 +1004,216 @@ impl FileManager {
         });
     }
 
-    fn paint_thumbnail(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) -> bool {
-        if entry.directory || !files::image_file(&entry.path) || !ui.is_rect_visible(rect) {
+    fn paint_thumbnail(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        entry: &Entry,
+        response: &egui::Response,
+    ) -> bool {
+        let video = files::video_file(&entry.path);
+        if entry.directory
+            || (!files::image_file(&entry.path) && !video)
+            || !ui.is_rect_visible(rect)
+        {
             return false;
         }
-        let Some(texture) = self.thumbnails.get(&entry.path) else {
+        let progress = if video && response.hovered() {
+            response.hover_pos().map(|pointer| {
+                ((pointer.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0)
+            })
+        } else {
+            None
+        };
+        let poster = if video { images::VIDEO_POSTER } else { 0 };
+        let frame = progress.map_or(poster, |progress| {
+            ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
+        });
+        if video && frame != poster {
+            self.thumbnails.get(&entry.path, poster);
+        }
+        let Some(texture) = self.thumbnails.get(&entry.path, frame) else {
             return false;
         };
         let dimensions = texture.size_vec2();
-        let scale = (rect.width() / dimensions.x).min(rect.height() / dimensions.y);
+        let media = self.settings.view == View::Media;
+        let scale = if media {
+            (rect.width() / dimensions.x).max(rect.height() / dimensions.y)
+        } else {
+            (rect.width() / dimensions.x).min(rect.height() / dimensions.y)
+        };
+        let image_rect = if media {
+            rect
+        } else {
+            egui::Rect::from_center_size(rect.center(), dimensions * scale)
+        };
+        let uv_size = image_rect.size() / (dimensions * scale);
         ui.painter().image(
             texture.id(),
-            egui::Rect::from_center_size(rect.center(), dimensions * scale),
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            image_rect,
+            egui::Rect::from_center_size(egui::pos2(0.5, 0.5), uv_size),
             Color32::WHITE,
         );
+        if let Some(progress) = progress {
+            let left = egui::pos2(
+                rect.left(),
+                if media {
+                    rect.top() + 2.0
+                } else {
+                    rect.bottom() + 2.0
+                },
+            );
+            let right = egui::pos2(rect.right(), left.y);
+            ui.painter()
+                .line_segment([left, right], Stroke::new(2.0, MUTED));
+            ui.painter().line_segment(
+                [left, egui::pos2(left.x + rect.width() * progress, left.y)],
+                Stroke::new(2.0, ACCENT),
+            );
+        }
         true
     }
 
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        let width = 116.0 * self.settings.zoom;
-        let height = 126.0 * self.settings.zoom;
-        let columns = ((ui.available_width() - ui.spacing().scroll.allocated_width() - 16.0 + 8.0)
-            / (width + 8.0))
-            .floor()
-            .max(1.0) as usize;
-        let rows = self.entries.len().div_ceil(columns);
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .id_salt("grid")
-            .drag_to_scroll(false)
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .show_rows(ui, height, rows, |ui, range| {
-                let start = (range.start * columns).min(self.entries.len());
-                let end = (range.end * columns).min(self.entries.len());
-                let visible = self.entries[start..end].to_vec();
-                for row in visible.chunks(columns) {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        for entry in row {
-                            let (rect, response) = ui.allocate_exact_size(
-                                Vec2::new(width, height),
-                                if entry.directory {
-                                    egui::Sense::click_and_drag()
-                                } else {
-                                    egui::Sense::click()
-                                },
-                            );
-                            let selected = self.selected.as_ref() == Some(&entry.path);
-                            if selected || response.hovered() {
-                                ui.painter().rect_filled(
-                                    rect.shrink(2.0),
-                                    8.0,
-                                    if selected {
-                                        Color32::from_rgb(43, 66, 64)
+        let media = self.settings.view == View::Media;
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                !media
+                    || (!entry.directory
+                        && (files::image_file(&entry.path) || files::video_file(&entry.path)))
+            })
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("No images or videos in this folder").color(MUTED));
+            });
+            return;
+        }
+        let available = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+        let target_width = if media { 192.0 } else { 116.0 } * self.settings.zoom;
+        let columns = if media {
+            (available / target_width).floor().max(1.0) as usize
+        } else {
+            ((available - 16.0 + 8.0) / (target_width + 8.0))
+                .floor()
+                .max(1.0) as usize
+        };
+        let width = if media {
+            available / columns as f32
+        } else {
+            target_width
+        };
+        let height = if media {
+            width
+        } else {
+            126.0 * self.settings.zoom
+        };
+        let rows = entries.len().div_ceil(columns);
+        ui.scope(|ui| {
+            if media {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .id_salt(if media { "media" } else { "grid" })
+                .drag_to_scroll(false)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show_rows(ui, height, rows, |ui, range| {
+                    let start = (range.start * columns).min(entries.len());
+                    let end = (range.end * columns).min(entries.len());
+                    for row in entries[start..end].chunks(columns) {
+                        ui.horizontal(|ui| {
+                            if !media {
+                                ui.add_space(8.0);
+                            }
+                            for entry in row {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(width, height),
+                                    if entry.directory {
+                                        egui::Sense::click_and_drag()
                                     } else {
-                                        Color32::from_rgb(35, 39, 47)
+                                        egui::Sense::click()
                                     },
                                 );
+                                let selected = self.selected.as_ref() == Some(&entry.path);
+                                let highlighted = selected || response.hovered();
+                                if media || highlighted {
+                                    ui.painter().rect_filled(
+                                        if media { rect } else { rect.shrink(2.0) },
+                                        if media { 0.0 } else { 8.0 },
+                                        if media {
+                                            Color32::BLACK
+                                        } else if selected {
+                                            ui.visuals().selection.bg_fill
+                                        } else {
+                                            ui.visuals().widgets.hovered.weak_bg_fill
+                                        },
+                                    );
+                                }
+                                let icon_rect = if media {
+                                    rect
+                                } else {
+                                    egui::Rect::from_center_size(
+                                        rect.center_top() + Vec2::new(0.0, height * 0.34),
+                                        Vec2::splat(64.0 * self.settings.zoom),
+                                    )
+                                };
+                                if !self.paint_thumbnail(ui, icon_rect, entry, &response) {
+                                    paint_icon(
+                                        ui,
+                                        icon_rect.shrink(if media {
+                                            width * 0.3
+                                        } else {
+                                            8.0 * self.settings.zoom
+                                        }),
+                                        entry,
+                                    );
+                                }
+                                if media && highlighted {
+                                    let label = egui::Rect::from_min_max(
+                                        egui::pos2(rect.left(), rect.bottom() - 26.0),
+                                        rect.max,
+                                    );
+                                    ui.painter()
+                                        .rect_filled(label, 0.0, ui.visuals().panel_fill);
+                                    paint_name(
+                                        ui,
+                                        &entry.name,
+                                        egui::pos2(label.left() + 6.0, label.center().y),
+                                        label.width() - 12.0,
+                                        12.0,
+                                    );
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(1.0),
+                                        0.0,
+                                        Stroke::new(2.0, ACCENT),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                } else if !media {
+                                    let mut job = egui::text::LayoutJob::simple(
+                                        entry.name.clone(),
+                                        egui::FontId::proportional(12.0),
+                                        ui.visuals().text_color(),
+                                        width - 14.0,
+                                    );
+                                    job.wrap.max_rows = 2;
+                                    job.halign = egui::Align::Center;
+                                    let galley = ui.painter().layout_job(job);
+                                    ui.painter().galley(
+                                        egui::pos2(rect.center().x, rect.top() + height * 0.66),
+                                        galley,
+                                        ui.visuals().text_color(),
+                                    );
+                                }
+                                self.entry_response(response, entry, context);
                             }
-                            let icon_rect = egui::Rect::from_center_size(
-                                rect.center_top() + Vec2::new(0.0, height * 0.34),
-                                Vec2::splat(64.0 * self.settings.zoom),
-                            );
-                            if !self.paint_thumbnail(ui, icon_rect, entry) {
-                                paint_icon(ui, icon_rect.shrink(8.0 * self.settings.zoom), entry);
-                            }
-                            let font = egui::FontId::proportional(12.0 * self.settings.zoom);
-                            let mut job = egui::text::LayoutJob::simple(
-                                entry.name.clone(),
-                                font,
-                                ui.visuals().text_color(),
-                                width - 14.0,
-                            );
-                            job.wrap.max_rows = 2;
-                            job.halign = egui::Align::Center;
-                            let galley = ui.painter().layout_job(job);
-                            ui.painter().galley(
-                                egui::pos2(rect.center().x, rect.top() + height * 0.66),
-                                galley,
-                                ui.visuals().text_color(),
-                            );
-                            self.entry_response(response, entry, context);
-                        }
-                    });
-                }
-            });
+                        });
+                    }
+                });
+        });
     }
 
     fn tree(
@@ -1119,7 +1286,7 @@ impl FileManager {
                     egui::pos2(content.left() + edge / 2.0 + 6.0, row.center().y),
                     Vec2::splat(edge),
                 );
-                if !self.paint_thumbnail(ui, icon, &entry) {
+                if !self.paint_thumbnail(ui, icon, &entry, &response) {
                     paint_icon(ui, icon, &entry);
                 }
                 let name_left = icon.right() + 10.0;
@@ -1129,7 +1296,7 @@ impl FileManager {
                     &entry.name,
                     egui::pos2(name_left, row.center().y),
                     (row.right() - name_left - size_width - 8.0).max(1.0),
-                    14.0 * self.settings.zoom,
+                    14.0,
                 );
                 if !entry.directory {
                     ui.painter().text(
@@ -1171,7 +1338,7 @@ impl FileManager {
                     create = (response.has_focus() || response.lost_focus())
                         && ui.input(|input| input.key_pressed(Key::Enter));
                     if let Some(error) = &folder.error {
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                        ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                     ui.horizontal(|ui| {
                         create |= ui
@@ -1218,7 +1385,7 @@ impl eframe::App for FileManager {
                 );
                 if let Some(message) = self.message.clone() {
                     ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(Color32::from_rgb(229, 177, 132), message);
+                        ui.colored_label(ui.visuals().warn_fg_color, message);
                         if ui.small_button("Dismiss").clicked() {
                             self.message = None;
                         }
@@ -1231,7 +1398,7 @@ impl eframe::App for FileManager {
                     });
                 } else {
                     match self.settings.view {
-                        View::Grid => self.grid(ui, context),
+                        View::Grid | View::Media => self.grid(ui, context),
                         View::Tree => {
                             egui::ScrollArea::both()
                                 .auto_shrink([false, false])
@@ -1300,9 +1467,9 @@ fn paint_selection(ui: &egui::Ui, rect: egui::Rect, selected: bool, hovered: boo
             rect.shrink(2.0),
             5.0,
             if selected {
-                Color32::from_rgb(43, 66, 64)
+                ui.visuals().selection.bg_fill
             } else {
-                Color32::from_rgb(35, 39, 47)
+                ui.visuals().widgets.hovered.weak_bg_fill
             },
         );
     }
