@@ -6,7 +6,8 @@ Gestor de archivos minimalista para Linux, escrito en Rust con egui. Todo está 
 ## Arranque
 
 Requiere Rust 1.89 o superior, un escritorio X11 o Wayland y OpenGL. Para abrir otros archivos utiliza `xdg-open`; la opción de terminal
-requiere Konsole. La compresión utiliza `zip`. Las previsualizaciones de vídeo requieren `ffmpeg` y `ffprobe`.
+requiere Konsole. La búsqueda utiliza `fzf`, disponible en `PATH`, sin mostrar su interfaz. La compresión utiliza `zip`. Las
+previsualizaciones de vídeo requieren `ffmpeg` y `ffprobe`.
 
 Desde la raíz:
 
@@ -41,6 +42,16 @@ inglés.
   cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los grupos. La barra
   dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado, indica la posición
   de la muestra mostrada, incluso mientras se carga otra.
+- La lupa de la barra superior o `Ctrl+F` convierte el campo de direcciones en un buscador recursivo de nombres y rutas. Utiliza el motor de
+  fzf con su coincidencia difusa, ordenación y sintaxis habituales: `'texto` busca literalmente, `^texto` por prefijo, `texto$` por sufijo,
+  `!texto` excluye y `|` separa alternativas. Los términos separados por espacios se combinan. No se cargan `FZF_DEFAULT_OPTS` ni
+  `FZF_DEFAULT_OPTS_FILE`, para evitar opciones de terminal incompatibles con la integración. El recorrido y la búsqueda se ejecutan en
+  segundo plano; los resultados aparecen progresivamente y las consultas anteriores se cancelan. Se muestran los mejores 1000 resultados y
+  el número total de coincidencias. `↑`/`↓` selecciona y `Enter` o doble clic abre; `Esc` o la lupa restaura la dirección. Se respeta
+  `Hidden`, no se recorren enlaces simbólicos y se indican los elementos inaccesibles. La búsqueda muestra archivos individuales, aunque
+  esté activado `Sequences`. `F5` vuelve a recorrer las carpetas. Se reutiliza el índice mientras la búsqueda está abierta; el tiempo total
+  incluye el recorrido del disco, el proceso de fzf y la interfaz, por lo que no se garantiza la misma latencia que fzf sobre una lista ya
+  cargada.
 - `Ctrl+L` o `Edit` activa la dirección editable; `Path` vuelve a los botones de ruta. Admite rutas relativas y `~`. Al pulsar un directorio
   anterior se conservan los botones siguientes hasta abrir otra ruta.
 - Clic derecho en el espacio vacío, sin seleccionar nada, permite abrir Konsole, crear una carpeta, añadir el directorio a marcadores,

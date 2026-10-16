@@ -3,6 +3,7 @@ mod files;
 mod images;
 mod layout;
 mod places;
+mod search;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
 use files::{Entry, SizeJob, SizeResult};
@@ -105,6 +106,7 @@ struct FileManager {
     selected: Option<PathBuf>,
     editing_path: bool,
     focus_path: bool,
+    search: Option<search::Search>,
     address: String,
     expanded: HashSet<PathBuf>,
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
@@ -177,6 +179,7 @@ impl FileManager {
             selected: None,
             editing_path: false,
             focus_path: false,
+            search: None,
             expanded: HashSet::new(),
             tree_cache: HashMap::new(),
             size_job: None,
@@ -226,6 +229,13 @@ impl FileManager {
         self.thumbnails.cancel();
         self.select(None, context);
         self.refresh_disk(context);
+        if let Some(search) = self.search.take() {
+            let mut replacement =
+                search::Search::new(self.current.clone(), self.settings.hidden, context.clone());
+            replacement.query.clone_from(&search.query);
+            replacement.submit();
+            self.search = Some(replacement);
+        }
     }
 
     fn refresh_disk(&mut self, context: &egui::Context) {
@@ -254,6 +264,7 @@ impl FileManager {
                 .map(|entries| (path, entries))
         }) {
             Ok((path, entries)) => {
+                self.search = None;
                 self.thumbnails.cancel();
                 self.new_folder = None;
                 if path != self.current {
@@ -292,6 +303,7 @@ impl FileManager {
             let path = self.history[next].clone();
             match files::entries(&path, self.settings.hidden, self.settings.sequences) {
                 Ok(entries) => {
+                    self.search = None;
                     self.thumbnails.cancel();
                     self.new_folder = None;
                     self.position = next;
@@ -504,6 +516,9 @@ impl FileManager {
     }
 
     fn poll(&mut self, context: &egui::Context) {
+        if let Some(search) = &mut self.search {
+            search.poll();
+        }
         self.thumbnails.poll(context);
         if let Some(job) = &self.size_job {
             if let Ok(result) = job.receiver.try_recv() {
@@ -556,7 +571,11 @@ impl FileManager {
                 self.save();
             }
         }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::F)) {
+            self.start_search(context);
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
+            self.search = None;
             self.address = self.current.to_string_lossy().into_owned();
             self.editing_path = true;
             self.focus_path = true;
@@ -564,11 +583,27 @@ impl FileManager {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
             if self.new_folder.is_some() {
                 self.new_folder = None;
+            } else if self.search.is_some() {
+                self.search = None;
+                context.memory_mut(|memory| memory.surrender_focus(egui::Id::new("search-input")));
             } else if self.editing_path {
                 self.editing_path = false;
             } else {
                 self.select(None, context);
             }
+        }
+        if self.search.is_some() && self.new_folder.is_none() {
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5))
+                || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R))
+            {
+                self.refresh(context);
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
+                self.settings.hidden = !self.settings.hidden;
+                self.refresh(context);
+                self.save();
+            }
+            return;
         }
         if self.new_folder.is_some() || context.wants_keyboard_input() {
             return;
@@ -616,7 +651,7 @@ impl FileManager {
             let navigation =
                 egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
             let options =
-                egui::Rect::from_min_max(egui::pos2(row.right() - 356.0, row.top()), row.max);
+                egui::Rect::from_min_max(egui::pos2(row.right() - 396.0, row.top()), row.max);
             let address = egui::Rect::from_min_max(
                 egui::pos2(navigation.right() + 16.0, row.top()),
                 egui::pos2(options.left() - 16.0, row.bottom()),
@@ -658,6 +693,7 @@ impl FileManager {
                         .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
                         .clicked()
                     {
+                        self.search = None;
                         self.editing_path = !self.editing_path;
                         self.focus_path = self.editing_path;
                         self.address = self.current.to_string_lossy().into_owned();
@@ -719,6 +755,13 @@ impl FileManager {
                         self.refresh(context);
                         self.save();
                     }
+                    if search_button(ui, self.search.is_some()).clicked() {
+                        if self.search.is_some() {
+                            self.search = None;
+                        } else {
+                            self.start_search(context);
+                        }
+                    }
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -734,8 +777,55 @@ impl FileManager {
         });
     }
 
+    fn start_search(&mut self, context: &egui::Context) {
+        self.editing_path = false;
+        if let Some(search) = &mut self.search {
+            search.focus = true;
+        } else {
+            self.search = Some(search::Search::new(
+                self.current.clone(),
+                self.settings.hidden,
+                context.clone(),
+            ));
+        }
+    }
+
     fn address_bar(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        if self.editing_path {
+        if let Some(search) = &mut self.search {
+            let response = ui.add_sized(
+                [ui.available_width(), 32.0],
+                egui::TextEdit::singleline(&mut search.query)
+                    .id(egui::Id::new("search-input"))
+                    .vertical_align(egui::Align::Center)
+                    .hint_text("Search this folder and subfolders…"),
+            ).on_hover_text("Fuzzy search · 'exact · ^prefix · suffix$ · !exclude · term | term · Esc to close");
+            if search.focus {
+                response.request_focus();
+                search.focus = false;
+            }
+            if response.changed() {
+                search.submit();
+            }
+            let mut open = None;
+            if let Some(update) = &search.update {
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
+                    search.cursor = (search.cursor + 1).min(update.hits.len().saturating_sub(1));
+                    search.reveal_cursor = true;
+                }
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::ArrowUp)) {
+                    search.cursor = search.cursor.saturating_sub(1);
+                    search.reveal_cursor = true;
+                }
+                if self.new_folder.is_none()
+                    && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter))
+                {
+                    open = update.hits.get(search.cursor).map(|hit| hit.path.clone());
+                }
+            }
+            if let Some(path) = open {
+                self.open(path, context);
+            }
+        } else if self.editing_path {
             let response = ui.add_sized(
                 [ui.available_width(), 32.0],
                 egui::TextEdit::singleline(&mut self.address)
@@ -1215,6 +1305,89 @@ impl FileManager {
             );
         }
         true
+    }
+
+    fn search_results(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let mut open = None;
+        let mut select = None;
+        if let Some(search) = &mut self.search {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if search.busy {
+                    ui.spinner();
+                }
+                if let Some(update) = &search.update {
+                    ui.label(format!(
+                        "{} matches · {} indexed",
+                        update.matched, update.indexed
+                    ));
+                    if update.matched > update.hits.len() {
+                        ui.label(format!("Showing the best {}", update.hits.len()));
+                    }
+                    if update.skipped > 0 {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            format!("{} unreadable items skipped", update.skipped),
+                        );
+                    }
+                } else {
+                    ui.label("Searching…");
+                }
+            });
+            ui.separator();
+            if let Some(update) = &search.update {
+                if let Some(error) = &update.error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                } else if update.hits.is_empty() && !search.busy {
+                    ui.label("No matches");
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("search-results")
+                    .auto_shrink([false, false])
+                    .show_rows(ui, 32.0, update.hits.len(), |ui, range| {
+                        if search.reveal_cursor && !update.hits.is_empty() {
+                            let height = 32.0 + ui.spacing().item_spacing.y;
+                            let top = ui.max_rect().top()
+                                + (search.cursor as f32 - range.start as f32) * height;
+                            ui.scroll_to_rect(
+                                egui::Rect::from_min_size(
+                                    egui::pos2(ui.max_rect().left(), top),
+                                    Vec2::new(ui.available_width(), 32.0),
+                                ),
+                                None,
+                            );
+                            search.reveal_cursor = false;
+                        }
+                        for index in range {
+                            let hit = &update.hits[index];
+                            let label = if hit.directory {
+                                format!("{}/", hit.label)
+                            } else {
+                                hit.label.clone()
+                            };
+                            let response = ui
+                                .add_sized(
+                                    [ui.available_width(), 32.0],
+                                    egui::Button::new(label).selected(search.cursor == index),
+                                )
+                                .on_hover_text(hit.path.to_string_lossy());
+                            if response.clicked() {
+                                search.cursor = index;
+                                select = Some(hit.path.clone());
+                            }
+                            if response.double_clicked() {
+                                open = Some(hit.path.clone());
+                            }
+                        }
+                    });
+            }
+        }
+        if let Some(path) = select {
+            self.select(Some(path), context);
+        }
+        if let Some(path) = open {
+            self.open(path, context);
+        }
     }
 
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
@@ -1746,7 +1919,9 @@ impl eframe::App for FileManager {
                     });
                     ui.separator();
                 }
-                if self.entries.is_empty() {
+                if self.search.is_some() {
+                    self.search_results(ui, context);
+                } else if self.entries.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(RichText::new("This folder is empty").color(MUTED));
                     });
@@ -1840,6 +2015,18 @@ fn view_button(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response 
         View::Grid => "Grid",
         View::Media => "Media",
     })
+}
+
+fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").selected(selected));
+    let center = response.rect.center() - Vec2::splat(2.0);
+    let stroke = Stroke::new(1.7, ui.visuals().text_color());
+    ui.painter().circle_stroke(center, 6.0, stroke);
+    ui.painter().line_segment(
+        [center + Vec2::splat(4.5), center + Vec2::splat(10.0)],
+        stroke,
+    );
+    response.on_hover_text("Search · Ctrl+F")
 }
 
 fn theme_button(ui: &mut egui::Ui, dark_mode: bool) -> egui::Response {
