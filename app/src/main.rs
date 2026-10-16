@@ -104,6 +104,12 @@ struct FileManager {
     history: Vec<PathBuf>,
     position: usize,
     selected: Option<PathBuf>,
+    selection: HashSet<PathBuf>,
+    selection_anchor: Option<PathBuf>,
+    visible_paths: Vec<PathBuf>,
+    scroll_to_selection: bool,
+    page_scroll_delta: f32,
+    pending_g: bool,
     editing_path: bool,
     focus_path: bool,
     search: Option<search::Search>,
@@ -177,6 +183,12 @@ impl FileManager {
             entries: Vec::new(),
             position: 0,
             selected: None,
+            selection: HashSet::new(),
+            selection_anchor: None,
+            visible_paths: Vec::new(),
+            scroll_to_selection: false,
+            page_scroll_delta: 0.0,
+            pending_g: false,
             editing_path: false,
             focus_path: false,
             search: None,
@@ -324,6 +336,7 @@ impl FileManager {
     }
 
     fn select(&mut self, path: Option<PathBuf>, context: &egui::Context) {
+        self.pending_g = false;
         self.size_job = None;
         self.selection_size = None;
         if let Some(path) = &path {
@@ -351,7 +364,34 @@ impl FileManager {
                 }
             }
         }
+        self.selection = path.iter().cloned().collect();
+        self.selection_anchor = path.clone();
         self.selected = path;
+    }
+
+    fn select_entry(&mut self, path: PathBuf, context: &egui::Context) {
+        if !context.input(|input| input.modifiers.shift) {
+            self.select(Some(path), context);
+            return;
+        }
+        let anchor = self
+            .selection_anchor
+            .clone()
+            .unwrap_or_else(|| path.clone());
+        let start = self.visible_paths.iter().position(|item| item == &anchor);
+        let end = self.visible_paths.iter().position(|item| item == &path);
+        self.select(Some(path), context);
+        if let (Some(start), Some(end)) = (start, end) {
+            self.selection = self.visible_paths[start.min(end)..=start.max(end)]
+                .iter()
+                .cloned()
+                .collect();
+            self.selection_anchor = Some(anchor);
+            if self.selection.len() > 1 {
+                self.size_job = None;
+                self.selection_size = None;
+            }
+        }
     }
 
     fn add_bookmark(&mut self, path: PathBuf) {
@@ -554,6 +594,17 @@ impl FileManager {
     }
 
     fn shortcuts(&mut self, context: &egui::Context) {
+        if context.input(|input| {
+            input.events.iter().any(|event| match event {
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } => *key != Key::G,
+                egui::Event::PointerButton { pressed: true, .. } => true,
+                _ => false,
+            })
+        }) {
+            self.pending_g = false;
+        }
         let scroll = context.input_mut(|input| {
             if input.modifiers.ctrl {
                 let scroll = input.raw_scroll_delta.y;
@@ -571,10 +622,14 @@ impl FileManager {
                 self.save();
             }
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::F)) {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::F))
+            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::P))
+        {
             self.start_search(context);
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
+        if context.input_mut(|input| {
+            input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::L)
+        }) {
             self.search = None;
             self.address = self.current.to_string_lossy().into_owned();
             self.editing_path = true;
@@ -598,25 +653,29 @@ impl FileManager {
             {
                 self.refresh(context);
             }
-            if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
+            if context.input_mut(|input| {
+                input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::H)
+            }) {
                 self.settings.hidden = !self.settings.hidden;
                 self.refresh(context);
                 self.save();
             }
             return;
         }
-        if self.new_folder.is_some() || context.wants_keyboard_input() {
+        if self.new_folder.is_some() || self.text_input_focused(context) {
             return;
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::D))
-            || context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D))
-        {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
             self.bookmark();
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft)) {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft))
+            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::O))
+        {
             self.history_step(false, context);
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowRight)) {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowRight))
+            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::I))
+        {
             self.history_step(true, context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowUp)) {
@@ -629,10 +688,38 @@ impl FileManager {
         {
             self.refresh(context);
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
+        if context.input_mut(|input| {
+            input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::H)
+        }) {
             self.settings.hidden = !self.settings.hidden;
             self.refresh(context);
             self.save();
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
+            if let Some(parent) = self.current.parent() {
+                self.navigate_breadcrumb(parent.to_path_buf(), context);
+            }
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
+            let next = self
+                .breadcrumb_path
+                .ancestors()
+                .find(|path| path.parent() == Some(self.current.as_path()))
+                .map(Path::to_path_buf);
+            if let Some(next) = next {
+                self.navigate_breadcrumb(next, context);
+            }
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::O)) {
+            if let Some(path) = self.selected.clone() {
+                if self.settings.view == View::Tree && path.is_dir() && !path.is_symlink() {
+                    if !self.expanded.remove(&path) {
+                        self.expand_directory(&path);
+                    }
+                } else {
+                    self.open(path, context);
+                }
+            }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter))
             || context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Space))
@@ -640,6 +727,201 @@ impl FileManager {
             if let Some(path) = self.selected.clone() {
                 self.open(path, context);
             }
+        }
+    }
+
+    fn text_input_focused(&self, context: &egui::Context) -> bool {
+        self.editing_path
+            || context
+                .memory(|memory| memory.focused())
+                .is_some_and(|id| egui::text_edit::TextEditState::load(context, id).is_some())
+    }
+
+    fn navigate_items(
+        &mut self,
+        items: &[(Entry, egui::Pos2)],
+        viewport_height: f32,
+        context: &egui::Context,
+    ) {
+        self.visible_paths = items.iter().map(|(entry, _)| entry.path.clone()).collect();
+        if self.search.is_some()
+            || self.new_folder.is_some()
+            || self.text_input_focused(context)
+            || items.is_empty()
+        {
+            self.pending_g = false;
+            return;
+        }
+        let mut jump = None;
+        context.input_mut(|input| {
+            input.events.retain(|event| {
+                if let egui::Event::Key {
+                    key: Key::G,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.matches_logically(egui::Modifiers::SHIFT) {
+                        self.pending_g = false;
+                        if !repeat {
+                            jump = Some(items.len() - 1);
+                        }
+                        return false;
+                    }
+                    if modifiers.matches_logically(egui::Modifiers::NONE) {
+                        if !repeat {
+                            if self.pending_g {
+                                jump = Some(0);
+                            }
+                            self.pending_g = !self.pending_g;
+                        }
+                        return false;
+                    }
+                    self.pending_g = false;
+                }
+                true
+            });
+        });
+        if let Some(index) = jump {
+            self.select(Some(items[index].0.path.clone()), context);
+            self.scroll_to_selection = true;
+            return;
+        }
+        let page_direction = context.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::CTRL, Key::D) {
+                1.0
+            } else if input.consume_key(egui::Modifiers::CTRL, Key::U) {
+                -1.0
+            } else {
+                0.0
+            }
+        });
+        if page_direction != 0.0 {
+            self.page_scroll_delta = page_direction * viewport_height / 2.0;
+            let position = items
+                .iter()
+                .find(|(entry, _)| self.selected.as_ref() == Some(&entry.path))
+                .unwrap_or(&items[0])
+                .1;
+            let target_y = position.y + self.page_scroll_delta;
+            let target = items
+                .iter()
+                .filter(|(_, candidate)| (candidate.y - position.y) * page_direction >= 0.0)
+                .min_by(|(_, a), (_, b)| {
+                    (a.y - target_y)
+                        .abs()
+                        .total_cmp(&(b.y - target_y).abs())
+                        .then_with(|| {
+                            (a.x - position.x)
+                                .abs()
+                                .total_cmp(&(b.x - position.x).abs())
+                        })
+                });
+            if let Some((entry, _)) = target {
+                self.select_entry(entry.path.clone(), context);
+            }
+            self.scroll_to_selection = false;
+            return;
+        }
+        let Some((key, _)) = [
+            (Key::ArrowUp, Key::K),
+            (Key::ArrowDown, Key::J),
+            (Key::ArrowLeft, Key::H),
+            (Key::ArrowRight, Key::L),
+        ]
+        .into_iter()
+        .find(|(arrow, vim)| {
+            context.input_mut(|input| {
+                let modifiers = if input.modifiers.shift {
+                    egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::NONE
+                };
+                input.consume_key(modifiers, *arrow) || input.consume_key(modifiers, *vim)
+            })
+        }) else {
+            return;
+        };
+        let current = items
+            .iter()
+            .position(|(entry, _)| self.selected.as_ref() == Some(&entry.path));
+        let target = if let Some(index) = current {
+            let (entry, position) = &items[index];
+            if self.settings.view == View::Tree {
+                match key {
+                    Key::ArrowRight if entry.directory && !entry.symlink => {
+                        if !self.expanded.contains(&entry.path) {
+                            self.expand_directory(&entry.path);
+                            return;
+                        }
+                        items
+                            .get(index + 1)
+                            .filter(|(child, _)| child.path.parent() == Some(entry.path.as_path()))
+                    }
+                    Key::ArrowLeft => {
+                        if self.expanded.remove(&entry.path) {
+                            return;
+                        }
+                        items
+                            .iter()
+                            .find(|(parent, _)| entry.path.parent() == Some(parent.path.as_path()))
+                    }
+                    Key::ArrowUp => index.checked_sub(1).and_then(|index| items.get(index)),
+                    Key::ArrowDown => items.get(index + 1),
+                    _ => None,
+                }
+            } else {
+                items
+                    .iter()
+                    .filter(|(_, candidate)| match key {
+                        Key::ArrowUp => candidate.y < position.y,
+                        Key::ArrowDown => candidate.y > position.y,
+                        Key::ArrowLeft => candidate.y == position.y && candidate.x < position.x,
+                        Key::ArrowRight => candidate.y == position.y && candidate.x > position.x,
+                        _ => false,
+                    })
+                    .min_by(|(_, a), (_, b)| {
+                        (a.y - position.y)
+                            .abs()
+                            .total_cmp(&(b.y - position.y).abs())
+                            .then_with(|| {
+                                (a.x - position.x)
+                                    .abs()
+                                    .total_cmp(&(b.x - position.x).abs())
+                            })
+                    })
+            }
+        } else if matches!(key, Key::ArrowUp | Key::ArrowLeft) {
+            items.last()
+        } else {
+            items.first()
+        };
+        if let Some((entry, _)) = target {
+            self.select_entry(entry.path.clone(), context);
+            self.scroll_to_selection = true;
+        }
+    }
+
+    fn entry_scroll_area(&mut self, ui: &egui::Ui, id: &str) -> egui::ScrollArea {
+        let mut scroll = egui::ScrollArea::vertical().id_salt(id);
+        let delta = std::mem::take(&mut self.page_scroll_delta);
+        if delta != 0.0 {
+            let offset = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(id))
+                .map_or(0.0, |state| state.offset.y);
+            scroll = scroll.vertical_scroll_offset((offset + delta).max(0.0));
+        }
+        scroll
+    }
+
+    fn expand_directory(&mut self, path: &Path) {
+        match files::entries(path, self.settings.hidden, self.settings.sequences) {
+            Ok(children) => {
+                self.tree_cache.insert(path.to_path_buf(), children);
+                self.expanded.insert(path.to_path_buf());
+            }
+            Err(error) => self.message = Some(format!("Cannot expand directory: {error}")),
         }
     }
 
@@ -690,7 +972,7 @@ impl FileManager {
                             [48.0, 32.0],
                             egui::Button::new("Edit").selected(self.editing_path),
                         )
-                        .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
+                        .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+Shift+L")
                         .clicked()
                     {
                         self.search = None;
@@ -731,7 +1013,7 @@ impl FileManager {
                             [64.0, 32.0],
                             egui::Button::new("Hidden").selected(self.settings.hidden),
                         )
-                        .on_hover_text("Show hidden files · Ctrl+H")
+                        .on_hover_text("Show hidden files · Ctrl+Shift+H")
                         .clicked()
                     {
                         self.settings.hidden = !self.settings.hidden;
@@ -977,7 +1259,7 @@ impl FileManager {
                     ui.label(RichText::new("BOOKMARKS").size(11.0).color(MUTED));
                     if ui
                         .small_button("+")
-                        .on_hover_text("Bookmark selected or current folder · D / Ctrl+D")
+                        .on_hover_text("Bookmark selected or current folder · D")
                         .clicked()
                     {
                         self.bookmark();
@@ -1056,7 +1338,11 @@ impl FileManager {
                         .color(MUTED),
                 );
                 ui.separator();
-                if self.selected.is_some() {
+                if self.selection.len() > 1 {
+                    ui.label(
+                        RichText::new(format!("{} selected", self.selection.len())).size(12.0),
+                    );
+                } else if self.selected.is_some() {
                     if let Some(size) = &self.selection_size {
                         let suffix = if size.incomplete {
                             " (partial: unreadable items)"
@@ -1163,10 +1449,12 @@ impl FileManager {
         if entry.directory {
             response.dnd_set_drag_payload(entry.path.clone());
         }
-        if response.clicked() || response.secondary_clicked() {
-            self.select(Some(entry.path.clone()), context);
+        if response.clicked()
+            || (response.secondary_clicked() && !self.selection.contains(&entry.path))
+        {
+            self.select_entry(entry.path.clone(), context);
         }
-        if response.double_clicked() {
+        if response.double_clicked() && !context.input(|input| input.modifiers.shift) {
             self.open(entry.path.clone(), context);
         }
         let response = if self.settings.view != View::Media || entry.directory {
@@ -1196,7 +1484,7 @@ impl FileManager {
                     self.open_terminal(&entry.path);
                     ui.close_menu();
                 }
-                if ui.button("Add bookmark · Ctrl+D").clicked() {
+                if ui.button("Add bookmark · D").clicked() {
                     self.add_bookmark(entry.path.clone());
                     ui.close_menu();
                 }
@@ -1397,8 +1685,39 @@ impl FileManager {
         let available = ui.available_width() - ui.spacing().scroll.allocated_width();
         let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
         let rows = entries.len().div_ceil(columns);
+        let items: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                (
+                    entry.clone(),
+                    egui::pos2(
+                        (index % columns) as f32 * (width + ui.spacing().item_spacing.x),
+                        (index / columns) as f32 * (height + ui.spacing().item_spacing.y),
+                    ),
+                )
+            })
+            .collect();
+        self.navigate_items(&items, ui.available_height(), context);
         ui.scope(|ui| {
-            egui::ScrollArea::vertical()
+            let mut scroll = self.entry_scroll_area(ui, "grid");
+            if self.scroll_to_selection {
+                if let Some(index) = entries
+                    .iter()
+                    .position(|entry| self.selected.as_ref() == Some(&entry.path))
+                {
+                    let top = (index / columns) as f32 * (height + ui.spacing().item_spacing.y);
+                    let viewport = ui.available_height();
+                    let offset =
+                        egui::scroll_area::State::load(context, ui.make_persistent_id("grid"))
+                            .map_or(0.0, |state| state.offset.y);
+                    scroll = scroll.vertical_scroll_offset(
+                        offset.min(top).max(top + height - viewport).max(0.0),
+                    );
+                }
+                self.scroll_to_selection = false;
+            }
+            scroll
                 .auto_shrink([false, false])
                 .id_salt("grid")
                 .drag_to_scroll(false)
@@ -1418,17 +1737,11 @@ impl FileManager {
                                         egui::Sense::click()
                                     },
                                 );
-                                let selected = self.selected.as_ref() == Some(&entry.path);
-                                let highlighted = selected || response.hovered();
-                                if highlighted {
+                                if self.selection.contains(&entry.path) {
                                     ui.painter().rect_filled(
                                         rect.shrink(2.0),
                                         8.0,
-                                        if selected {
-                                            ui.visuals().selection.bg_fill
-                                        } else {
-                                            ui.visuals().widgets.hovered.weak_bg_fill
-                                        },
+                                        ui.visuals().selection.bg_fill,
                                     );
                                 }
                                 let icon_rect = egui::Rect::from_center_size(
@@ -1494,9 +1807,20 @@ impl FileManager {
             .collect();
         let rows = layout::justified_rows(&aspects, width, 192.0 * self.settings.zoom);
         let total_height: f32 = rows.iter().map(|(_, height)| height).sum();
-        egui::ScrollArea::vertical()
+        let mut items = Vec::with_capacity(entries.len());
+        let mut y = 0.0;
+        for (range, height) in &rows {
+            let mut x = 0.0;
+            for index in range.clone() {
+                let item_width = aspects[index] * height;
+                items.push((entries[index].clone(), egui::pos2(x + item_width / 2.0, y)));
+                x += item_width;
+            }
+            y += height;
+        }
+        self.navigate_items(&items, ui.available_height(), context);
+        self.entry_scroll_area(ui, "media")
             .auto_shrink([false, false])
-            .id_salt("media")
             .drag_to_scroll(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show_viewport(ui, |ui, _| {
@@ -1512,6 +1836,10 @@ impl FileManager {
                             Vec2::new(aspects[index] * height, height),
                         );
                         x = rect.right();
+                        if self.scroll_to_selection && self.selected.as_ref() == Some(&entry.path) {
+                            ui.scroll_to_rect(rect, None);
+                            self.scroll_to_selection = false;
+                        }
                         if !ui.is_rect_visible(rect) {
                             continue;
                         }
@@ -1524,8 +1852,7 @@ impl FileManager {
                                 egui::Sense::click()
                             },
                         );
-                        let highlighted =
-                            self.selected.as_ref() == Some(&entry.path) || response.hovered();
+                        let highlighted = self.selection.contains(&entry.path);
                         ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
                         if !self.paint_thumbnail(ui, rect, entry, &response) {
                             let edge = (64.0 * self.settings.zoom)
@@ -1681,14 +2008,7 @@ impl FileManager {
             .line_segment([row.left_bottom(), row.right_bottom()], stroke);
     }
 
-    fn tree(
-        &mut self,
-        ui: &mut egui::Ui,
-        mut entries: Vec<Entry>,
-        depth: usize,
-        row_index: &mut usize,
-        context: &egui::Context,
-    ) {
+    fn sort_tree_entries(&self, entries: &mut [Entry]) {
         entries.sort_by(|a, b| {
             let name_order = || {
                 a.name
@@ -1718,6 +2038,36 @@ impl FileManager {
                     order
                 })
         });
+    }
+
+    fn tree_items(
+        &self,
+        mut entries: Vec<Entry>,
+        depth: usize,
+        items: &mut Vec<(Entry, egui::Pos2)>,
+    ) {
+        self.sort_tree_entries(&mut entries);
+        for entry in entries {
+            let path = entry.path.clone();
+            let y = items.len() as f32 * (30.0 * self.settings.zoom).max(32.0);
+            items.push((entry, egui::pos2(0.0, y)));
+            if self.expanded.contains(&path) && depth < 64 {
+                if let Some(children) = self.tree_cache.get(&path) {
+                    self.tree_items(children.clone(), depth + 1, items);
+                }
+            }
+        }
+    }
+
+    fn tree(
+        &mut self,
+        ui: &mut egui::Ui,
+        mut entries: Vec<Entry>,
+        depth: usize,
+        row_index: &mut usize,
+        context: &egui::Context,
+    ) {
+        self.sort_tree_entries(&mut entries);
         for entry in entries {
             ui.push_id(&entry.path, |ui| {
                 let height = (30.0 * self.settings.zoom).max(32.0);
@@ -1725,6 +2075,10 @@ impl FileManager {
                     Vec2::new(ui.available_width(), height),
                     egui::Sense::hover(),
                 );
+                if self.scroll_to_selection && self.selected.as_ref() == Some(&entry.path) {
+                    ui.scroll_to_rect(row, None);
+                    self.scroll_to_selection = false;
+                }
                 ui.painter().rect_filled(
                     row,
                     0.0,
@@ -1758,19 +2112,7 @@ impl FileManager {
                         if expanded {
                             self.expanded.remove(&entry.path);
                         } else {
-                            match files::entries(
-                                &entry.path,
-                                self.settings.hidden,
-                                self.settings.sequences,
-                            ) {
-                                Ok(children) => {
-                                    self.tree_cache.insert(entry.path.clone(), children);
-                                    self.expanded.insert(entry.path.clone());
-                                }
-                                Err(error) => {
-                                    self.message = Some(format!("Cannot expand directory: {error}"))
-                                }
-                            }
+                            self.expand_directory(&entry.path);
                         }
                     }
                 }
@@ -1784,12 +2126,7 @@ impl FileManager {
                         egui::Sense::click()
                     },
                 );
-                paint_selection(
-                    ui,
-                    content,
-                    self.selected.as_ref() == Some(&entry.path),
-                    response.hovered(),
-                );
+                paint_selection(ui, content, self.selection.contains(&entry.path), false);
                 let edge = 22.0 * self.settings.zoom;
                 let icon = egui::Rect::from_center_size(
                     egui::pos2(content.left() + edge / 2.0 + 6.0, row.center().y),
@@ -1893,6 +2230,30 @@ impl FileManager {
 
 impl eframe::App for FileManager {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        context.input_mut(|input| {
+            for event in &mut input.events {
+                if let egui::Event::Key {
+                    key,
+                    physical_key,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.matches_logically(egui::Modifiers::CTRL) {
+                        let replacement = match *key {
+                            Key::M => Some(Key::Enter),
+                            Key::OpenBracket => Some(Key::Escape),
+                            _ => None,
+                        };
+                        if let Some(replacement) = replacement {
+                            *key = replacement;
+                            *physical_key = None;
+                            *modifiers = egui::Modifiers::NONE;
+                        }
+                    }
+                }
+            }
+        });
         context.request_repaint_after(std::time::Duration::from_secs(1));
         if let Err(error) = self.bookmarks.poll() {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
@@ -1931,9 +2292,11 @@ impl eframe::App for FileManager {
                         View::Media => self.media(ui, context),
                         View::Tree => {
                             self.tree_header(ui);
-                            egui::ScrollArea::vertical()
+                            let mut items = Vec::new();
+                            self.tree_items(self.entries.clone(), 0, &mut items);
+                            self.navigate_items(&items, ui.available_height(), context);
+                            self.entry_scroll_area(ui, "tree")
                                 .auto_shrink([false, false])
-                                .id_salt("tree")
                                 .drag_to_scroll(false)
                                 .scroll_bar_visibility(
                                     egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
@@ -2026,7 +2389,7 @@ fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
         [center + Vec2::splat(4.5), center + Vec2::splat(10.0)],
         stroke,
     );
-    response.on_hover_text("Search · Ctrl+F")
+    response.on_hover_text("Search · Ctrl+P / Ctrl+F")
 }
 
 fn theme_button(ui: &mut egui::Ui, dark_mode: bool) -> egui::Response {
