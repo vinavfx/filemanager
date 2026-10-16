@@ -937,6 +937,44 @@ impl FileManager {
 
     fn shortcuts(&mut self, context: &egui::Context) {
         self.pane_shortcuts(context);
+        if self.new_folder.is_none() {
+            for (key, view) in [
+                (Key::T, View::Tree),
+                (Key::G, View::Grid),
+                (Key::E, View::Media),
+            ] {
+                if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key))
+                    && self.settings.view != view
+                {
+                    self.settings.view = view;
+                    self.save();
+                }
+            }
+        }
+        if self.new_folder.is_none() && !self.sidebar_focused {
+            if let Some(search) = &mut self.search {
+                for (key, forward) in [
+                    (Key::H, false),
+                    (Key::J, true),
+                    (Key::K, false),
+                    (Key::L, true),
+                ] {
+                    if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key)) {
+                        if let Some(update) = &search.update {
+                            search.cursor = if forward {
+                                search
+                                    .cursor
+                                    .saturating_add(1)
+                                    .min(update.hits.len().saturating_sub(1))
+                            } else {
+                                search.cursor.saturating_sub(1)
+                            };
+                            search.reveal_cursor = true;
+                        }
+                    }
+                }
+            }
+        }
         self.vim_shortcuts(context);
         let visual_line_shortcut = self.visual_line_shortcut(context);
         let scroll = context.input_mut(|input| {
@@ -1486,10 +1524,7 @@ impl FileManager {
                         .max_rect(navigation)
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     |ui| {
-                        if arrow_button(ui, self.position > 0, Vec2::new(-1.0, 0.0))
-                            .on_hover_text("Back · Alt+Left")
-                            .clicked()
-                        {
+                        if arrow_button(ui, self.position > 0, Vec2::new(-1.0, 0.0)).clicked() {
                             self.history_step(false, context);
                         }
                         if arrow_button(
@@ -1497,13 +1532,11 @@ impl FileManager {
                             self.position + 1 < self.history.len(),
                             Vec2::new(1.0, 0.0),
                         )
-                        .on_hover_text("Forward · Alt+Right")
                         .clicked()
                         {
                             self.history_step(true, context);
                         }
                         if arrow_button(ui, self.current.parent().is_some(), Vec2::new(0.0, -1.0))
-                            .on_hover_text("Parent · Alt+Up")
                             .clicked()
                         {
                             if let Some(parent) = self.current.parent() {
@@ -1515,7 +1548,6 @@ impl FileManager {
                                 [48.0, 32.0],
                                 egui::Button::new("Edit").selected(self.editing_path),
                             )
-                            .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
                             .clicked()
                         {
                             self.toggle_path_field(context);
@@ -1543,7 +1575,7 @@ impl FileManager {
                         .max_rect(options)
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                     |ui| {
-                        if theme_button(ui, self.settings.dark_mode).clicked() {
+                        if theme_button(ui).clicked() {
                             self.settings.dark_mode = !self.settings.dark_mode;
                             apply_theme(context, self.settings.dark_mode);
                             self.save();
@@ -1553,7 +1585,6 @@ impl FileManager {
                                 [64.0, 32.0],
                                 egui::Button::new("Hidden").selected(self.settings.hidden),
                             )
-                            .on_hover_text("Show hidden files · Ctrl+H")
                             .clicked()
                         {
                             self.settings.hidden = !self.settings.hidden;
@@ -1570,7 +1601,6 @@ impl FileManager {
                                 })
                                 .selected(self.settings.sequences),
                             )
-                            .on_hover_text("Toggle numbered image sequences / individual images")
                             .clicked()
                         {
                             self.settings.sequences = !self.settings.sequences;
@@ -1635,7 +1665,7 @@ impl FileManager {
                     .id(egui::Id::new("search-input"))
                     .vertical_align(egui::Align::Center)
                     .hint_text("Search this folder and subfolders…"),
-            ).on_hover_text("Fuzzy search · 'exact · ^prefix · suffix$ · !exclude · term | term · Esc to close");
+            );
             if search.focus {
                 response.request_focus();
                 search.focus = false;
@@ -1922,11 +1952,7 @@ impl FileManager {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("BOOKMARKS").size(11.0).color(MUTED));
-                    if ui
-                        .small_button("+")
-                        .on_hover_text("Bookmark selected or current folder · D")
-                        .clicked()
-                    {
+                    if ui.small_button("+").clicked() {
                         self.bookmark();
                     }
                     ui.menu_button("...", |ui| {
@@ -2014,7 +2040,6 @@ impl FileManager {
                     );
                     if ui
                         .add_sized([24.0, 24.0], egui::Button::new("×").frame(false))
-                        .on_hover_text("Dismiss · Esc")
                         .clicked()
                     {
                         self.message = None;
@@ -2084,12 +2109,10 @@ impl FileManager {
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let response = ui
-                                .add(
-                                    egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
-                                        .show_value(false),
-                                )
-                                .on_hover_text("Icon and tree zoom · Ctrl+wheel · up to 360%");
+                            let response = ui.add(
+                                egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
+                                    .show_value(false),
+                            );
                             if response.changed() {
                                 self.save();
                             }
@@ -2103,12 +2126,10 @@ impl FileManager {
                             );
                             if self.settings.view == View::Media {
                                 ui.separator();
-                                let response = ui
-                                    .add(
-                                        egui::Slider::new(&mut self.settings.media_margin, 0..=24)
-                                            .show_value(false),
-                                    )
-                                    .on_hover_text("Media thumbnail margin · 0–24 px per side");
+                                let response = ui.add(
+                                    egui::Slider::new(&mut self.settings.media_margin, 0..=24)
+                                        .show_value(false),
+                                );
                                 if response.changed() {
                                     self.save();
                                 }
@@ -2148,13 +2169,12 @@ impl FileManager {
                                         ),
                                 );
                             }
-                            if let Some(warning) = self.thumbnails.warning() {
+                            if self.thumbnails.warning().is_some() {
                                 ui.label(
                                     RichText::new("Disk cache unavailable; using memory cache")
                                         .size(11.0)
                                         .color(MUTED),
-                                )
-                                .on_hover_text(warning);
+                                );
                             }
                         });
                     },
@@ -2190,15 +2210,6 @@ impl FileManager {
         if response.double_clicked() && !context.input(|input| input.modifiers.shift) {
             self.open(entry.path.clone(), context);
         }
-        let response = if let Some(error) = self
-            .thumbnails
-            .entry_error(entry)
-            .filter(|_| self.settings.view != View::Media || entry.directory)
-        {
-            response.on_hover_text(format!("Thumbnail unavailable: {error}"))
-        } else {
-            response
-        };
         response.context_menu(|ui| {
             if ui
                 .button(if entry.sequence.is_some() {
@@ -2365,75 +2376,203 @@ impl FileManager {
         let mut open = None;
         let mut select = None;
         if let Some(search) = &mut self.search {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if search.busy {
-                    ui.spinner();
-                }
-                if let Some(update) = &search.update {
-                    ui.label(format!(
-                        "{} matches · {} indexed",
-                        update.matched, update.indexed
+            egui::Frame::new().inner_margin(16.0).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Search results").strong().size(16.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("Esc to close").small().color(MUTED));
+                    });
+                });
+                let (position, galley, _) =
+                    egui::Label::new(RichText::new(self.current.to_string_lossy()).color(MUTED))
+                        .truncate()
+                        .layout_in_ui(ui);
+                ui.painter().galley(position, galley, MUTED);
+                ui.add_space(6.0);
+                let status = if let Some(update) = &search.update {
+                    let mut status = if update.error.is_some() {
+                        "Search unavailable".to_owned()
+                    } else {
+                        format!("{} matches", update.matched)
+                    };
+                    status.push_str(&format!(
+                        " · {} items {}",
+                        update.indexed,
+                        if update.scanning {
+                            "scanned…"
+                        } else {
+                            "scanned"
+                        }
                     ));
                     if update.matched > update.hits.len() {
-                        ui.label(format!("Showing the best {}", update.hits.len()));
+                        status.push_str(&format!(" · Best {} shown", update.hits.len()));
                     }
                     if update.skipped > 0 {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            format!("{} unreadable items skipped", update.skipped),
-                        );
+                        status.push_str(&format!(" · {} unreadable items skipped", update.skipped));
                     }
+                    status
                 } else {
-                    ui.label("Searching…");
+                    "Searching this folder and subfolders…".to_owned()
+                };
+                let (position, galley, _) = egui::Label::new(RichText::new(status).color(MUTED))
+                    .truncate()
+                    .layout_in_ui(ui);
+                ui.painter().galley(position, galley, MUTED);
+                ui.add_space(6.0);
+                ui.separator();
+                if let Some(update) = &search.update {
+                    if update.error.is_some() || (update.hits.is_empty() && !update.scanning) {
+                        ui.add_space(48.0);
+                        ui.vertical_centered(|ui| {
+                            if let Some(error) = &update.error {
+                                ui.label(
+                                    RichText::new("Search could not finish").strong().size(18.0),
+                                );
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(error).color(ui.visuals().error_fg_color));
+                                ui.label(
+                                    RichText::new(
+                                        "Check the search engine, then press F5 to retry.",
+                                    )
+                                    .color(MUTED),
+                                );
+                            } else {
+                                ui.label(RichText::new("No matching files").strong().size(18.0));
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new("Try fewer characters or a different name.")
+                                        .color(MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(
+                                        "Hidden files are included only when Hidden is enabled.",
+                                    )
+                                    .small()
+                                    .color(MUTED),
+                                );
+                            }
+                        });
+                    }
+                    let row_height = 36.0;
+                    let name_width =
+                        ((ui.available_width() - ui.spacing().scroll.allocated_width()) * 0.42)
+                            .max(100.0);
+                    if !update.hits.is_empty() {
+                        let (header, _) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 28.0),
+                            egui::Sense::hover(),
+                        );
+                        for (offset, title) in [(40.0, "Name"), (name_width, "Location")] {
+                            ui.painter().text(
+                                egui::pos2(header.left() + offset, header.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                title,
+                                egui::FontId::proportional(12.0),
+                                MUTED,
+                            );
+                        }
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("search-results")
+                        .auto_shrink([false, false])
+                        .show_rows(ui, row_height, update.hits.len(), |ui, range| {
+                            if search.reveal_cursor && !update.hits.is_empty() {
+                                let height = row_height + ui.spacing().item_spacing.y;
+                                let top = ui.max_rect().top()
+                                    + (search.cursor as f32 - range.start as f32) * height;
+                                ui.scroll_to_rect(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(ui.max_rect().left(), top),
+                                        Vec2::new(ui.available_width(), row_height),
+                                    ),
+                                    None,
+                                );
+                                search.reveal_cursor = false;
+                            }
+                            for index in range {
+                                let hit = &update.hits[index];
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(ui.available_width(), row_height),
+                                    egui::Sense::click(),
+                                );
+                                if index % 2 == 1 {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        0.0,
+                                        ui.visuals().faint_bg_color,
+                                    );
+                                }
+                                paint_selection(
+                                    ui,
+                                    rect,
+                                    !self.sidebar_focused && search.cursor == index,
+                                    response.hovered(),
+                                );
+                                let icon_rect = egui::Rect::from_center_size(
+                                    egui::pos2(rect.left() + 20.0, rect.center().y),
+                                    Vec2::splat(22.0),
+                                );
+                                if hit.directory {
+                                    paint_folder(ui, icon_rect);
+                                } else if let Some(texture) = self.icons.get(&hit.path) {
+                                    ui.painter().image(
+                                        texture.id(),
+                                        icon_rect,
+                                        egui::Rect::from_min_max(
+                                            egui::Pos2::ZERO,
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        Color32::WHITE,
+                                    );
+                                } else {
+                                    ui.painter().rect_stroke(
+                                        icon_rect.shrink2(Vec2::new(4.0, 1.0)),
+                                        2.0,
+                                        Stroke::new(1.5, MUTED),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                let name =
+                                    hit.path.file_name().unwrap_or_default().to_string_lossy();
+                                let parent = Path::new(&hit.label)
+                                    .parent()
+                                    .filter(|path| !path.as_os_str().is_empty());
+                                let location = parent.map_or_else(
+                                    || "This folder".into(),
+                                    |path| path.to_string_lossy(),
+                                );
+                                for (text, left, right, color) in [
+                                    (name, 40.0, name_width - 16.0, ui.visuals().text_color()),
+                                    (location, name_width, rect.width() - 12.0, MUTED),
+                                ] {
+                                    let text_rect = egui::Rect::from_min_max(
+                                        egui::pos2(rect.left() + left, rect.top()),
+                                        egui::pos2(rect.left() + right, rect.bottom()),
+                                    );
+                                    let mut cell = ui.new_child(
+                                        egui::UiBuilder::new().max_rect(text_rect).layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                        ),
+                                    );
+                                    cell.set_clip_rect(ui.clip_rect().intersect(text_rect));
+                                    let (position, galley, _) =
+                                        egui::Label::new(RichText::new(text).color(color))
+                                            .truncate()
+                                            .layout_in_ui(&mut cell);
+                                    cell.painter().galley(position, galley, color);
+                                }
+                                if response.clicked() {
+                                    search.cursor = index;
+                                    select = Some(hit.path.clone());
+                                }
+                                if response.double_clicked() {
+                                    open = Some(hit.path.clone());
+                                }
+                            }
+                        });
                 }
             });
-            ui.separator();
-            if let Some(update) = &search.update {
-                if let Some(error) = &update.error {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                } else if update.hits.is_empty() && !search.busy {
-                    ui.label("No matches");
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("search-results")
-                    .auto_shrink([false, false])
-                    .show_rows(ui, 32.0, update.hits.len(), |ui, range| {
-                        if search.reveal_cursor && !update.hits.is_empty() {
-                            let height = 32.0 + ui.spacing().item_spacing.y;
-                            let top = ui.max_rect().top()
-                                + (search.cursor as f32 - range.start as f32) * height;
-                            ui.scroll_to_rect(
-                                egui::Rect::from_min_size(
-                                    egui::pos2(ui.max_rect().left(), top),
-                                    Vec2::new(ui.available_width(), 32.0),
-                                ),
-                                None,
-                            );
-                            search.reveal_cursor = false;
-                        }
-                        for index in range {
-                            let hit = &update.hits[index];
-                            let label = if hit.directory {
-                                format!("{}/", hit.label)
-                            } else {
-                                hit.label.clone()
-                            };
-                            let response = ui.add_sized(
-                                [ui.available_width(), 32.0],
-                                egui::Button::new(label)
-                                    .selected(!self.sidebar_focused && search.cursor == index),
-                            );
-                            if response.clicked() {
-                                search.cursor = index;
-                                select = Some(hit.path.clone());
-                            }
-                            if response.double_clicked() {
-                                open = Some(hit.path.clone());
-                            }
-                        }
-                    });
-            }
         }
         if let Some(path) = select {
             self.select(Some(path), context);
@@ -2813,13 +2952,6 @@ impl FileManager {
                     ),
                 );
             }
-            response.on_hover_text(match column {
-                TreeSort::Name => "Sort by name; click again to reverse",
-                TreeSort::Size => "Sort by folder item count or file bytes; click again to reverse",
-                TreeSort::Modified => {
-                    "Sort by modification date (local time); click again to reverse"
-                }
-            });
         }
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
         for x in [date_left - TREE_SIZE_WIDTH, date_left] {
@@ -3490,11 +3622,7 @@ fn view_button(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response 
             }
         }
     }
-    response.on_hover_text(match view {
-        View::Tree => "Tree",
-        View::Grid => "Grid",
-        View::Media => "Media",
-    })
+    response
 }
 
 fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
@@ -3506,10 +3634,10 @@ fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
         [center + Vec2::splat(4.5), center + Vec2::splat(10.0)],
         stroke,
     );
-    response.on_hover_text("Search · Ctrl+P / Ctrl+F")
+    response
 }
 
-fn theme_button(ui: &mut egui::Ui, dark_mode: bool) -> egui::Response {
+fn theme_button(ui: &mut egui::Ui) -> egui::Response {
     let response = ui.add_sized([32.0, 32.0], egui::Button::new(""));
     let center = response.rect.center();
     let radius = 8.0;
@@ -3526,11 +3654,7 @@ fn theme_button(ui: &mut egui::Ui, dark_mode: bool) -> egui::Response {
     ));
     ui.painter()
         .circle_stroke(center, radius, Stroke::new(1.0, ui.visuals().text_color()));
-    response.on_hover_text(if dark_mode {
-        "Switch to light theme"
-    } else {
-        "Switch to dark theme"
-    })
+    response
 }
 
 fn arrow_button(ui: &mut egui::Ui, enabled: bool, direction: Vec2) -> egui::Response {

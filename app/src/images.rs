@@ -478,10 +478,6 @@ impl Thumbnails {
         self.aspect_ratio(path)
     }
 
-    pub fn entry_error(&self, entry: &crate::files::Entry) -> Option<&str> {
-        (0..VIDEO_FRAMES).find_map(|frame| self.error(entry.thumbnail(frame).0))
-    }
-
     pub fn aspect_ratio(&self, path: &Path) -> f32 {
         let frame = if crate::files::video_file(path) {
             VIDEO_POSTER
@@ -509,15 +505,6 @@ impl Thumbnails {
 
     pub fn warning(&self) -> Option<&str> {
         self.warning.as_deref()
-    }
-
-    pub fn error(&self, path: &Path) -> Option<&str> {
-        (0..VIDEO_FRAMES).find_map(|frame| {
-            self.cache
-                .get(&(path.to_path_buf(), frame))
-                .and_then(|result| result.as_ref().err())
-                .map(String::as_str)
-        })
     }
 
     pub fn cancel(&mut self) {

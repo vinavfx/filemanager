@@ -36,7 +36,6 @@ pub struct Search {
     pub cursor: usize,
     pub reveal_cursor: bool,
     pub update: Option<Update>,
-    pub busy: bool,
     sender: mpsc::Sender<(u64, String)>,
     receiver: mpsc::Receiver<Update>,
     generation: Arc<AtomicU64>,
@@ -68,7 +67,6 @@ impl Search {
             cursor: 0,
             reveal_cursor: true,
             update: None,
-            busy: true,
             sender,
             receiver,
             generation,
@@ -79,17 +77,21 @@ impl Search {
     pub fn submit(&mut self) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.sender.send((generation, self.query.clone()));
-        self.update = None;
-        self.cursor = 0;
-        self.reveal_cursor = true;
-        self.busy = true;
     }
 
     pub fn poll(&mut self) {
         while let Ok(update) = self.receiver.try_recv() {
             if update.generation == self.generation.load(Ordering::Relaxed) {
-                self.cursor = self.cursor.min(update.hits.len().saturating_sub(1));
-                self.busy = update.scanning;
+                if self
+                    .update
+                    .as_ref()
+                    .is_none_or(|previous| previous.generation != update.generation)
+                {
+                    self.cursor = 0;
+                    self.reveal_cursor = true;
+                } else {
+                    self.cursor = self.cursor.min(update.hits.len().saturating_sub(1));
+                }
                 self.update = Some(update);
             }
         }
@@ -271,7 +273,32 @@ fn filter(
     generation: &AtomicU64,
     cancel: &AtomicBool,
 ) -> io::Result<Matches> {
-    let mut child = Command::new("fzf")
+    let mut command = Command::new("fzf");
+    configure_filter(&mut command, query);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let executable = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".fzf/bin/fzf"))
+                .filter(|path| path.is_file())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "fzf was not found. Add it to PATH or install it in ~/.fzf/bin.",
+                    )
+                })?;
+            let mut command = Command::new(executable);
+            configure_filter(&mut command, query);
+            command.spawn()?
+        }
+        Err(error) => return Err(error),
+    };
+    collect_matches(&mut child, input, revision, generation, cancel)
+}
+
+fn configure_filter(command: &mut Command, query: &str) {
+    command
         .env_remove("FZF_DEFAULT_OPTS")
         .env_remove("FZF_DEFAULT_OPTS_FILE")
         .args([
@@ -284,8 +311,16 @@ fn filter(
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+}
+
+fn collect_matches(
+    child: &mut std::process::Child,
+    input: Arc<Vec<u8>>,
+    revision: u64,
+    generation: &AtomicU64,
+    cancel: &AtomicBool,
+) -> io::Result<Matches> {
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let writer = std::thread::spawn(move || -> io::Result<()> {

@@ -6,8 +6,8 @@ Gestor de archivos minimalista para Linux, escrito en Rust con egui. Todo está 
 ## Arranque
 
 Requiere Rust 1.89 o superior, un escritorio X11 o Wayland y OpenGL. Para abrir otros archivos utiliza `xdg-open`; la opción de terminal
-requiere Konsole. La búsqueda utiliza `fzf`, disponible en `PATH`, sin mostrar su interfaz. La compresión utiliza `zip`. Las
-previsualizaciones de vídeo requieren `ffmpeg` y `ffprobe`.
+requiere Konsole. La búsqueda utiliza `fzf`, disponible en `PATH` o `~/.fzf/bin/fzf`, sin mostrar su interfaz. La compresión utiliza `zip`.
+Las previsualizaciones de vídeo requieren `ffmpeg` y `ffprobe`.
 
 Desde la raíz:
 
@@ -17,7 +17,7 @@ Desde la raíz:
 ```
 
 El lanzador descarga las dependencias y compila si es necesario. Las siguientes ejecuciones reutilizan la compilación. La interfaz está en
-inglés.
+inglés. No se muestran mensajes emergentes al pasar el cursor.
 
 ## Uso
 
@@ -63,7 +63,9 @@ inglés.
   `!texto` excluye y `|` separa alternativas. Los términos separados por espacios se combinan. No se cargan `FZF_DEFAULT_OPTS` ni
   `FZF_DEFAULT_OPTS_FILE`, para evitar opciones de terminal incompatibles con la integración. El recorrido y la búsqueda se ejecutan en
   segundo plano; los resultados aparecen progresivamente y las consultas anteriores se cancelan. Se muestran los mejores 1000 resultados y
-  el número total de coincidencias. `↑`/`↓` selecciona y `Enter` o doble clic abre; `Esc` o la lupa restaura la dirección. Se respeta
+  el número total de coincidencias. `↑`/`↓` seleccionan; con el buscador activo, `Ctrl+H`/`Ctrl+K` seleccionan el resultado anterior y
+  `Ctrl+J`/`Ctrl+L` el siguiente, sin modificar la consulta. Las letras sin `Ctrl` sirven para escribir. En este contexto, `Ctrl+H` no
+  alterna los ocultos y `Ctrl+L` no edita la dirección. `Enter` o doble clic abre; `Esc` o la lupa restaura la dirección. Se respeta
   `Hidden`, no se recorren enlaces simbólicos y se indican los elementos inaccesibles. La búsqueda muestra archivos individuales, aunque
   esté activado `Sequences`. `F5` vuelve a recorrer las carpetas. Se reutiliza el índice mientras la búsqueda está abierta; el tiempo total
   incluye el recorrido del disco, el proceso de fzf y la interfaz, por lo que no se garantiza la misma latencia que fzf sobre una lista ya
@@ -75,8 +77,8 @@ inglés.
 - El menú de carpetas e imágenes permite comprimirlas a ZIP en segundo plano. El archivo queda junto al original, sin sobrescribir archivos
   existentes; los enlaces simbólicos se conservan como enlaces.
 - `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial. `gT` o `Alt+↑` sube al directorio padre; `gt` baja por la ruta conservada.
-  Funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto. `Tree`, `Grid` y `Media` se eligen únicamente
-  con los botones de la barra superior, sin atajos.
+  Funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto.
+- `Ctrl+T` activa `Tree`, `Ctrl+G` activa `Grid` y `Ctrl+E` activa `Media`. Las tres vistas siguen disponibles en la barra superior.
 - `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos en ambos paneles.
 - El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
   la creación de carpetas, la edición de la dirección o la selección.
@@ -109,7 +111,7 @@ Los vídeos admiten MPG/MPEG, MP4, MOV (incluido ProRes), MKV, AVI, WebM, MXF y 
 instalados. Se guarda un máximo de 8 fotogramas WebP de 192 píxeles por vídeo: el central al mostrarlo y los demás únicamente al explorar
 sus posiciones con el cursor. La caché se reutiliza entre ejecuciones y se invalida al cambiar el original. Se usan dos trabajadores y un
 máximo de 512 miniaturas en memoria, compartido con las imágenes. Las operaciones de vídeo se interrumpen al cambiar de carpeta o si superan
-15 segundos; los formatos dañados o no compatibles muestran un icono y el error al pasar el cursor.
+15 segundos; los formatos dañados o no compatibles muestran un icono genérico.
 
 No se modifican los originales ni se implementan operaciones de copia, movimiento o borrado.
 
