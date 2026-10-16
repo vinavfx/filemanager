@@ -1138,7 +1138,14 @@ impl FileManager {
                             .then_with(|| (a.x - x).abs().total_cmp(&(b.x - x).abs()))
                     })
             };
-            if let Some((entry, _, _)) = closest(true).or_else(|| closest(false)) {
+            if let Some((entry, position, height)) = closest(true).or_else(|| closest(false)) {
+                let aligned_offset = if page_direction > 0.0 {
+                    position.y + height - viewport_height
+                } else {
+                    position.y
+                };
+                self.page_scroll_delta =
+                    aligned_offset.clamp(0.0, (content_height - viewport_height).max(0.0)) - offset;
                 self.select_entry(entry.path.clone(), context);
             }
             self.scroll_to_selection = false;
