@@ -996,6 +996,22 @@ impl FileManager {
         {
             return;
         }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::A)) {
+            if !self
+                .selected
+                .as_ref()
+                .is_some_and(|path| self.visible_paths.contains(path))
+            {
+                self.select(self.visible_paths.first().cloned(), context);
+            }
+            self.pending_g = false;
+            self.selection = self.visible_paths.iter().cloned().collect();
+            if self.selection.len() > 1 {
+                self.size_job = None;
+                self.selection_size = None;
+            }
+            return;
+        }
         if let Some(index) = self.navigation_jump(items.len(), context) {
             let path = items[index].0.path.clone();
             if self.visual_line {
