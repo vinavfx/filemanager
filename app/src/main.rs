@@ -135,6 +135,7 @@ struct FileManager {
     selection: HashSet<PathBuf>,
     selection_anchor: Option<PathBuf>,
     visual_line: bool,
+    motion_count: usize,
     v_key_is_shortcut: Option<bool>,
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
@@ -231,6 +232,7 @@ impl FileManager {
             selection: HashSet::new(),
             selection_anchor: None,
             visual_line: false,
+            motion_count: 0,
             v_key_is_shortcut: None,
             visible_paths: Vec::new(),
             scroll_to_selection: false,
@@ -400,6 +402,7 @@ impl FileManager {
 
     fn select(&mut self, path: Option<PathBuf>, context: &egui::Context) {
         self.visual_line = false;
+        self.motion_count = 0;
         self.pending_g = false;
         self.pending_z = false;
         self.center_selection = false;
@@ -1041,6 +1044,34 @@ impl FileManager {
         })
     }
 
+    fn number_width(&self) -> f32 {
+        28.0
+    }
+
+    fn paint_relative_number(&self, ui: &egui::Ui, rect: egui::Rect, row: usize, current: usize) {
+        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+        let gap = if self.settings.view == View::Grid {
+            ui.spacing().item_spacing.y
+        } else {
+            0.0
+        };
+        ui.painter().line_segment(
+            [rect.right_top(), rect.right_bottom() + Vec2::new(0.0, gap)],
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            row.abs_diff(current).to_string(),
+            egui::FontId::monospace(10.0),
+            if row == current {
+                visual_accent(ui.visuals().dark_mode)
+            } else {
+                MUTED
+            },
+        );
+    }
+
     fn navigate_items(
         &mut self,
         items: &[(&Entry, egui::Pos2, f32)],
@@ -1063,6 +1094,22 @@ impl FileManager {
         {
             return;
         }
+        context.input_mut(|input| {
+            input.events.retain(|event| {
+                if let egui::Event::Text(text) = event {
+                    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
+                        for digit in text.bytes() {
+                            self.motion_count = self
+                                .motion_count
+                                .saturating_mul(10)
+                                .saturating_add((digit - b'0') as usize);
+                        }
+                        return false;
+                    }
+                }
+                true
+            });
+        });
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::A)) {
             if !self
                 .selected
@@ -1173,6 +1220,35 @@ impl FileManager {
         let current = items
             .iter()
             .position(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path));
+        let count = std::mem::take(&mut self.motion_count)
+            .max(1)
+            .min(items.len());
+        if matches!(key, Key::ArrowUp | Key::ArrowDown) {
+            if let Some(index) = current {
+                let position = items[index].1;
+                let mut rows: Vec<_> = items.iter().map(|(_, position, _)| position.y).collect();
+                rows.dedup();
+                let current_row = rows.iter().position(|y| *y == position.y).unwrap_or(0);
+                let target_row = if key == Key::ArrowUp {
+                    current_row.saturating_sub(count)
+                } else {
+                    current_row.saturating_add(count).min(rows.len() - 1)
+                };
+                if let Some((entry, _, _)) = items
+                    .iter()
+                    .filter(|(_, candidate, _)| candidate.y == rows[target_row])
+                    .min_by(|(_, a, _), (_, b, _)| {
+                        (a.x - position.x)
+                            .abs()
+                            .total_cmp(&(b.x - position.x).abs())
+                    })
+                {
+                    self.select_entry(entry.path.clone(), context);
+                    self.scroll_to_selection = true;
+                }
+                return;
+            }
+        }
         let target = if let Some(index) = current {
             let (entry, position, _) = &items[index];
             if self.settings.view == View::Tree {
@@ -1328,134 +1404,139 @@ impl FileManager {
     }
 
     fn toolbar(&mut self, context: &egui::Context) {
-        egui::TopBottomPanel::top("toolbar").show(context, |ui| {
-            ui.add_space(4.0);
-            let (row, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::hover());
-            let navigation =
-                egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
-            let options =
-                egui::Rect::from_min_max(egui::pos2(row.right() - 396.0, row.top()), row.max);
-            let address = egui::Rect::from_min_max(
-                egui::pos2(navigation.right() + 16.0, row.top()),
-                egui::pos2(options.left() - 16.0, row.bottom()),
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(navigation)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    if arrow_button(ui, self.position > 0, Vec2::new(-1.0, 0.0))
-                        .on_hover_text("Back · Alt+Left")
-                        .clicked()
-                    {
-                        self.history_step(false, context);
-                    }
-                    if arrow_button(
-                        ui,
-                        self.position + 1 < self.history.len(),
-                        Vec2::new(1.0, 0.0),
-                    )
-                    .on_hover_text("Forward · Alt+Right")
-                    .clicked()
-                    {
-                        self.history_step(true, context);
-                    }
-                    if arrow_button(ui, self.current.parent().is_some(), Vec2::new(0.0, -1.0))
-                        .on_hover_text("Parent · Alt+Up")
-                        .clicked()
-                    {
-                        if let Some(parent) = self.current.parent() {
-                            self.navigate_breadcrumb(parent.to_path_buf(), context);
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::side_top_panel(&context.style())
+                    .inner_margin(egui::Margin::symmetric(8, 8)),
+            )
+            .show(context, |ui| {
+                let (row, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), 32.0),
+                    egui::Sense::hover(),
+                );
+                let navigation =
+                    egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
+                let options =
+                    egui::Rect::from_min_max(egui::pos2(row.right() - 396.0, row.top()), row.max);
+                let address = egui::Rect::from_min_max(
+                    egui::pos2(navigation.right() + 16.0, row.top()),
+                    egui::pos2(options.left() - 16.0, row.bottom()),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(navigation)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        if arrow_button(ui, self.position > 0, Vec2::new(-1.0, 0.0))
+                            .on_hover_text("Back · Alt+Left")
+                            .clicked()
+                        {
+                            self.history_step(false, context);
                         }
-                    }
-                    if ui
-                        .add_sized(
-                            [48.0, 32.0],
-                            egui::Button::new("Edit").selected(self.editing_path),
+                        if arrow_button(
+                            ui,
+                            self.position + 1 < self.history.len(),
+                            Vec2::new(1.0, 0.0),
                         )
-                        .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
+                        .on_hover_text("Forward · Alt+Right")
                         .clicked()
-                    {
-                        self.toggle_path_field(context);
-                    }
-                },
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(address)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    ui.set_clip_rect(ui.clip_rect().intersect(address));
-                    self.address_bar(ui, context);
-                },
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(options.left() - 8.0, row.top() + 6.0),
-                    egui::pos2(options.left() - 8.0, row.bottom() - 6.0),
-                ],
-                ui.visuals().widgets.noninteractive.bg_stroke,
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(options)
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    if theme_button(ui, self.settings.dark_mode).clicked() {
-                        self.settings.dark_mode = !self.settings.dark_mode;
-                        apply_theme(context, self.settings.dark_mode);
-                        self.save();
-                    }
-                    if ui
-                        .add_sized(
-                            [64.0, 32.0],
-                            egui::Button::new("Hidden").selected(self.settings.hidden),
-                        )
-                        .on_hover_text("Show hidden files · Ctrl+H")
-                        .clicked()
-                    {
-                        self.settings.hidden = !self.settings.hidden;
-                        self.refresh(context);
-                        self.save();
-                    }
-                    if ui
-                        .add_sized(
-                            [92.0, 32.0],
-                            egui::Button::new(if self.settings.sequences {
-                                "Sequences"
-                            } else {
-                                "Images"
-                            })
-                            .selected(self.settings.sequences),
-                        )
-                        .on_hover_text("Toggle numbered image sequences / individual images")
-                        .clicked()
-                    {
-                        self.settings.sequences = !self.settings.sequences;
-                        self.refresh(context);
-                        self.save();
-                    }
-                    if search_button(ui, self.search.is_some()).clicked() {
-                        if self.search.is_some() {
-                            self.search = None;
-                        } else {
-                            self.start_search(context);
+                        {
+                            self.history_step(true, context);
                         }
-                    }
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    for view in [View::Media, View::Grid, View::Tree] {
-                        if view_button(ui, view, self.settings.view == view).clicked() {
-                            self.settings.view = view;
+                        if arrow_button(ui, self.current.parent().is_some(), Vec2::new(0.0, -1.0))
+                            .on_hover_text("Parent · Alt+Up")
+                            .clicked()
+                        {
+                            if let Some(parent) = self.current.parent() {
+                                self.navigate_breadcrumb(parent.to_path_buf(), context);
+                            }
+                        }
+                        if ui
+                            .add_sized(
+                                [48.0, 32.0],
+                                egui::Button::new("Edit").selected(self.editing_path),
+                            )
+                            .on_hover_text("Toggle editable path / breadcrumbs · Ctrl+L")
+                            .clicked()
+                        {
+                            self.toggle_path_field(context);
+                        }
+                    },
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(address)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.set_clip_rect(ui.clip_rect().intersect(address));
+                        self.address_bar(ui, context);
+                    },
+                );
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(options.left() - 8.0, row.top() + 6.0),
+                        egui::pos2(options.left() - 8.0, row.bottom() - 6.0),
+                    ],
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(options)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    |ui| {
+                        if theme_button(ui, self.settings.dark_mode).clicked() {
+                            self.settings.dark_mode = !self.settings.dark_mode;
+                            apply_theme(context, self.settings.dark_mode);
                             self.save();
                         }
-                    }
-                },
-            );
-            ui.add_space(4.0);
-        });
+                        if ui
+                            .add_sized(
+                                [64.0, 32.0],
+                                egui::Button::new("Hidden").selected(self.settings.hidden),
+                            )
+                            .on_hover_text("Show hidden files · Ctrl+H")
+                            .clicked()
+                        {
+                            self.settings.hidden = !self.settings.hidden;
+                            self.refresh(context);
+                            self.save();
+                        }
+                        if ui
+                            .add_sized(
+                                [92.0, 32.0],
+                                egui::Button::new(if self.settings.sequences {
+                                    "Sequences"
+                                } else {
+                                    "Images"
+                                })
+                                .selected(self.settings.sequences),
+                            )
+                            .on_hover_text("Toggle numbered image sequences / individual images")
+                            .clicked()
+                        {
+                            self.settings.sequences = !self.settings.sequences;
+                            self.refresh(context);
+                            self.save();
+                        }
+                        if search_button(ui, self.search.is_some()).clicked() {
+                            if self.search.is_some() {
+                                self.search = None;
+                            } else {
+                                self.start_search(context);
+                            }
+                        }
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        for view in [View::Media, View::Grid, View::Tree] {
+                            if view_button(ui, view, self.settings.view == view).clicked() {
+                                self.settings.view = view;
+                                self.save();
+                            }
+                        }
+                    },
+                );
+            });
     }
 
     fn toggle_path_field(&mut self, context: &egui::Context) {
@@ -1884,129 +1965,148 @@ impl FileManager {
     }
 
     fn statusbar(&mut self, context: &egui::Context) {
-        egui::TopBottomPanel::bottom("status").show(context, |ui| {
-            ui.add_space(3.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{} items", self.entries.len()))
-                        .size(12.0)
-                        .color(MUTED),
-                );
-                ui.separator();
-                if self.visual_line && !self.sidebar_focused {
-                    ui.label(
-                        RichText::new("-- VISUAL LINE --")
-                            .size(12.0)
-                            .strong()
-                            .color(visual_accent(ui.visuals().dark_mode)),
-                    );
-                    ui.separator();
-                }
-                if !self.sidebar_focused && self.selection.len() > 1 {
-                    ui.label(
-                        RichText::new(format!("{} selected", self.selection.len())).size(12.0),
-                    );
-                } else if !self.sidebar_focused && self.selected.is_some() {
-                    if let Some(size) = &self.selection_size {
-                        let suffix = if size.incomplete {
-                            " (partial: unreadable items)"
-                        } else {
-                            ""
-                        };
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::side_top_panel(&context.style())
+                    .inner_margin(egui::Margin::symmetric(8, 6)),
+            )
+            .show(context, |ui| {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 24.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "Selected: {}{suffix}",
-                                files::size_label(size.bytes)
-                            ))
-                            .size(12.0),
+                            RichText::new(format!("{} items", self.entries.len()))
+                                .size(12.0)
+                                .color(MUTED),
                         );
-                    } else {
-                        ui.label(RichText::new("Calculating size…").size(12.0).color(MUTED));
-                    }
-                } else if let Some(disk) = &self.disk {
-                    ui.label(
-                        RichText::new(format!(
-                            "Disk: {} used / {} total",
-                            files::size_label(disk.total.saturating_sub(disk.free)),
-                            files::size_label(disk.total)
-                        ))
-                        .size(12.0),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = ui
-                        .add(
-                            egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
-                                .show_value(false),
-                        )
-                        .on_hover_text("Icon and tree zoom · Ctrl+wheel · up to 360%");
-                    if response.changed() {
-                        self.save();
-                    }
-                    ui.label(
-                        RichText::new(format!("{}%", (self.settings.zoom * 100.0).round() as u32))
-                            .size(12.0)
-                            .color(MUTED),
-                    );
-                    if self.settings.view == View::Media {
                         ui.separator();
-                        let response = ui
-                            .add(
-                                egui::Slider::new(&mut self.settings.media_margin, 0..=24)
-                                    .show_value(false),
-                            )
-                            .on_hover_text("Media thumbnail margin · 0–24 px per side");
-                        if response.changed() {
-                            self.save();
+                        if self.visual_line && !self.sidebar_focused {
+                            ui.label(
+                                RichText::new("-- VISUAL LINE --")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(visual_accent(ui.visuals().dark_mode)),
+                            );
+                            ui.separator();
                         }
-                        ui.label(
-                            RichText::new(format!("Margin: {} px", self.settings.media_margin))
+                        if !self.sidebar_focused && self.selection.len() > 1 {
+                            ui.label(
+                                RichText::new(format!("{} selected", self.selection.len()))
+                                    .size(12.0),
+                            );
+                        } else if !self.sidebar_focused && self.selected.is_some() {
+                            if let Some(size) = &self.selection_size {
+                                let suffix = if size.incomplete {
+                                    " (partial: unreadable items)"
+                                } else {
+                                    ""
+                                };
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Selected: {}{suffix}",
+                                        files::size_label(size.bytes)
+                                    ))
+                                    .size(12.0),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("Calculating size…").size(12.0).color(MUTED),
+                                );
+                            }
+                        } else if let Some(disk) = &self.disk {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Disk: {} used / {} total",
+                                    files::size_label(disk.total.saturating_sub(disk.free)),
+                                    files::size_label(disk.total)
+                                ))
+                                .size(12.0),
+                            );
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let response = ui
+                                .add(
+                                    egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
+                                        .show_value(false),
+                                )
+                                .on_hover_text("Icon and tree zoom · Ctrl+wheel · up to 360%");
+                            if response.changed() {
+                                self.save();
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}%",
+                                    (self.settings.zoom * 100.0).round() as u32
+                                ))
                                 .size(12.0)
                                 .color(MUTED),
-                        );
-                    }
-                    ui.separator();
-                    if let Some(disk) = &self.disk {
-                        ui.label(
-                            RichText::new(format!("{} free", files::size_label(disk.available)))
-                                .size(12.0)
-                                .color(ACCENT),
-                        );
-                    }
-                    if let Some((completed, total)) = self.thumbnails.progress(context) {
-                        let label = if completed == total {
-                            "Thumbnails ready"
-                        } else {
-                            "Caching thumbnails"
-                        };
-                        ui.add(
-                            egui::ProgressBar::new(completed as f32 / total as f32)
-                                .desired_width(ui.available_width().min(240.0))
-                                .desired_height(16.0)
-                                .text(
-                                    RichText::new(format!("{label} · {completed}/{total}"))
-                                        .size(12.0),
-                                ),
-                        );
-                    }
-                    if let Some(warning) = self.thumbnails.warning() {
-                        ui.label(
-                            RichText::new("Disk cache unavailable; using memory cache")
-                                .size(11.0)
-                                .color(MUTED),
-                        )
-                        .on_hover_text(warning);
-                    }
-                });
+                            );
+                            if self.settings.view == View::Media {
+                                ui.separator();
+                                let response = ui
+                                    .add(
+                                        egui::Slider::new(&mut self.settings.media_margin, 0..=24)
+                                            .show_value(false),
+                                    )
+                                    .on_hover_text("Media thumbnail margin · 0–24 px per side");
+                                if response.changed() {
+                                    self.save();
+                                }
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Margin: {} px",
+                                        self.settings.media_margin
+                                    ))
+                                    .size(12.0)
+                                    .color(MUTED),
+                                );
+                            }
+                            ui.separator();
+                            if let Some(disk) = &self.disk {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} free",
+                                        files::size_label(disk.available)
+                                    ))
+                                    .size(12.0)
+                                    .color(ACCENT),
+                                );
+                            }
+                            if let Some((completed, total)) = self.thumbnails.progress(context) {
+                                let label = if completed == total {
+                                    "Thumbnails ready"
+                                } else {
+                                    "Caching thumbnails"
+                                };
+                                ui.add(
+                                    egui::ProgressBar::new(completed as f32 / total as f32)
+                                        .desired_width(ui.available_width().min(240.0))
+                                        .desired_height(16.0)
+                                        .text(
+                                            RichText::new(format!("{label} · {completed}/{total}"))
+                                                .size(12.0),
+                                        ),
+                                );
+                            }
+                            if let Some(warning) = self.thumbnails.warning() {
+                                ui.label(
+                                    RichText::new("Disk cache unavailable; using memory cache")
+                                        .size(11.0)
+                                        .color(MUTED),
+                                )
+                                .on_hover_text(warning);
+                            }
+                        });
+                    },
+                );
+                if self.compression_job.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Compressing to ZIP…");
+                    });
+                }
             });
-            if self.compression_job.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Compressing to ZIP…");
-                });
-            }
-            ui.add_space(3.0);
-        });
     }
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
@@ -2288,7 +2388,8 @@ impl FileManager {
         let entries = self.entries.clone();
         let width = 116.0 * self.settings.zoom;
         let height = 126.0 * self.settings.zoom;
-        let available = ui.available_width() - ui.spacing().scroll.allocated_width();
+        let gutter = self.number_width();
+        let available = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
         let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
         let rows = entries.len().div_ceil(columns);
         let items: Vec<_> = entries
@@ -2309,6 +2410,11 @@ impl FileManager {
             let content_height =
                 rows as f32 * (height + ui.spacing().item_spacing.y) - ui.spacing().item_spacing.y;
             self.navigate_items(&items, ui, "grid", content_height.max(0.0), context);
+            let current_row = entries
+                .iter()
+                .position(|entry| self.selected.as_ref() == Some(&entry.path))
+                .unwrap_or(0)
+                / columns;
             let mut scroll = self.entry_scroll_area(ui, "grid");
             if self.scroll_to_selection {
                 if let Some(index) = entries
@@ -2343,8 +2449,20 @@ impl FileManager {
                 .show_rows(ui, height, rows, |ui, range| {
                     let start = (range.start * columns).min(entries.len());
                     let end = (range.end * columns).min(entries.len());
-                    for row in entries[start..end].chunks(columns) {
+                    for (index, row) in entries[start..end].chunks(columns).enumerate() {
                         ui.horizontal(|ui| {
+                            if gutter > 0.0 {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(gutter, height),
+                                    egui::Sense::hover(),
+                                );
+                                self.paint_relative_number(
+                                    ui,
+                                    rect,
+                                    range.start + index,
+                                    current_row,
+                                );
+                            }
                             ui.add_space(8.0);
                             for entry in row {
                                 let (rect, response) = ui.allocate_exact_size(
@@ -2415,7 +2533,9 @@ impl FileManager {
             });
             return;
         }
-        let width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+        let gutter = self.number_width();
+        let width =
+            (ui.available_width() - ui.spacing().scroll.allocated_width() - gutter).max(1.0);
         let aspects: Vec<_> = entries
             .iter()
             .map(|entry| {
@@ -2440,16 +2560,33 @@ impl FileManager {
             y += height;
         }
         self.navigate_items(&items, ui, "media", total_height, context);
+        let current_index = entries
+            .iter()
+            .position(|entry| self.selected.as_ref() == Some(&entry.path))
+            .unwrap_or(0);
+        let current_row = rows
+            .iter()
+            .position(|(range, _)| range.contains(&current_index))
+            .unwrap_or(0);
         self.entry_scroll_area(ui, "media")
             .auto_shrink([false, false])
             .drag_to_scroll(false)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show_viewport(ui, |ui, _| {
-                ui.set_min_size(Vec2::new(width, total_height));
+                ui.set_min_size(Vec2::new(width + gutter, total_height));
                 let origin = ui.min_rect().min;
                 let mut y = origin.y;
-                for (range, height) in rows {
-                    let mut x = origin.x;
+                for (row, (range, height)) in rows.into_iter().enumerate() {
+                    self.paint_relative_number(
+                        ui,
+                        egui::Rect::from_min_size(
+                            egui::pos2(origin.x, y),
+                            Vec2::new(gutter, height),
+                        ),
+                        row,
+                        current_row,
+                    );
+                    let mut x = origin.x + gutter;
                     for index in range {
                         let entry = &entries[index];
                         let rect = egui::Rect::from_min_size(
@@ -2544,7 +2681,7 @@ impl FileManager {
                 TreeSort::Name,
                 row.left(),
                 size_left,
-                row.left() + 36.0,
+                row.left() + self.number_width() + 36.0,
                 egui::Align2::LEFT_CENTER,
             ),
             (
@@ -2720,6 +2857,12 @@ impl FileManager {
         start: usize,
         context: &egui::Context,
     ) {
+        let gutter = self.number_width();
+        let current_row = self
+            .visible_paths
+            .iter()
+            .position(|path| self.selected.as_ref() == Some(path))
+            .unwrap_or(0);
         for (index, (entry, position)) in items.iter().enumerate() {
             let depth = position.x;
             ui.push_id(&entry.path, |ui| {
@@ -2741,7 +2884,13 @@ impl FileManager {
                         ui.visuals().faint_bg_color
                     },
                 );
-                let left = row.left() + depth * 20.0 * self.settings.zoom;
+                self.paint_relative_number(
+                    ui,
+                    egui::Rect::from_min_size(row.min, Vec2::new(gutter, row.height())),
+                    start + index,
+                    current_row,
+                );
+                let left = row.left() + gutter + depth * 20.0 * self.settings.zoom;
                 let disclosure = egui::Rect::from_center_size(
                     egui::pos2(left + 14.0, row.center().y),
                     Vec2::splat(24.0),
