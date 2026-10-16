@@ -22,7 +22,7 @@ inglés.
 ## Uso
 
 - Un clic selecciona; doble clic o `Enter` abre. `Esc` quita la selección sin olvidar el último icono: el siguiente movimiento con flechas o
-  `h/j/k/l` vuelve a seleccionarlo si sigue en la vista actual.
+  `h/j/k/l` vuelve a seleccionarlo si sigue en la vista actual. Si hay un aviso, `Esc` lo cierra primero sin cambiar la selección.
 - `Ctrl+V` activa Visual Line desde el icono actual. `h/j/k/l` o las flechas amplían o reducen el rango seleccionado, también en `Tree`;
   `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera. `Esc` o `Ctrl+V` salen
   del modo y dejan seleccionado solo el icono actual. La barra de estado indica `VISUAL LINE`; fuera de este modo, `d` conserva su función

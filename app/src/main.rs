@@ -841,7 +841,9 @@ impl FileManager {
             self.toggle_path_field(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            if self.new_folder.is_some() {
+            if self.message.is_some() {
+                self.message = None;
+            } else if self.new_folder.is_some() {
                 self.new_folder = None;
             } else if self.search.is_some() {
                 self.search = None;
@@ -1714,6 +1716,56 @@ impl FileManager {
                 if let Some(path) = drop.dnd_release_payload::<PathBuf>() {
                     self.add_bookmark((*path).clone());
                 }
+            });
+    }
+
+    fn message_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(message) = self.message.clone() else {
+            return;
+        };
+        let (background, border, accent) = if ui.visuals().dark_mode {
+            (
+                Color32::from_rgb(46, 42, 33),
+                Color32::from_rgb(91, 76, 47),
+                Color32::from_rgb(222, 183, 110),
+            )
+        } else {
+            (
+                Color32::from_rgb(250, 246, 235),
+                Color32::from_rgb(226, 213, 181),
+                Color32::from_rgb(145, 105, 35),
+            )
+        };
+        egui::Frame::new()
+            .fill(background)
+            .stroke(Stroke::new(1.0, border))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .outer_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    let (icon, _) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_stroke(icon.center(), 7.5, Stroke::new(1.2, accent));
+                    ui.painter().text(
+                        icon.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "!",
+                        egui::FontId::proportional(13.0),
+                        accent,
+                    );
+                    ui.add_sized(
+                        [(ui.available_width() - 32.0).max(0.0), 0.0],
+                        egui::Label::new(RichText::new(message).size(12.0)).wrap(),
+                    );
+                    if ui
+                        .add_sized([24.0, 24.0], egui::Button::new("×").frame(false))
+                        .on_hover_text("Dismiss · Esc")
+                        .clicked()
+                    {
+                        self.message = None;
+                    }
+                });
             });
     }
 
@@ -2958,15 +3010,7 @@ impl eframe::App for FileManager {
                     ui.id().with("directory-background"),
                     egui::Sense::click(),
                 );
-                if let Some(message) = self.message.clone() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(ui.visuals().warn_fg_color, message);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.message = None;
-                        }
-                    });
-                    ui.separator();
-                }
+                self.message_banner(ui);
                 if self.search.is_some() {
                     self.search_results(ui, context);
                 } else if self.entries.is_empty() {
