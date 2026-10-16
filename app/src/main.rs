@@ -152,6 +152,7 @@ struct FileManager {
     search: Option<search::Search>,
     address: String,
     expanded: HashSet<PathBuf>,
+    directory_expansions: HashMap<PathBuf, HashSet<PathBuf>>,
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
     tree_layout: Option<TreeLayout>,
     size_job: Option<SizeJob>,
@@ -248,6 +249,7 @@ impl FileManager {
             focus_path: false,
             search: None,
             expanded: HashSet::new(),
+            directory_expansions: HashMap::new(),
             tree_cache: HashMap::new(),
             tree_layout: None,
             size_job: None,
@@ -382,6 +384,24 @@ impl FileManager {
         });
     }
 
+    fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>) {
+        self.directory_expansions
+            .insert(self.current.clone(), std::mem::take(&mut self.expanded));
+        self.expanded = self.directory_expansions.remove(&path).unwrap_or_default();
+        self.current = path;
+        self.entries = Arc::new(entries);
+        self.folder_counts.cancel();
+        self.folder_counts.request(&self.entries);
+        self.address = self.current.to_string_lossy().into_owned();
+        self.tree_cache.clear();
+        self.tree_layout = None;
+        for expanded in std::mem::take(&mut self.expanded) {
+            if expanded.is_dir() {
+                self.expand_directory(&expanded);
+            }
+        }
+    }
+
     fn navigate(&mut self, path: PathBuf, context: &egui::Context) {
         match path.canonicalize().and_then(|path| {
             files::entries(&path, self.settings.hidden, self.settings.sequences)
@@ -397,14 +417,7 @@ impl FileManager {
                     self.position = self.history.len() - 1;
                 }
                 self.breadcrumb_path = path.clone();
-                self.current = path;
-                self.entries = Arc::new(entries);
-                self.folder_counts.cancel();
-                self.folder_counts.request(&self.entries);
-                self.address = self.current.to_string_lossy().into_owned();
-                self.expanded.clear();
-                self.tree_cache.clear();
-                self.tree_layout = None;
+                self.load_directory(path, entries);
                 self.select(None, context);
                 self.refresh_disk(context);
             }
@@ -437,14 +450,7 @@ impl FileManager {
                     if !self.breadcrumb_path.starts_with(&path) {
                         self.breadcrumb_path = path.clone();
                     }
-                    self.current = path;
-                    self.entries = Arc::new(entries);
-                    self.folder_counts.cancel();
-                    self.folder_counts.request(&self.entries);
-                    self.address = self.current.to_string_lossy().into_owned();
-                    self.expanded.clear();
-                    self.tree_cache.clear();
-                    self.tree_layout = None;
+                    self.load_directory(path, entries);
                     self.select(None, context);
                     self.refresh_disk(context);
                 }
