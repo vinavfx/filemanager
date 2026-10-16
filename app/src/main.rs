@@ -138,8 +138,10 @@ struct FileManager {
     v_key_is_shortcut: Option<bool>,
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
+    center_selection: bool,
     page_scroll_delta: f32,
     pending_g: bool,
+    pending_z: bool,
     sidebar_focused: bool,
     pending_window_command: bool,
     sidebar_cursor: Option<usize>,
@@ -232,8 +234,10 @@ impl FileManager {
             v_key_is_shortcut: None,
             visible_paths: Vec::new(),
             scroll_to_selection: false,
+            center_selection: false,
             page_scroll_delta: 0.0,
             pending_g: false,
+            pending_z: false,
             sidebar_focused: false,
             pending_window_command: false,
             sidebar_cursor: None,
@@ -397,6 +401,8 @@ impl FileManager {
     fn select(&mut self, path: Option<PathBuf>, context: &egui::Context) {
         self.visual_line = false;
         self.pending_g = false;
+        self.pending_z = false;
+        self.center_selection = false;
         self.size_job = None;
         self.selection_size = None;
         if let Some(path) = &path {
@@ -714,6 +720,7 @@ impl FileManager {
         if let Some(sidebar) = sidebar {
             self.sidebar_focused = sidebar;
             self.pending_g = false;
+            self.pending_z = false;
             self.editing_path = false;
             if sidebar {
                 self.scroll_to_bookmark = true;
@@ -737,13 +744,19 @@ impl FileManager {
     fn vim_shortcuts(&mut self, context: &egui::Context) {
         if self.search.is_some() || self.new_folder.is_some() || self.text_input_focused(context) {
             self.pending_g = false;
+            self.pending_z = false;
             return;
         }
         let mut directory_steps = Vec::new();
         context.input_mut(|input| {
             input.events.retain_mut(|event| {
-                if let egui::Event::PointerButton { pressed: true, .. } = event {
+                if matches!(
+                    event,
+                    egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::WindowFocused(false)
+                ) {
                     self.pending_g = false;
+                    self.pending_z = false;
                 }
                 let egui::Event::Key {
                     key,
@@ -757,7 +770,23 @@ impl FileManager {
                     return true;
                 };
                 if *repeat {
-                    return *key != Key::G;
+                    return !matches!(key, Key::G | Key::Z);
+                }
+                let pending_z = std::mem::take(&mut self.pending_z);
+                if *key == Key::Z
+                    && modifiers.matches_exact(egui::Modifiers::NONE)
+                    && !self.sidebar_focused
+                {
+                    self.pending_g = false;
+                    if pending_z {
+                        if self.selected.is_some() {
+                            self.center_selection = true;
+                            self.scroll_to_selection = true;
+                        }
+                    } else {
+                        self.pending_z = true;
+                    }
+                    return false;
                 }
                 if !modifiers.matches_exact(egui::Modifiers::NONE)
                     && !modifiers.matches_exact(egui::Modifiers::SHIFT)
@@ -1014,11 +1043,16 @@ impl FileManager {
 
     fn navigate_items(
         &mut self,
-        items: &[(&Entry, egui::Pos2)],
-        viewport_height: f32,
+        items: &[(&Entry, egui::Pos2, f32)],
+        ui: &egui::Ui,
+        scroll_id: &str,
+        content_height: f32,
         context: &egui::Context,
     ) {
-        self.visible_paths = items.iter().map(|(entry, _)| entry.path.clone()).collect();
+        self.visible_paths = items
+            .iter()
+            .map(|(entry, _, _)| entry.path.clone())
+            .collect();
         if self.sidebar_focused {
             return;
         }
@@ -1065,27 +1099,46 @@ impl FileManager {
             }
         });
         if page_direction != 0.0 {
-            self.page_scroll_delta = page_direction * viewport_height / 2.0;
-            let position = items
+            let viewport_height = ui.available_height();
+            let offset = egui::scroll_area::State::load(
+                context,
+                ui.make_persistent_id(egui::Id::new(scroll_id)),
+            )
+            .map_or(0.0, |state| state.offset.y);
+            let next_offset = (offset + page_direction * viewport_height / 2.0)
+                .clamp(0.0, (content_height - viewport_height).max(0.0));
+            self.page_scroll_delta = next_offset - offset;
+            let x = items
                 .iter()
-                .find(|(entry, _)| self.selected.as_ref() == Some(&entry.path))
+                .find(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path))
                 .unwrap_or(&items[0])
-                .1;
-            let target_y = position.y + self.page_scroll_delta;
-            let target = items
-                .iter()
-                .filter(|(_, candidate)| (candidate.y - position.y) * page_direction >= 0.0)
-                .min_by(|(_, a), (_, b)| {
-                    (a.y - target_y)
-                        .abs()
-                        .total_cmp(&(b.y - target_y).abs())
-                        .then_with(|| {
-                            (a.x - position.x)
-                                .abs()
-                                .total_cmp(&(b.x - position.x).abs())
-                        })
-                });
-            if let Some((entry, _)) = target {
+                .1
+                .x;
+            let bottom = next_offset + viewport_height;
+            let edge_distance = |position: egui::Pos2, height: f32| {
+                if page_direction > 0.0 {
+                    (bottom - position.y - height).abs()
+                } else {
+                    (position.y - next_offset).abs()
+                }
+            };
+            let closest = |fully_visible: bool| {
+                items
+                    .iter()
+                    .filter(|(_, position, height)| {
+                        if fully_visible {
+                            position.y >= next_offset - 0.1 && position.y + height <= bottom + 0.1
+                        } else {
+                            position.y < bottom && position.y + height > next_offset
+                        }
+                    })
+                    .min_by(|(_, a, a_height), (_, b, b_height)| {
+                        edge_distance(*a, *a_height)
+                            .total_cmp(&edge_distance(*b, *b_height))
+                            .then_with(|| (a.x - x).abs().total_cmp(&(b.x - x).abs()))
+                    })
+            };
+            if let Some((entry, _, _)) = closest(true).or_else(|| closest(false)) {
                 self.select_entry(entry.path.clone(), context);
             }
             self.scroll_to_selection = false;
@@ -1112,9 +1165,9 @@ impl FileManager {
         };
         let current = items
             .iter()
-            .position(|(entry, _)| self.selected.as_ref() == Some(&entry.path));
+            .position(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path));
         let target = if let Some(index) = current {
-            let (entry, position) = &items[index];
+            let (entry, position, _) = &items[index];
             if self.settings.view == View::Tree {
                 match key {
                     Key::ArrowRight if entry.directory && !entry.symlink => {
@@ -1122,17 +1175,17 @@ impl FileManager {
                             self.expand_directory(&entry.path);
                             return;
                         }
-                        items
-                            .get(index + 1)
-                            .filter(|(child, _)| child.path.parent() == Some(entry.path.as_path()))
+                        items.get(index + 1).filter(|(child, _, _)| {
+                            child.path.parent() == Some(entry.path.as_path())
+                        })
                     }
                     Key::ArrowLeft => {
                         if self.expanded.remove(&entry.path) {
                             return;
                         }
-                        items
-                            .iter()
-                            .find(|(parent, _)| entry.path.parent() == Some(parent.path.as_path()))
+                        items.iter().find(|(parent, _, _)| {
+                            entry.path.parent() == Some(parent.path.as_path())
+                        })
                     }
                     Key::ArrowUp => index.checked_sub(1).and_then(|index| items.get(index)),
                     Key::ArrowDown => items.get(index + 1),
@@ -1141,14 +1194,14 @@ impl FileManager {
             } else {
                 items
                     .iter()
-                    .filter(|(_, candidate)| match key {
+                    .filter(|(_, candidate, _)| match key {
                         Key::ArrowUp => candidate.y < position.y,
                         Key::ArrowDown => candidate.y > position.y,
                         Key::ArrowLeft => candidate.y == position.y && candidate.x < position.x,
                         Key::ArrowRight => candidate.y == position.y && candidate.x > position.x,
                         _ => false,
                     })
-                    .min_by(|(_, a), (_, b)| {
+                    .min_by(|(_, a, _), (_, b, _)| {
                         (a.y - position.y)
                             .abs()
                             .total_cmp(&(b.y - position.y).abs())
@@ -1162,7 +1215,7 @@ impl FileManager {
         } else {
             items
                 .iter()
-                .find(|(entry, _)| self.last_selected.as_ref() == Some(&entry.path))
+                .find(|(entry, _, _)| self.last_selected.as_ref() == Some(&entry.path))
                 .or_else(|| {
                     if matches!(key, Key::ArrowUp | Key::ArrowLeft) {
                         items.last()
@@ -1171,7 +1224,7 @@ impl FileManager {
                     }
                 })
         };
-        if let Some((entry, _)) = target {
+        if let Some((entry, _, _)) = target {
             self.select_entry(entry.path.clone(), context);
             self.scroll_to_selection = true;
         }
@@ -1181,8 +1234,9 @@ impl FileManager {
         let mut scroll = egui::ScrollArea::vertical().id_salt(id);
         let delta = std::mem::take(&mut self.page_scroll_delta);
         if delta != 0.0 {
-            let offset = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(id))
-                .map_or(0.0, |state| state.offset.y);
+            let offset =
+                egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(egui::Id::new(id)))
+                    .map_or(0.0, |state| state.offset.y);
             scroll = scroll.vertical_scroll_offset((offset + delta).max(0.0));
         }
         scroll
@@ -2240,11 +2294,14 @@ impl FileManager {
                         (index % columns) as f32 * (width + ui.spacing().item_spacing.x),
                         (index / columns) as f32 * (height + ui.spacing().item_spacing.y),
                     ),
+                    height,
                 )
             })
             .collect();
-        self.navigate_items(&items, ui.available_height(), context);
         ui.scope(|ui| {
+            let content_height =
+                rows as f32 * (height + ui.spacing().item_spacing.y) - ui.spacing().item_spacing.y;
+            self.navigate_items(&items, ui, "grid", content_height.max(0.0), context);
             let mut scroll = self.entry_scroll_area(ui, "grid");
             if self.scroll_to_selection {
                 if let Some(index) = entries
@@ -2253,14 +2310,23 @@ impl FileManager {
                 {
                     let top = (index / columns) as f32 * (height + ui.spacing().item_spacing.y);
                     let viewport = ui.available_height();
-                    let offset =
-                        egui::scroll_area::State::load(context, ui.make_persistent_id("grid"))
-                            .map_or(0.0, |state| state.offset.y);
-                    scroll = scroll.vertical_scroll_offset(
-                        offset.min(top).max(top + height - viewport).max(0.0),
-                    );
+                    let offset = egui::scroll_area::State::load(
+                        context,
+                        ui.make_persistent_id(egui::Id::new("grid")),
+                    )
+                    .map_or(0.0, |state| state.offset.y);
+                    let offset = if self.center_selection {
+                        top + (height - viewport) / 2.0
+                    } else {
+                        offset.min(top).max(top + height - viewport)
+                    };
+                    let content_height = rows as f32 * (height + ui.spacing().item_spacing.y)
+                        - ui.spacing().item_spacing.y;
+                    let max_offset = (content_height - viewport).max(0.0);
+                    scroll = scroll.vertical_scroll_offset(offset.clamp(0.0, max_offset));
                 }
                 self.scroll_to_selection = false;
+                self.center_selection = false;
             }
             scroll
                 .auto_shrink([false, false])
@@ -2361,12 +2427,12 @@ impl FileManager {
             let mut x = 0.0;
             for index in range.clone() {
                 let item_width = aspects[index] * height;
-                items.push((entries[index], egui::pos2(x + item_width / 2.0, y)));
+                items.push((entries[index], egui::pos2(x + item_width / 2.0, y), *height));
                 x += item_width;
             }
             y += height;
         }
-        self.navigate_items(&items, ui.available_height(), context);
+        self.navigate_items(&items, ui, "media", total_height, context);
         self.entry_scroll_area(ui, "media")
             .auto_shrink([false, false])
             .drag_to_scroll(false)
@@ -2385,8 +2451,12 @@ impl FileManager {
                         );
                         x = rect.right();
                         if self.scroll_to_selection && self.selected.as_ref() == Some(&entry.path) {
-                            ui.scroll_to_rect(rect, None);
+                            ui.scroll_to_rect(
+                                rect,
+                                self.center_selection.then_some(egui::Align::Center),
+                            );
                             self.scroll_to_selection = false;
+                            self.center_selection = false;
                         }
                         if !ui.is_rect_visible(rect) {
                             continue;
@@ -3092,14 +3162,20 @@ impl eframe::App for FileManager {
                         View::Tree => {
                             self.tree_header(ui);
                             let items = self.tree_layout();
+                            let height = (30.0 * self.settings.zoom).max(32.0);
                             let navigation: Vec<_> = items
                                 .iter()
-                                .map(|(entry, position)| (entry, *position))
+                                .map(|(entry, position)| (entry, *position, height))
                                 .collect();
-                            self.navigate_items(&navigation, ui.available_height(), context);
-                            let height = (30.0 * self.settings.zoom).max(32.0);
                             ui.scope(|ui| {
                                 ui.spacing_mut().item_spacing.y = 0.0;
+                                self.navigate_items(
+                                    &navigation,
+                                    ui,
+                                    "tree",
+                                    items.len() as f32 * height,
+                                    context,
+                                );
                                 let mut scroll = self.entry_scroll_area(ui, "tree");
                                 if self.scroll_to_selection {
                                     if let Some(index) = items.iter().position(|(entry, _)| {
@@ -3108,17 +3184,22 @@ impl eframe::App for FileManager {
                                         let top = index as f32 * height;
                                         let offset = egui::scroll_area::State::load(
                                             context,
-                                            ui.make_persistent_id("tree"),
+                                            ui.make_persistent_id(egui::Id::new("tree")),
                                         )
                                         .map_or(0.0, |state| state.offset.y);
-                                        scroll = scroll.vertical_scroll_offset(
-                                            offset
-                                                .min(top)
-                                                .max(top + height - ui.available_height())
-                                                .max(0.0),
-                                        );
+                                        let viewport = ui.available_height();
+                                        let offset = if self.center_selection {
+                                            top + (height - viewport) / 2.0
+                                        } else {
+                                            offset.min(top).max(top + height - viewport)
+                                        };
+                                        let max_offset =
+                                            (items.len() as f32 * height - viewport).max(0.0);
+                                        scroll = scroll
+                                            .vertical_scroll_offset(offset.clamp(0.0, max_offset));
                                     }
                                     self.scroll_to_selection = false;
+                                    self.center_selection = false;
                                 }
                                 scroll
                                     .auto_shrink([false, false])
