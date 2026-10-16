@@ -57,8 +57,15 @@ seleccionar, muestra el tamaño del archivo o la suma recursiva de los archivos 
 en segundo plano, no sigue enlaces simbólicos y señala resultados parciales cuando hay elementos inaccesibles. Los tamaños son lógicos, no
 bloques ocupados.
 
-Los marcadores, la vista, el zoom, el margen de Media, el tema, la agrupación de secuencias y la visibilidad de archivos ocultos se guardan
-en `$XDG_CONFIG_HOME/still-files/settings.json` o, si la variable no está definida, en `~/.config/still-files/settings.json`.
+Los marcadores se comparten con Caja mediante `$XDG_CONFIG_HOME/gtk-3.0/bookmarks` o `~/.config/gtk-3.0/bookmarks`: una URI por línea y un
+nombre opcional separado por un espacio. Se conservan el orden y los nombres; las altas, bajas y modificaciones de Caja se detectan cada
+segundo, y los cambios de este gestor se guardan en el mismo archivo. Si no existe, se lee `~/.gtk-bookmarks` como alternativa heredada. Los
+marcadores antiguos de `settings.json` se ignoran. Como Caja, se ocultan las rutas locales inexistentes y los duplicados de las carpetas
+predeterminadas, sin eliminarlos del archivo; su disponibilidad se comprueba cada segundo. Las ubicaciones remotas se abren mediante
+`xdg-open`.
+
+La vista, el zoom, el margen de Media, el tema, la agrupación de secuencias, los accesos predeterminados ocultos y la visibilidad de
+archivos ocultos se guardan en `$XDG_CONFIG_HOME/still-files/settings.json` o `~/.config/still-files/settings.json`.
 
 Las miniaturas se guardan en WebP, con un máximo de 192 píxeles por lado, en `$XDG_CACHE_HOME/still-files/thumbnails` o
 `~/.cache/still-files/thumbnails`. Se reutilizan entre ejecuciones y se regeneran si cambia el tamaño o la fecha de modificación del

@@ -1,3 +1,4 @@
+mod bookmarks;
 mod files;
 mod images;
 mod layout;
@@ -52,7 +53,6 @@ enum TreeSort {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
-    bookmarks: Vec<PathBuf>,
     removed_places: Vec<PathBuf>,
     view: View,
     tree_sort: TreeSort,
@@ -67,7 +67,6 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            bookmarks: Vec::new(),
             removed_places: Vec::new(),
             view: View::Grid,
             tree_sort: TreeSort::Name,
@@ -114,6 +113,7 @@ struct FileManager {
     disk_job: Option<mpsc::Receiver<Result<Disk, String>>>,
     disk: Option<Disk>,
     home_places: Vec<places::Place>,
+    bookmarks: bookmarks::Bookmarks,
     new_folder: Option<NewFolder>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
@@ -148,9 +148,11 @@ impl FileManager {
         };
         apply_theme(&context.egui_ctx, settings.dark_mode);
         let home_places = places::defaults(&home);
-        settings
-            .bookmarks
-            .retain(|path| !home_places.iter().any(|place| &place.path == path));
+        let mut bookmarks = bookmarks::Bookmarks::new(&home);
+        let bookmark_error = bookmarks
+            .reload()
+            .err()
+            .map(|error| format!("Cannot read shared bookmarks: {error}"));
         settings.zoom = if settings.zoom.is_finite() {
             settings.zoom.clamp(0.65, 3.6)
         } else {
@@ -182,9 +184,10 @@ impl FileManager {
             disk_job: None,
             disk: None,
             home_places,
+            bookmarks,
             new_folder: None,
             compression_job: None,
-            message: config_error,
+            message: config_error.or(bookmark_error),
         };
         app.refresh(&context.egui_ctx);
         app
@@ -349,9 +352,9 @@ impl FileManager {
                 .removed_places
                 .retain(|removed| removed != &path);
             self.save();
-        } else if !self.settings.bookmarks.contains(&path) {
-            self.settings.bookmarks.push(path);
-            self.save();
+        }
+        if let Err(error) = self.bookmarks.add(&path) {
+            self.message = Some(format!("Cannot save shared bookmarks: {error}"));
         }
     }
 
@@ -807,14 +810,18 @@ impl FileManager {
     fn bookmark_row(
         &mut self,
         ui: &mut egui::Ui,
-        path: &Path,
-        label: &str,
+        bookmark: &bookmarks::Bookmark,
         kind: Option<places::Kind>,
         context: &egui::Context,
     ) {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
-        paint_selection(ui, rect, self.current == path, response.hovered());
+        paint_selection(
+            ui,
+            rect,
+            bookmark.path.as_ref() == Some(&self.current),
+            response.hovered(),
+        );
         let icon = egui::Rect::from_center_size(
             egui::pos2(rect.left() + 16.0, rect.center().y),
             Vec2::splat(18.0),
@@ -826,18 +833,28 @@ impl FileManager {
         }
         paint_name(
             ui,
-            label,
+            &bookmark.label,
             egui::pos2(rect.left() + 34.0, rect.center().y),
             rect.width() - 40.0,
             13.0,
         );
-        let response = response.on_hover_text(path.to_string_lossy());
+        let response = response.on_hover_text(bookmark.path.as_ref().map_or_else(
+            || bookmark.uri.clone(),
+            |path| path.to_string_lossy().into_owned(),
+        ));
         if response.clicked() {
-            self.navigate(path.to_path_buf(), context);
+            if let Some(path) = &bookmark.path {
+                self.navigate(path.clone(), context);
+            } else if let Err(error) = std::process::Command::new("xdg-open")
+                .arg(&bookmark.uri)
+                .spawn()
+            {
+                self.message = Some(format!("Cannot open bookmark: {error}"));
+            }
         }
         response.context_menu(|ui| {
             if ui.button("Remove bookmark").clicked() {
-                if kind.is_some() {
+                if let Some(path) = bookmark.path.as_ref().filter(|_| kind.is_some()) {
                     if !self
                         .settings
                         .removed_places
@@ -846,10 +863,10 @@ impl FileManager {
                     {
                         self.settings.removed_places.push(path.to_path_buf());
                     }
-                } else {
-                    self.settings.bookmarks.retain(|bookmark| bookmark != path);
+                    self.save();
+                } else if let Err(error) = self.bookmarks.remove(&bookmark.uri) {
+                    self.message = Some(format!("Cannot save shared bookmarks: {error}"));
                 }
-                self.save();
                 ui.close_menu();
             }
         });
@@ -897,19 +914,27 @@ impl FileManager {
                             if !self.settings.removed_places.contains(&place.path) {
                                 self.bookmark_row(
                                     ui,
-                                    &place.path,
-                                    place.label,
+                                    &bookmarks::Bookmark {
+                                        uri: String::new(),
+                                        path: Some(place.path),
+                                        label: place.label.into(),
+                                        exists: true,
+                                    },
                                     Some(place.kind),
                                     context,
                                 );
                             }
                         }
                         ui.separator();
-                        for path in self.settings.bookmarks.clone() {
-                            let label = path
-                                .file_name()
-                                .map_or_else(|| "/".into(), |name| name.to_string_lossy());
-                            self.bookmark_row(ui, &path, &label, None, context);
+                        for bookmark in self.bookmarks.entries.clone() {
+                            if bookmark.exists
+                                && !self
+                                    .home_places
+                                    .iter()
+                                    .any(|place| bookmark.path.as_ref() == Some(&place.path))
+                            {
+                                self.bookmark_row(ui, &bookmark, None, context);
+                            }
                         }
                         ui.label(
                             RichText::new("Drag folders here\nor press D to bookmark")
@@ -1695,6 +1720,10 @@ impl FileManager {
 
 impl eframe::App for FileManager {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        context.request_repaint_after(std::time::Duration::from_secs(1));
+        if let Err(error) = self.bookmarks.poll() {
+            self.message = Some(format!("Cannot read shared bookmarks: {error}"));
+        }
         self.poll(context);
         self.shortcuts(context);
         self.toolbar(context);
