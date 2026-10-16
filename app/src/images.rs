@@ -283,7 +283,7 @@ pub struct Thumbnails {
     generation: Arc<AtomicU64>,
     pending: HashSet<ThumbnailKey>,
     cache: HashMap<ThumbnailKey, Result<egui::TextureHandle, String>>,
-    fingerprints: HashMap<ThumbnailKey, u64>,
+    fingerprints: HashMap<ThumbnailKey, (Option<u64>, Instant)>,
     order: VecDeque<ThumbnailKey>,
     completed: usize,
     total: usize,
@@ -366,9 +366,8 @@ impl Thumbnails {
                 .map(|cached| cached.key)
                 .ok()
                 .or_else(|| fingerprint(&path.0).ok());
-            if let Some(key) = key {
-                self.fingerprints.insert(path.clone(), key);
-            }
+            self.fingerprints
+                .insert(path.clone(), (key, Instant::now()));
             let texture = image.map(|cached| {
                 if let Some(warning) = cached.warning {
                     self.warning = Some(warning);
@@ -396,11 +395,19 @@ impl Thumbnails {
         };
         let key = (path.to_path_buf(), frame);
         if self.cache.contains_key(&key)
-            && self.fingerprints.get(&key).copied() != fingerprint(path).ok()
+            && self
+                .fingerprints
+                .get(&key)
+                .is_none_or(|(_, checked)| checked.elapsed() >= Duration::from_secs(1))
         {
-            self.cache.remove(&key);
-            self.fingerprints.remove(&key);
-            self.order.retain(|cached| cached != &key);
+            let current = fingerprint(path).ok();
+            let previous = self
+                .fingerprints
+                .insert(key.clone(), (current, Instant::now()));
+            if previous.is_none_or(|(fingerprint, _)| fingerprint != current) {
+                self.cache.remove(&key);
+                self.order.retain(|cached| cached != &key);
+            }
         }
         if !self.cache.contains_key(&key)
             && !self.pending.contains(&key)

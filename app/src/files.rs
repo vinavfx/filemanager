@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +39,78 @@ impl Entry {
         } else {
             (&self.path, if self.animated() { frame } else { 0 })
         }
+    }
+}
+
+pub struct FolderCounts {
+    sender: mpsc::Sender<(u64, PathBuf)>,
+    receiver: mpsc::Receiver<(u64, PathBuf, usize)>,
+    generation: Arc<AtomicU64>,
+}
+
+impl FolderCounts {
+    pub fn new(context: egui::Context) -> Self {
+        let (sender, requests) = mpsc::channel::<(u64, PathBuf)>();
+        let (results, receiver) = mpsc::channel();
+        let generation = Arc::new(AtomicU64::new(0));
+        let active = Arc::clone(&generation);
+        std::thread::spawn(move || {
+            while let Ok((generation, path)) = requests.recv() {
+                if active.load(Ordering::Relaxed) != generation {
+                    continue;
+                }
+                let Ok(entries) = fs::read_dir(&path) else {
+                    continue;
+                };
+                let mut count = 0;
+                let mut complete = true;
+                for entry in entries {
+                    if active.load(Ordering::Relaxed) != generation || entry.is_err() {
+                        complete = false;
+                        break;
+                    }
+                    count += 1;
+                }
+                if complete {
+                    if results.send((generation, path, count)).is_err() {
+                        break;
+                    }
+                    context.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+            }
+        });
+        Self {
+            sender,
+            receiver,
+            generation,
+        }
+    }
+
+    pub fn request(&self, entries: &[Entry]) {
+        let generation = self.generation.load(Ordering::Relaxed);
+        for entry in entries.iter().filter(|entry| entry.directory) {
+            let _ = self.sender.send((generation, entry.path.clone()));
+        }
+    }
+
+    pub fn poll(&self) -> HashMap<PathBuf, usize> {
+        let generation = self.generation.load(Ordering::Relaxed);
+        self.receiver
+            .try_iter()
+            .filter_map(|(requested, path, count)| {
+                (requested == generation).then_some((path, count))
+            })
+            .collect()
+    }
+
+    pub fn cancel(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for FolderCounts {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -93,35 +165,18 @@ fn read_entries(
             continue;
         }
         let kind = item.file_type()?;
-        let metadata = item.metadata().ok();
-        let directory = item.path().is_dir();
-        let item_count = if directory {
-            if let Ok(items) = fs::read_dir(item.path()) {
-                let mut count = Some(0);
-                for item in items {
-                    if let Some(budget) = budget.as_deref_mut() {
-                        budget.check()?;
-                    }
-                    match item {
-                        Ok(_) => count = count.map(|count| count + 1),
-                        Err(_) => {
-                            count = None;
-                            break;
-                        }
-                    }
-                }
-                count
-            } else {
-                None
-            }
+        let metadata = if kind.is_symlink() {
+            fs::metadata(item.path()).ok()
         } else {
-            None
+            item.metadata().ok()
         };
+        let directory = kind.is_dir()
+            || (kind.is_symlink() && metadata.as_ref().is_some_and(|value| value.is_dir()));
         entries.push(Entry {
             directory,
             symlink: kind.is_symlink(),
             size: metadata.as_ref().map_or(0, |value| value.len()),
-            item_count,
+            item_count: None,
             modified: metadata.and_then(|value| value.modified().ok()),
             modified_label: "—".to_owned(),
             sequence: None,
@@ -133,13 +188,12 @@ fn read_entries(
         entries = group_sequences(entries);
     }
     format_modified(&mut entries);
-    entries.sort_by(|a, b| {
-        b.directory.cmp(&a.directory).then_with(|| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.name.cmp(&b.name))
-        })
+    entries.sort_by_cached_key(|entry| {
+        (
+            !entry.directory,
+            entry.name.to_lowercase(),
+            entry.name.clone(),
+        )
     });
     Ok(entries)
 }

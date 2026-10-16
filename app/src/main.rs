@@ -12,7 +12,7 @@ use files::{Entry, SizeJob, SizeResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 const ACCENT: Color32 = Color32::from_rgb(112, 168, 157);
 const MUTED: Color32 = Color32::from_rgb(125, 132, 143);
@@ -110,6 +110,14 @@ struct NameDialog {
     error: Option<String>,
 }
 
+struct TreeLayout {
+    sort: TreeSort,
+    descending: bool,
+    zoom: f32,
+    expanded: HashSet<PathBuf>,
+    items: Arc<Vec<(Entry, egui::Pos2)>>,
+}
+
 struct FileManager {
     settings: Settings,
     config: PathBuf,
@@ -117,7 +125,8 @@ struct FileManager {
     breadcrumb_path: PathBuf,
     thumbnails: images::Thumbnails,
     icons: icons::Icons,
-    entries: Vec<Entry>,
+    entries: Arc<Vec<Entry>>,
+    folder_counts: files::FolderCounts,
     history: Vec<PathBuf>,
     operations: operations::History,
     position: usize,
@@ -141,6 +150,7 @@ struct FileManager {
     address: String,
     expanded: HashSet<PathBuf>,
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
+    tree_layout: Option<TreeLayout>,
     size_job: Option<SizeJob>,
     selection_size: Option<SizeResult>,
     disk_job: Option<mpsc::Receiver<Result<Disk, String>>>,
@@ -211,7 +221,8 @@ impl FileManager {
             current,
             config,
             settings,
-            entries: Vec::new(),
+            entries: Arc::default(),
+            folder_counts: files::FolderCounts::new(context.egui_ctx.clone()),
             position: 0,
             selected: None,
             last_selected: None,
@@ -232,6 +243,7 @@ impl FileManager {
             search: None,
             expanded: HashSet::new(),
             tree_cache: HashMap::new(),
+            tree_layout: None,
             size_job: None,
             selection_size: None,
             disk_job: None,
@@ -269,13 +281,16 @@ impl FileManager {
 
     fn refresh(&mut self, context: &egui::Context) {
         match files::entries(&self.current, self.settings.hidden, self.settings.sequences) {
-            Ok(entries) => self.entries = entries,
+            Ok(entries) => self.entries = Arc::new(entries),
             Err(error) => {
-                self.entries.clear();
+                self.entries = Arc::default();
                 self.message = Some(format!("Cannot read directory: {error}"));
             }
         }
         self.tree_cache.clear();
+        self.tree_layout = None;
+        self.folder_counts.cancel();
+        self.folder_counts.request(&self.entries);
         self.thumbnails.cancel();
         self.select(None, context);
         self.refresh_disk(context);
@@ -324,10 +339,13 @@ impl FileManager {
                 }
                 self.breadcrumb_path = path.clone();
                 self.current = path;
-                self.entries = entries;
+                self.entries = Arc::new(entries);
+                self.folder_counts.cancel();
+                self.folder_counts.request(&self.entries);
                 self.address = self.current.to_string_lossy().into_owned();
                 self.expanded.clear();
                 self.tree_cache.clear();
+                self.tree_layout = None;
                 self.select(None, context);
                 self.refresh_disk(context);
             }
@@ -361,10 +379,13 @@ impl FileManager {
                         self.breadcrumb_path = path.clone();
                     }
                     self.current = path;
-                    self.entries = entries;
+                    self.entries = Arc::new(entries);
+                    self.folder_counts.cancel();
+                    self.folder_counts.request(&self.entries);
                     self.address = self.current.to_string_lossy().into_owned();
                     self.expanded.clear();
                     self.tree_cache.clear();
+                    self.tree_layout = None;
                     self.select(None, context);
                     self.refresh_disk(context);
                 }
@@ -605,6 +626,18 @@ impl FileManager {
         }
         self.thumbnails.poll(context);
         self.icons.poll(context);
+        let counts = self.folder_counts.poll();
+        if !counts.is_empty() {
+            self.tree_layout = None;
+            for entry in Arc::make_mut(&mut self.entries)
+                .iter_mut()
+                .chain(self.tree_cache.values_mut().flatten())
+            {
+                if let Some(count) = counts.get(&entry.path) {
+                    entry.item_count = Some(*count);
+                }
+            }
+        }
         if let Some(job) = &self.size_job {
             if let Ok(result) = job.receiver.try_recv() {
                 self.selection_size = Some(result);
@@ -981,7 +1014,7 @@ impl FileManager {
 
     fn navigate_items(
         &mut self,
-        items: &[(Entry, egui::Pos2)],
+        items: &[(&Entry, egui::Pos2)],
         viewport_height: f32,
         context: &egui::Context,
     ) {
@@ -1158,6 +1191,8 @@ impl FileManager {
     fn expand_directory(&mut self, path: &Path) {
         match files::entries(path, self.settings.hidden, self.settings.sequences) {
             Ok(children) => {
+                self.tree_layout = None;
+                self.folder_counts.request(&children);
                 self.tree_cache.insert(path.to_path_buf(), children);
                 self.expanded.insert(path.to_path_buf());
             }
@@ -1166,6 +1201,7 @@ impl FileManager {
     }
 
     fn toggle_recursive_expansion(&mut self, path: PathBuf) {
+        self.tree_layout = None;
         if self.expanded.contains(&path)
             && self
                 .expanded
@@ -1208,6 +1244,7 @@ impl FileManager {
                             .filter(|entry| entry.directory && !entry.symlink)
                             .map(|entry| (entry.path.clone(), depth + 1)),
                     );
+                    self.folder_counts.request(&children);
                     self.tree_cache.insert(path.clone(), children);
                     self.expanded.insert(path);
                     expanded += 1;
@@ -2198,7 +2235,7 @@ impl FileManager {
             .enumerate()
             .map(|(index, entry)| {
                 (
-                    entry.clone(),
+                    entry,
                     egui::pos2(
                         (index % columns) as f32 * (width + ui.spacing().item_spacing.x),
                         (index / columns) as f32 * (height + ui.spacing().item_spacing.y),
@@ -2292,13 +2329,12 @@ impl FileManager {
     }
 
     fn media(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        let entries: Vec<_> = self
-            .entries
+        let source = Arc::clone(&self.entries);
+        let entries: Vec<_> = source
             .iter()
             .filter(|entry| {
                 entry.directory || files::image_file(&entry.path) || files::video_file(&entry.path)
             })
-            .cloned()
             .collect();
         if entries.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -2325,7 +2361,7 @@ impl FileManager {
             let mut x = 0.0;
             for index in range.clone() {
                 let item_width = aspects[index] * height;
-                items.push((entries[index].clone(), egui::pos2(x + item_width / 2.0, y)));
+                items.push((entries[index], egui::pos2(x + item_width / 2.0, y)));
                 x += item_width;
             }
             y += height;
@@ -2558,6 +2594,29 @@ impl FileManager {
         });
     }
 
+    fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
+        if let Some(layout) = &self.tree_layout {
+            if layout.sort == self.settings.tree_sort
+                && layout.descending == self.settings.tree_descending
+                && layout.zoom == self.settings.zoom
+                && layout.expanded == self.expanded
+            {
+                return Arc::clone(&layout.items);
+            }
+        }
+        let mut items = Vec::new();
+        self.tree_items(self.entries.as_ref().clone(), 0, &mut items);
+        let items = Arc::new(items);
+        self.tree_layout = Some(TreeLayout {
+            sort: self.settings.tree_sort,
+            descending: self.settings.tree_descending,
+            zoom: self.settings.zoom,
+            expanded: self.expanded.clone(),
+            items: Arc::clone(&items),
+        });
+        items
+    }
+
     fn tree_items(
         &self,
         mut entries: Vec<Entry>,
@@ -2568,7 +2627,7 @@ impl FileManager {
         for entry in entries {
             let path = entry.path.clone();
             let y = items.len() as f32 * (30.0 * self.settings.zoom).max(32.0);
-            items.push((entry, egui::pos2(0.0, y)));
+            items.push((entry, egui::pos2(depth as f32, y)));
             if self.expanded.contains(&path) && depth < 64 {
                 if let Some(children) = self.tree_cache.get(&path) {
                     self.tree_items(children.clone(), depth + 1, items);
@@ -2580,13 +2639,12 @@ impl FileManager {
     fn tree(
         &mut self,
         ui: &mut egui::Ui,
-        mut entries: Vec<Entry>,
-        depth: usize,
-        row_index: &mut usize,
+        items: &[(Entry, egui::Pos2)],
+        start: usize,
         context: &egui::Context,
     ) {
-        self.sort_tree_entries(&mut entries);
-        for entry in entries {
+        for (index, (entry, position)) in items.iter().enumerate() {
+            let depth = position.x;
             ui.push_id(&entry.path, |ui| {
                 let height = (30.0 * self.settings.zoom).max(32.0);
                 let (row, _) = ui.allocate_exact_size(
@@ -2600,14 +2658,13 @@ impl FileManager {
                 ui.painter().rect_filled(
                     row,
                     0.0,
-                    if *row_index % 2 == 0 {
+                    if (start + index) % 2 == 0 {
                         ui.visuals().panel_fill
                     } else {
                         ui.visuals().faint_bg_color
                     },
                 );
-                *row_index += 1;
-                let left = row.left() + depth as f32 * 20.0 * self.settings.zoom;
+                let left = row.left() + depth * 20.0 * self.settings.zoom;
                 let disclosure = egui::Rect::from_center_size(
                     egui::pos2(left + 14.0, row.center().y),
                     Vec2::splat(24.0),
@@ -2655,8 +2712,8 @@ impl FileManager {
                     egui::pos2(content.left() + edge / 2.0 + 6.0, row.center().y),
                     Vec2::splat(edge),
                 );
-                if !self.paint_thumbnail(ui, icon, &entry, &response) {
-                    self.paint_entry_icon(ui, icon, &entry);
+                if !self.paint_thumbnail(ui, icon, entry, &response) {
+                    self.paint_entry_icon(ui, icon, entry);
                 }
                 let name_left = icon.right() + 10.0;
                 let date_left = row.right() - TREE_DATE_WIDTH;
@@ -2665,7 +2722,7 @@ impl FileManager {
                     egui::pos2(name_left, row.top() + 4.0),
                     Vec2::new((name_right - name_left - 8.0).max(1.0), row.height() - 8.0),
                 );
-                if !self.rename_field(ui, name_rect, &entry, context) {
+                if !self.rename_field(ui, name_rect, entry, context) {
                     paint_name(
                         ui,
                         &entry.name,
@@ -2696,12 +2753,7 @@ impl FileManager {
                     egui::FontId::proportional(11.0),
                     MUTED,
                 );
-                self.entry_response(response, &entry, context);
-                if self.expanded.contains(&entry.path) && depth < 64 {
-                    if let Some(children) = self.tree_cache.get(&entry.path).cloned() {
-                        self.tree(ui, children, depth + 1, row_index, context);
-                    }
-                }
+                self.entry_response(response, entry, context);
             });
         }
     }
@@ -3039,19 +3091,45 @@ impl eframe::App for FileManager {
                         View::Media => self.media(ui, context),
                         View::Tree => {
                             self.tree_header(ui);
-                            let mut items = Vec::new();
-                            self.tree_items(self.entries.clone(), 0, &mut items);
-                            self.navigate_items(&items, ui.available_height(), context);
-                            self.entry_scroll_area(ui, "tree")
-                                .auto_shrink([false, false])
-                                .drag_to_scroll(false)
-                                .scroll_bar_visibility(
-                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                                )
-                                .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    self.tree(ui, self.entries.clone(), 0, &mut 0, context);
-                                });
+                            let items = self.tree_layout();
+                            let navigation: Vec<_> = items
+                                .iter()
+                                .map(|(entry, position)| (entry, *position))
+                                .collect();
+                            self.navigate_items(&navigation, ui.available_height(), context);
+                            let height = (30.0 * self.settings.zoom).max(32.0);
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                let mut scroll = self.entry_scroll_area(ui, "tree");
+                                if self.scroll_to_selection {
+                                    if let Some(index) = items.iter().position(|(entry, _)| {
+                                        self.selected.as_ref() == Some(&entry.path)
+                                    }) {
+                                        let top = index as f32 * height;
+                                        let offset = egui::scroll_area::State::load(
+                                            context,
+                                            ui.make_persistent_id("tree"),
+                                        )
+                                        .map_or(0.0, |state| state.offset.y);
+                                        scroll = scroll.vertical_scroll_offset(
+                                            offset
+                                                .min(top)
+                                                .max(top + height - ui.available_height())
+                                                .max(0.0),
+                                        );
+                                    }
+                                    self.scroll_to_selection = false;
+                                }
+                                scroll
+                                    .auto_shrink([false, false])
+                                    .drag_to_scroll(false)
+                                    .scroll_bar_visibility(
+                                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                    )
+                                    .show_rows(ui, height, items.len(), |ui, range| {
+                                        self.tree(ui, &items[range.clone()], range.start, context);
+                                    });
+                            });
                         }
                     }
                 }
