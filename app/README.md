@@ -58,7 +58,11 @@ inglés. No se muestran mensajes emergentes al pasar el cursor.
   cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los grupos. La barra
   dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado, indica la posición
   de la muestra mostrada, incluso mientras se carga otra.
-- La lupa de la barra superior o `Ctrl+F` convierte el campo de direcciones en un buscador recursivo de nombres y rutas. Utiliza el motor de
+- `Ctrl+F` busca por nombre entre los elementos visibles y selecciona la mejor coincidencia mientras escribes, sin filtrar ni ocultar nada.
+  Ignora mayúsculas y prioriza nombres exactos, prefijos y fragmentos contiguos; también admite letras en orden con caracteres intermedios.
+  En `Tree` incluye los elementos visibles de las carpetas expandidas, nunca el contenido de las cerradas. `Enter` o `Esc` cierra el campo
+  conservando la selección, sin abrir el archivo.
+- La lupa de la barra superior o `Ctrl+P` convierte el campo de direcciones en un buscador recursivo de nombres y rutas. Utiliza el motor de
   fzf con su coincidencia difusa, ordenación y sintaxis habituales: `'texto` busca literalmente, `^texto` por prefijo, `texto$` por sufijo,
   `!texto` excluye y `|` separa alternativas. Los términos separados por espacios se combinan. No se cargan `FZF_DEFAULT_OPTS` ni
   `FZF_DEFAULT_OPTS_FILE`, para evitar opciones de terminal incompatibles con la integración. El recorrido y la búsqueda se ejecutan en

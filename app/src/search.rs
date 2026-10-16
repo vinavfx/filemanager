@@ -8,6 +8,31 @@ use std::time::{Duration, Instant};
 
 const RESULT_LIMIT: usize = 1000;
 
+pub fn selection_score(name: &str, query: &str) -> Option<(u8, usize, usize, usize)> {
+    if query.is_empty() {
+        return None;
+    }
+    if name == query {
+        return Some((0, 0, 0, 0));
+    }
+    if let Some(start) = name.find(query) {
+        return Some((if start == 0 { 1 } else { 2 }, 0, start, name.len()));
+    }
+    let mut remaining = name.chars().enumerate();
+    let mut first = 0;
+    let mut last = 0;
+    let mut count = 0;
+    for character in query.chars() {
+        let (index, _) = remaining.find(|(_, candidate)| *candidate == character)?;
+        if count == 0 {
+            first = index;
+        }
+        last = index;
+        count += 1;
+    }
+    Some((3, last + 1 - first - count, first, name.len()))
+}
+
 #[derive(Clone)]
 pub struct Hit {
     pub path: PathBuf,

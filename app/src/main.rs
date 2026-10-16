@@ -150,6 +150,8 @@ struct FileManager {
     editing_path: bool,
     focus_path: bool,
     search: Option<search::Search>,
+    find_query: Option<String>,
+    focus_find: bool,
     address: String,
     expanded: HashSet<PathBuf>,
     directory_expansions: HashMap<PathBuf, HashSet<PathBuf>>,
@@ -248,6 +250,8 @@ impl FileManager {
             editing_path: false,
             focus_path: false,
             search: None,
+            find_query: None,
+            focus_find: false,
             expanded: HashSet::new(),
             directory_expansions: HashMap::new(),
             tree_cache: HashMap::new(),
@@ -385,6 +389,7 @@ impl FileManager {
     }
 
     fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>) {
+        self.find_query = None;
         self.directory_expansions
             .insert(self.current.clone(), std::mem::take(&mut self.expanded));
         self.expanded = self.directory_expansions.remove(&path).unwrap_or_default();
@@ -994,9 +999,16 @@ impl FileManager {
                 self.save();
             }
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::F))
-            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::P))
+        if self.new_folder.is_none()
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::F))
         {
+            self.search = None;
+            self.editing_path = false;
+            self.sidebar_focused = false;
+            self.find_query.get_or_insert_with(String::new);
+            self.focus_find = true;
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::P)) {
             self.start_search(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
@@ -1007,6 +1019,9 @@ impl FileManager {
                 self.message = None;
             } else if self.new_folder.is_some() {
                 self.new_folder = None;
+            } else if self.find_query.is_some() {
+                self.find_query = None;
+                context.memory_mut(|memory| memory.surrender_focus(egui::Id::new("find-input")));
             } else if self.search.is_some() {
                 self.search = None;
                 context.memory_mut(|memory| memory.surrender_focus(egui::Id::new("search-input")));
@@ -1121,6 +1136,7 @@ impl FileManager {
 
     fn text_input_focused(&self, context: &egui::Context) -> bool {
         self.editing_path
+            || self.find_query.is_some()
             || context
                 .memory(|memory| memory.focused())
                 .is_some_and(|id| egui::text_edit::TextEditState::load(context, id).is_some())
@@ -1629,6 +1645,7 @@ impl FileManager {
     }
 
     fn toggle_path_field(&mut self, context: &egui::Context) {
+        self.find_query = None;
         self.search = None;
         self.address = self.current.to_string_lossy().into_owned();
         self.sidebar_focused = false;
@@ -1644,6 +1661,7 @@ impl FileManager {
     }
 
     fn start_search(&mut self, context: &egui::Context) {
+        self.find_query = None;
         self.sidebar_focused = false;
         self.editing_path = false;
         if let Some(search) = &mut self.search {
@@ -1658,7 +1676,42 @@ impl FileManager {
     }
 
     fn address_bar(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        if let Some(search) = &mut self.search {
+        if let Some(query) = &mut self.find_query {
+            let response = ui.add_sized(
+                [ui.available_width(), 32.0],
+                egui::TextEdit::singleline(query)
+                    .id(egui::Id::new("find-input"))
+                    .vertical_align(egui::Align::Center)
+                    .hint_text("Find and select visible items…"),
+            );
+            if self.focus_find {
+                response.request_focus();
+                self.focus_find = false;
+            }
+            if response.changed() {
+                let query = query.to_lowercase();
+                let best = self
+                    .visible_paths
+                    .iter()
+                    .filter_map(|path| {
+                        let name = path.file_name()?.to_string_lossy().to_lowercase();
+                        search::selection_score(&name, &query).map(|score| (path, score))
+                    })
+                    .min_by_key(|(_, score)| *score)
+                    .map(|(path, _)| path.clone());
+                if best.is_some() {
+                    if best != self.selected {
+                        self.select(best, context);
+                    }
+                    self.center_selection = true;
+                    self.scroll_to_selection = true;
+                }
+            }
+            if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter)) {
+                self.find_query = None;
+                response.surrender_focus();
+            }
+        } else if let Some(search) = &mut self.search {
             let response = ui.add_sized(
                 [ui.available_width(), 32.0],
                 egui::TextEdit::singleline(&mut search.query)
