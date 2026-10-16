@@ -131,7 +131,9 @@ fn scan(root: PathBuf, hidden: bool, cancel: Arc<AtomicBool>, sender: mpsc::Sync
                     continue;
                 }
             };
-            if !hidden && entry.file_name().as_encoded_bytes().starts_with(b".") {
+            let name = entry.file_name();
+            let name = name.as_encoded_bytes();
+            if !hidden && (name.starts_with(b".") || name.ends_with(b"~")) {
                 continue;
             }
             let kind = match entry.file_type() {

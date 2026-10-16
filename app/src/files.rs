@@ -161,7 +161,7 @@ fn read_entries(
         }
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
-        if !hidden && name.starts_with('.') {
+        if !hidden && (name.starts_with('.') || name.ends_with('~')) {
             continue;
         }
         let kind = item.file_type()?;

@@ -286,6 +286,12 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
+        let counts: HashMap<_, _> = self
+            .entries
+            .iter()
+            .chain(self.tree_cache.values().flatten())
+            .filter_map(|entry| entry.item_count.map(|count| (entry.path.clone(), count)))
+            .collect();
         match files::entries(&self.current, self.settings.hidden, self.settings.sequences) {
             Ok(entries) => self.entries = Arc::new(entries),
             Err(error) => {
@@ -297,8 +303,55 @@ impl FileManager {
         self.tree_layout = None;
         self.folder_counts.cancel();
         self.folder_counts.request(&self.entries);
+        for expanded in self.expanded.clone() {
+            if expanded.is_dir() {
+                self.expand_directory(&expanded);
+            }
+        }
+        for entry in Arc::make_mut(&mut self.entries)
+            .iter_mut()
+            .chain(self.tree_cache.values_mut().flatten())
+        {
+            entry.item_count = counts.get(&entry.path).copied();
+        }
         self.thumbnails.cancel();
-        self.select(None, context);
+        if !self.selection.is_empty() {
+            let visible: HashSet<_> = if self.settings.view == View::Tree {
+                self.tree_layout()
+                    .iter()
+                    .map(|(entry, _)| entry.path.clone())
+                    .collect()
+            } else {
+                self.entries
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            };
+            let previous_count = self.selection.len();
+            self.selection.retain(|path| visible.contains(path));
+            if self.selection.len() != previous_count {
+                let selection = std::mem::take(&mut self.selection);
+                let selected = self
+                    .selected
+                    .clone()
+                    .filter(|path| selection.contains(path))
+                    .or_else(|| selection.iter().min().cloned());
+                let anchor = self
+                    .selection_anchor
+                    .clone()
+                    .filter(|path| selection.contains(path))
+                    .or_else(|| selected.clone());
+                let visual_line = self.visual_line && selected.is_some();
+                self.select(selected, context);
+                self.selection = selection;
+                self.selection_anchor = anchor;
+                self.visual_line = visual_line;
+                if self.selection.len() > 1 {
+                    self.size_job = None;
+                    self.selection_size = None;
+                }
+            }
+        }
         self.refresh_disk(context);
         if let Some(search) = self.search.take() {
             let mut replacement =
@@ -3048,11 +3101,6 @@ impl FileManager {
             } else {
                 self.address = self.current.to_string_lossy().into_owned();
                 self.refresh(context);
-            }
-            for expanded in self.expanded.clone() {
-                if expanded.is_dir() {
-                    self.expand_directory(&expanded);
-                }
             }
             let selected = outcome
                 .selected
