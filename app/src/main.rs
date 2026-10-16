@@ -650,8 +650,12 @@ impl FileManager {
             self.pending_g = false;
             self.editing_path = false;
             if sidebar {
-                self.sidebar_cursor = None;
                 self.scroll_to_bookmark = true;
+            } else if self.search.is_none() {
+                if self.selected.is_none() {
+                    self.select(self.visible_paths.first().cloned(), context);
+                }
+                self.scroll_to_selection = true;
             }
             if let Some(search) = &mut self.search {
                 search.focus = !sidebar;
@@ -664,19 +668,73 @@ impl FileManager {
         }
     }
 
+    fn vim_shortcuts(&mut self, context: &egui::Context) {
+        if self.search.is_some() || self.new_folder.is_some() || self.text_input_focused(context) {
+            self.pending_g = false;
+            return;
+        }
+        let mut view_step: i32 = 0;
+        context.input_mut(|input| {
+            input.events.retain_mut(|event| {
+                if let egui::Event::PointerButton { pressed: true, .. } = event {
+                    self.pending_g = false;
+                }
+                let egui::Event::Key {
+                    key,
+                    physical_key,
+                    modifiers,
+                    pressed: true,
+                    repeat,
+                    ..
+                } = event
+                else {
+                    return true;
+                };
+                if *repeat {
+                    return *key != Key::G;
+                }
+                if !modifiers.matches_exact(egui::Modifiers::NONE)
+                    && !modifiers.matches_exact(egui::Modifiers::SHIFT)
+                {
+                    self.pending_g = false;
+                    return true;
+                }
+                if *key == Key::G {
+                    if modifiers.shift || self.pending_g {
+                        *key = if modifiers.shift { Key::End } else { Key::Home };
+                        *physical_key = None;
+                        *modifiers = egui::Modifiers::NONE;
+                        self.pending_g = false;
+                        return true;
+                    }
+                    self.pending_g = true;
+                    return false;
+                }
+                if *key == Key::T && self.pending_g {
+                    view_step += if modifiers.shift { -1 } else { 1 };
+                    self.pending_g = false;
+                    return false;
+                }
+                self.pending_g = false;
+                true
+            });
+        });
+        if view_step != 0 {
+            let index = match self.settings.view {
+                View::Tree => 0,
+                View::Grid => 1,
+                View::Media => 2,
+            };
+            self.settings.view =
+                [View::Tree, View::Grid, View::Media][(index + view_step).rem_euclid(3) as usize];
+            self.scroll_to_selection = !self.sidebar_focused && self.selected.is_some();
+            self.save();
+        }
+    }
+
     fn shortcuts(&mut self, context: &egui::Context) {
         self.pane_shortcuts(context);
-        if context.input(|input| {
-            input.events.iter().any(|event| match event {
-                egui::Event::Key {
-                    key, pressed: true, ..
-                } => *key != Key::G,
-                egui::Event::PointerButton { pressed: true, .. } => true,
-                _ => false,
-            })
-        }) {
-            self.pending_g = false;
-        }
+        self.vim_shortcuts(context);
         let scroll = context.input_mut(|input| {
             if input.modifiers.ctrl {
                 let scroll = input.raw_scroll_delta.y;
@@ -820,39 +878,15 @@ impl FileManager {
         if count == 0 {
             return None;
         }
-        let mut jump = None;
         context.input_mut(|input| {
-            input.events.retain(|event| {
-                if let egui::Event::Key {
-                    key: Key::G,
-                    pressed: true,
-                    repeat,
-                    modifiers,
-                    ..
-                } = event
-                {
-                    if modifiers.matches_logically(egui::Modifiers::SHIFT) {
-                        self.pending_g = false;
-                        if !repeat {
-                            jump = Some(count - 1);
-                        }
-                        return false;
-                    }
-                    if modifiers.matches_logically(egui::Modifiers::NONE) {
-                        if !repeat {
-                            if self.pending_g {
-                                jump = Some(0);
-                            }
-                            self.pending_g = !self.pending_g;
-                        }
-                        return false;
-                    }
-                    self.pending_g = false;
-                }
-                true
-            });
-        });
-        jump
+            if input.consume_key(egui::Modifiers::NONE, Key::Home) {
+                Some(0)
+            } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
+                Some(count - 1)
+            } else {
+                None
+            }
+        })
     }
 
     fn navigate_items(
@@ -870,7 +904,6 @@ impl FileManager {
             || self.text_input_focused(context)
             || items.is_empty()
         {
-            self.pending_g = false;
             return;
         }
         if let Some(index) = self.navigation_jump(items.len(), context) {
@@ -1285,11 +1318,7 @@ impl FileManager {
         paint_selection(
             ui,
             rect,
-            if self.sidebar_focused {
-                self.sidebar_cursor == Some(index)
-            } else {
-                bookmark.path.as_ref() == Some(&self.current)
-            },
+            self.sidebar_focused && self.sidebar_cursor == Some(index),
             false,
         );
         if self.sidebar_focused && self.sidebar_cursor == Some(index) && self.scroll_to_bookmark {
@@ -1312,10 +1341,6 @@ impl FileManager {
             rect.width() - 40.0,
             13.0,
         );
-        let response = response.on_hover_text(bookmark.path.as_ref().map_or_else(
-            || bookmark.uri.clone(),
-            |path| path.to_string_lossy().into_owned(),
-        ));
         if response.clicked() {
             self.sidebar_focused = true;
             self.editing_path = false;
@@ -1454,20 +1479,6 @@ impl FileManager {
             }
         }
         egui::SidePanel::left("bookmarks")
-            .frame(
-                egui::Frame::side_top_panel(&context.style()).stroke(Stroke::new(
-                    1.0,
-                    if self.sidebar_focused {
-                        context
-                            .style()
-                            .visuals
-                            .panel_fill
-                            .lerp_to_gamma(ACCENT, 0.25)
-                    } else {
-                        context.style().visuals.panel_fill
-                    },
-                )),
-            )
             .default_width(180.0)
             .width_range(140.0..=280.0)
             .show(context, |ui| {
@@ -1540,11 +1551,11 @@ impl FileManager {
                         .color(MUTED),
                 );
                 ui.separator();
-                if self.selection.len() > 1 {
+                if !self.sidebar_focused && self.selection.len() > 1 {
                     ui.label(
                         RichText::new(format!("{} selected", self.selection.len())).size(12.0),
                     );
-                } else if self.selected.is_some() {
+                } else if !self.sidebar_focused && self.selected.is_some() {
                     if let Some(size) = &self.selection_size {
                         let suffix = if size.incomplete {
                             " (partial: unreadable items)"
@@ -1669,13 +1680,12 @@ impl FileManager {
         if response.double_clicked() && !context.input(|input| input.modifiers.shift) {
             self.open(entry.path.clone(), context);
         }
-        let response = if self.settings.view != View::Media || entry.directory {
-            let tooltip = if let Some(error) = self.thumbnails.entry_error(entry) {
-                format!("{}\nThumbnail unavailable: {error}", entry.path.display())
-            } else {
-                entry.path.to_string_lossy().into_owned()
-            };
-            response.on_hover_text(tooltip)
+        let response = if let Some(error) = self
+            .thumbnails
+            .entry_error(entry)
+            .filter(|_| self.settings.view != View::Media || entry.directory)
+        {
+            response.on_hover_text(format!("Thumbnail unavailable: {error}"))
         } else {
             response
         };
@@ -1865,12 +1875,11 @@ impl FileManager {
                             } else {
                                 hit.label.clone()
                             };
-                            let response = ui
-                                .add_sized(
-                                    [ui.available_width(), 32.0],
-                                    egui::Button::new(label).selected(search.cursor == index),
-                                )
-                                .on_hover_text(hit.path.to_string_lossy());
+                            let response = ui.add_sized(
+                                [ui.available_width(), 32.0],
+                                egui::Button::new(label)
+                                    .selected(!self.sidebar_focused && search.cursor == index),
+                            );
                             if response.clicked() {
                                 search.cursor = index;
                                 select = Some(hit.path.clone());
@@ -1949,7 +1958,7 @@ impl FileManager {
                                         egui::Sense::click()
                                     },
                                 );
-                                if self.selection.contains(&entry.path) {
+                                if !self.sidebar_focused && self.selection.contains(&entry.path) {
                                     ui.painter().rect_filled(
                                         rect.shrink(2.0),
                                         8.0,
@@ -2068,7 +2077,8 @@ impl FileManager {
                                 egui::Sense::click()
                             },
                         );
-                        let highlighted = self.selection.contains(&entry.path);
+                        let highlighted =
+                            !self.sidebar_focused && self.selection.contains(&entry.path);
                         ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
                         if !self.paint_thumbnail(ui, rect, entry, &response) {
                             let edge = (64.0 * self.settings.zoom)
@@ -2347,7 +2357,12 @@ impl FileManager {
                         egui::Sense::click()
                     },
                 );
-                paint_selection(ui, content, self.selection.contains(&entry.path), false);
+                paint_selection(
+                    ui,
+                    content,
+                    !self.sidebar_focused && self.selection.contains(&entry.path),
+                    false,
+                );
                 let edge = 22.0 * self.settings.zoom;
                 let icon = egui::Rect::from_center_size(
                     egui::pos2(content.left() + edge / 2.0 + 6.0, row.center().y),
@@ -2609,22 +2624,7 @@ impl eframe::App for FileManager {
         self.statusbar(context);
         self.sidebar(context);
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::central_panel(&context.style())
-                    .inner_margin(0)
-                    .stroke(Stroke::new(
-                        1.0,
-                        if self.sidebar_focused {
-                            context.style().visuals.panel_fill
-                        } else {
-                            context
-                                .style()
-                                .visuals
-                                .panel_fill
-                                .lerp_to_gamma(ACCENT, 0.25)
-                        },
-                    )),
-            )
+            .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
             .show(context, |ui| {
                 let background = ui.interact(
                     ui.available_rect_before_wrap(),
