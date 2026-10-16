@@ -1,5 +1,6 @@
 use eframe::egui;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -278,8 +279,29 @@ pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    fs::rename(source, &target)?;
+    gio(
+        "move",
+        &["-T", "-C"],
+        &[source.as_os_str(), target.as_os_str()],
+    )?;
     Ok(target)
+}
+
+pub(crate) fn gio(command: &str, options: &[&str], paths: &[&OsStr]) -> io::Result<Vec<u8>> {
+    let output = Command::new("gio")
+        .arg(command)
+        .args(options)
+        .arg("--")
+        .args(paths)
+        .env("LC_ALL", "C")
+        .output()?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ))
+    }
 }
 
 pub fn compress(path: &Path) -> io::Result<PathBuf> {

@@ -2,6 +2,7 @@ mod bookmarks;
 mod files;
 mod images;
 mod layout;
+mod operations;
 mod places;
 mod search;
 
@@ -104,6 +105,7 @@ struct FileManager {
     thumbnails: images::Thumbnails,
     entries: Vec<Entry>,
     history: Vec<PathBuf>,
+    operations: operations::History,
     position: usize,
     selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
@@ -173,14 +175,19 @@ impl FileManager {
             1.0
         };
         settings.media_margin = settings.media_margin.min(24);
+        let desktop = home_places
+            .iter()
+            .find(|place| matches!(place.kind, places::Kind::Desktop))
+            .map_or_else(|| home.clone(), |place| place.path.clone());
         let requested = std::env::args_os()
             .nth(1)
-            .map_or_else(|| home.clone(), PathBuf::from);
+            .map_or_else(|| desktop.clone(), PathBuf::from);
         let current = requested.canonicalize().unwrap_or(requested);
-        let current = if current.is_dir() { current } else { home };
+        let current = if current.is_dir() { current } else { desktop };
         let mut app = Self {
             address: current.to_string_lossy().into_owned(),
             history: vec![current.clone()],
+            operations: operations::History::default(),
             breadcrumb_path: current.clone(),
             thumbnails: images::Thumbnails::new(context.egui_ctx.clone()),
             current,
@@ -778,13 +785,21 @@ impl FileManager {
                 self.select(None, context);
             }
         }
+        if self.new_folder.is_none() && !self.text_input_focused(context) {
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::U)) {
+                let outcome = self.operations.undo();
+                self.complete_operation(outcome, context);
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R)) {
+                let outcome = self.operations.redo();
+                self.complete_operation(outcome, context);
+            }
+        }
         if self.sidebar_focused && self.new_folder.is_none() && !self.text_input_focused(context) {
             return;
         }
         if self.search.is_some() && self.new_folder.is_none() {
-            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5))
-                || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R))
-            {
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5)) {
                 self.refresh(context);
             }
             if context.input_mut(|input| {
@@ -817,9 +832,7 @@ impl FileManager {
                 self.navigate_breadcrumb(parent.to_path_buf(), context);
             }
         }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5))
-            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R))
-        {
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5)) {
             self.refresh(context);
         }
         if context.input_mut(|input| {
@@ -843,6 +856,9 @@ impl FileManager {
             if let Some(next) = next {
                 self.navigate_breadcrumb(next, context);
             }
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Delete)) {
+            self.trash_selection(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::N)) {
             self.start_rename();
@@ -1728,6 +1744,10 @@ impl FileManager {
                 ui.close_menu();
             }
             ui.separator();
+            if ui.button("Move to Trash · Delete").clicked() {
+                self.trash_selection(context);
+                ui.close_menu();
+            }
             if ui.button("Properties").clicked() {
                 self.show_properties(&entry.path);
                 ui.close_menu();
@@ -2419,6 +2439,94 @@ impl FileManager {
         }
     }
 
+    fn trash_selection(&mut self, context: &egui::Context) {
+        let mut paths = Vec::new();
+        for path in &self.selection {
+            let sequence = self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .find(|entry| &entry.path == path)
+                .and_then(|entry| entry.sequence.as_ref());
+            if let Some(sequence) = sequence {
+                paths.extend(sequence.iter().cloned());
+            } else {
+                paths.push(path.clone());
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        let roots = paths
+            .iter()
+            .filter(|path| {
+                !paths
+                    .iter()
+                    .any(|parent| parent != *path && path.starts_with(parent))
+            })
+            .cloned()
+            .collect();
+        let outcome = self.operations.trash(roots);
+        self.complete_operation(outcome, context);
+    }
+
+    fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
+        if outcome.changed {
+            self.message = None;
+            for (from, to) in &outcome.renames {
+                let relocate = |path: &Path| {
+                    path.strip_prefix(from)
+                        .map_or_else(|_| path.to_path_buf(), |suffix| to.join(suffix))
+                };
+                self.current = relocate(&self.current);
+                self.breadcrumb_path = relocate(&self.breadcrumb_path);
+                for path in &mut self.history {
+                    *path = relocate(path);
+                }
+                self.expanded = self.expanded.iter().map(|path| relocate(path)).collect();
+            }
+            if !self.current.is_dir() {
+                if let Some(parent) = self.current.ancestors().find(|path| path.is_dir()) {
+                    self.navigate(parent.to_path_buf(), context);
+                }
+            } else {
+                self.address = self.current.to_string_lossy().into_owned();
+                self.refresh(context);
+            }
+            for expanded in self.expanded.clone() {
+                if expanded.is_dir() {
+                    self.expand_directory(&expanded);
+                }
+            }
+            let selected = outcome
+                .selected
+                .filter(|path| {
+                    path.parent() == Some(self.current.as_path())
+                        || (self.settings.view == View::Tree
+                            && path != &self.current
+                            && path.starts_with(&self.current))
+                })
+                .or_else(|| self.entries.first().map(|entry| entry.path.clone()));
+            if self.settings.view == View::Tree {
+                if let Some(path) = &selected {
+                    let parents: Vec<_> = path
+                        .ancestors()
+                        .skip(1)
+                        .take_while(|parent| *parent != self.current)
+                        .map(Path::to_path_buf)
+                        .collect();
+                    for parent in parents.into_iter().rev() {
+                        self.expand_directory(&parent);
+                    }
+                }
+            }
+            self.select(selected, context);
+            self.scroll_to_selection = true;
+        }
+        if outcome.error.is_some() {
+            self.message = outcome.error;
+        }
+    }
+
     fn start_rename(&mut self) {
         let Some(source) = self.selected.clone() else {
             return;
@@ -2553,25 +2661,23 @@ impl FileManager {
                         if self.message == folder.error {
                             self.message = None;
                         }
+                        let mut renames = Vec::new();
                         if let Some(source) = source {
-                            self.expanded = self
-                                .expanded
-                                .iter()
-                                .map(|expanded| {
-                                    expanded.strip_prefix(&source).map_or_else(
-                                        |_| expanded.clone(),
-                                        |suffix| path.join(suffix),
-                                    )
-                                })
-                                .collect();
+                            self.operations.record_rename(source.clone(), path.clone());
+                            renames.push((source, path.clone()));
+                        } else {
+                            self.operations.discard_redo();
                         }
                         self.new_folder = None;
-                        self.refresh(context);
-                        for expanded in self.expanded.clone() {
-                            self.expand_directory(&expanded);
-                        }
-                        self.select(Some(path), context);
-                        self.scroll_to_selection = true;
+                        self.complete_operation(
+                            operations::Outcome {
+                                changed: true,
+                                renames,
+                                selected: Some(path),
+                                error: None,
+                            },
+                            context,
+                        );
                     }
                     Err(error) => {
                         let error = format!("Cannot save name: {error}");
