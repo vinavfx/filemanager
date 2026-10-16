@@ -1008,6 +1008,30 @@ impl FileManager {
                                 .color(ACCENT),
                         );
                     }
+                    if let Some((completed, total)) = self.thumbnails.progress(context) {
+                        let label = if completed == total {
+                            "Thumbnails ready"
+                        } else {
+                            "Caching thumbnails"
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(completed as f32 / total as f32)
+                                .desired_width(ui.available_width().min(240.0))
+                                .desired_height(16.0)
+                                .text(
+                                    RichText::new(format!("{label} · {completed}/{total}"))
+                                        .size(12.0),
+                                ),
+                        );
+                    }
+                    if let Some(warning) = self.thumbnails.warning() {
+                        ui.label(
+                            RichText::new("Disk cache unavailable; using memory cache")
+                                .size(11.0)
+                                .color(MUTED),
+                        )
+                        .on_hover_text(warning);
+                    }
                 });
             });
             if self.compression_job.is_some() {
@@ -1015,27 +1039,6 @@ impl FileManager {
                     ui.spinner();
                     ui.label("Compressing to ZIP…");
                 });
-            }
-            if let Some((completed, total)) = self.thumbnails.progress(context) {
-                let label = if completed == total {
-                    "Thumbnails ready"
-                } else {
-                    "Caching thumbnails"
-                };
-                ui.add(
-                    egui::ProgressBar::new(completed as f32 / total as f32)
-                        .desired_width(ui.available_width())
-                        .desired_height(16.0)
-                        .text(format!("{label} · {completed}/{total}")),
-                );
-            }
-            if let Some(warning) = self.thumbnails.warning() {
-                ui.label(
-                    RichText::new("Disk cache unavailable; using memory cache")
-                        .size(11.0)
-                        .color(MUTED),
-                )
-                .on_hover_text(warning);
             }
             ui.add_space(3.0);
         });
