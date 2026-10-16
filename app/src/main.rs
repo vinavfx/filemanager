@@ -18,6 +18,18 @@ const MUTED: Color32 = Color32::from_rgb(125, 132, 143);
 const TREE_SIZE_WIDTH: f32 = 110.0;
 const TREE_DATE_WIDTH: f32 = 156.0;
 const PREVIEW_BAR_HEIGHT: f32 = 6.0;
+const RECURSIVE_MAX_DEPTH: usize = 5;
+const RECURSIVE_MAX_FOLDERS: usize = 64;
+const RECURSIVE_MAX_ENTRIES: usize = 2_000;
+const RECURSIVE_MAX_TIME: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn visual_accent(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(195, 145, 245)
+    } else {
+        Color32::from_rgb(119, 55, 174)
+    }
+}
 
 fn apply_theme(context: &egui::Context, dark_mode: bool) {
     let mut visuals = if dark_mode {
@@ -108,8 +120,11 @@ struct FileManager {
     operations: operations::History,
     position: usize,
     selected: Option<PathBuf>,
+    last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
     selection_anchor: Option<PathBuf>,
+    visual_line: bool,
+    v_key_is_shortcut: Option<bool>,
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
     page_scroll_delta: f32,
@@ -196,8 +211,11 @@ impl FileManager {
             entries: Vec::new(),
             position: 0,
             selected: None,
+            last_selected: None,
             selection: HashSet::new(),
             selection_anchor: None,
+            visual_line: false,
+            v_key_is_shortcut: None,
             visible_paths: Vec::new(),
             scroll_to_selection: false,
             page_scroll_delta: 0.0,
@@ -353,10 +371,12 @@ impl FileManager {
     }
 
     fn select(&mut self, path: Option<PathBuf>, context: &egui::Context) {
+        self.visual_line = false;
         self.pending_g = false;
         self.size_job = None;
         self.selection_size = None;
         if let Some(path) = &path {
+            self.last_selected = Some(path.clone());
             if path.is_dir() {
                 self.size_job = Some(files::folder_size(path.clone(), context.clone()));
             } else if let Some(entry) = self
@@ -387,7 +407,8 @@ impl FileManager {
     }
 
     fn select_entry(&mut self, path: PathBuf, context: &egui::Context) {
-        if !context.input(|input| input.modifiers.shift) {
+        let visual_line = self.visual_line;
+        if !visual_line && !context.input(|input| input.modifiers.shift) {
             self.select(Some(path), context);
             return;
         }
@@ -398,6 +419,7 @@ impl FileManager {
         let start = self.visible_paths.iter().position(|item| item == &anchor);
         let end = self.visible_paths.iter().position(|item| item == &path);
         self.select(Some(path), context);
+        self.visual_line = visual_line;
         if let (Some(start), Some(end)) = (start, end) {
             self.selection = self.visible_paths[start.min(end)..=start.max(end)]
                 .iter()
@@ -739,9 +761,54 @@ impl FileManager {
         }
     }
 
+    fn visual_line_shortcut(&mut self, context: &egui::Context) -> bool {
+        let enabled = !self.sidebar_focused
+            && self.search.is_none()
+            && self.new_folder.is_none()
+            && !self.text_input_focused(context);
+        let mut toggle = false;
+        context.input_mut(|input| {
+            let ctrl = input.modifiers.ctrl;
+            input.events.retain(|event| match event {
+                egui::Event::Paste(_) if ctrl => {
+                    if enabled && self.v_key_is_shortcut != Some(true) {
+                        toggle = true;
+                    }
+                    self.v_key_is_shortcut = Some(enabled);
+                    !enabled
+                }
+                egui::Event::Key {
+                    key: Key::V,
+                    pressed,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    if *pressed {
+                        if !repeat {
+                            let shortcut = enabled && modifiers.ctrl;
+                            toggle |= shortcut && self.v_key_is_shortcut != Some(true);
+                            self.v_key_is_shortcut = Some(shortcut);
+                        }
+                    } else {
+                        toggle |= self.v_key_is_shortcut.take().is_none() && enabled;
+                    }
+                    !(enabled && modifiers.ctrl)
+                }
+                egui::Event::WindowFocused(false) => {
+                    self.v_key_is_shortcut = None;
+                    true
+                }
+                _ => true,
+            });
+        });
+        toggle
+    }
+
     fn shortcuts(&mut self, context: &egui::Context) {
         self.pane_shortcuts(context);
         self.vim_shortcuts(context);
+        let visual_line_shortcut = self.visual_line_shortcut(context);
         let scroll = context.input_mut(|input| {
             if input.modifiers.ctrl {
                 let scroll = input.raw_scroll_delta.y;
@@ -781,6 +848,8 @@ impl FileManager {
                 context.memory_mut(|memory| memory.surrender_focus(egui::Id::new("search-input")));
             } else if self.editing_path {
                 self.editing_path = false;
+            } else if self.visual_line {
+                self.select(self.selected.clone(), context);
             } else {
                 self.select(None, context);
             }
@@ -793,6 +862,46 @@ impl FileManager {
             if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R)) {
                 let outcome = self.operations.redo();
                 self.complete_operation(outcome, context);
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft))
+                || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::O))
+            {
+                self.history_step(false, context);
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowRight))
+                || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::I))
+            {
+                self.history_step(true, context);
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowUp)) {
+                if let Some(parent) = self.current.parent() {
+                    self.navigate_breadcrumb(parent.to_path_buf(), context);
+                }
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5)) {
+                self.refresh(context);
+            }
+            if context.input_mut(|input| {
+                input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::H)
+            }) {
+                self.settings.hidden = !self.settings.hidden;
+                self.refresh(context);
+                self.save();
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
+                if let Some(parent) = self.current.parent() {
+                    self.navigate_breadcrumb(parent.to_path_buf(), context);
+                }
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
+                let next = self
+                    .breadcrumb_path
+                    .ancestors()
+                    .find(|path| path.parent() == Some(self.current.as_path()))
+                    .map(Path::to_path_buf);
+                if let Some(next) = next {
+                    self.navigate_breadcrumb(next, context);
+                }
             }
         }
         if self.sidebar_focused && self.new_folder.is_none() && !self.text_input_focused(context) {
@@ -814,47 +923,20 @@ impl FileManager {
         if self.new_folder.is_some() || self.text_input_focused(context) {
             return;
         }
+        if visual_line_shortcut {
+            let enable = !self.visual_line;
+            let path = self
+                .selected
+                .clone()
+                .or_else(|| self.visible_paths.first().cloned());
+            self.select(path, context);
+            self.visual_line = enable && self.selected.is_some();
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
-            self.bookmark();
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft))
-            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::O))
-        {
-            self.history_step(false, context);
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowRight))
-            || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::I))
-        {
-            self.history_step(true, context);
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowUp)) {
-            if let Some(parent) = self.current.parent() {
-                self.navigate_breadcrumb(parent.to_path_buf(), context);
-            }
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5)) {
-            self.refresh(context);
-        }
-        if context.input_mut(|input| {
-            input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::H)
-        }) {
-            self.settings.hidden = !self.settings.hidden;
-            self.refresh(context);
-            self.save();
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::H)) {
-            if let Some(parent) = self.current.parent() {
-                self.navigate_breadcrumb(parent.to_path_buf(), context);
-            }
-        }
-        if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
-            let next = self
-                .breadcrumb_path
-                .ancestors()
-                .find(|path| path.parent() == Some(self.current.as_path()))
-                .map(Path::to_path_buf);
-            if let Some(next) = next {
-                self.navigate_breadcrumb(next, context);
+            if self.visual_line {
+                self.trash_selection(context);
+            } else {
+                self.bookmark();
             }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Delete)) {
@@ -862,6 +944,15 @@ impl FileManager {
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::N)) {
             self.start_rename();
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, Key::O))
+            && self.settings.view == View::Tree
+        {
+            if let Some(path) = self.selected.clone() {
+                if path.is_dir() && !path.is_symlink() {
+                    self.toggle_recursive_expansion(path);
+                }
+            }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::O)) {
             if let Some(path) = self.selected.clone() {
@@ -923,7 +1014,12 @@ impl FileManager {
             return;
         }
         if let Some(index) = self.navigation_jump(items.len(), context) {
-            self.select(Some(items[index].0.path.clone()), context);
+            let path = items[index].0.path.clone();
+            if self.visual_line {
+                self.select_entry(path, context);
+            } else {
+                self.select(Some(path), context);
+            }
             self.scroll_to_selection = true;
             return;
         }
@@ -1031,10 +1127,17 @@ impl FileManager {
                             })
                     })
             }
-        } else if matches!(key, Key::ArrowUp | Key::ArrowLeft) {
-            items.last()
         } else {
-            items.first()
+            items
+                .iter()
+                .find(|(entry, _)| self.last_selected.as_ref() == Some(&entry.path))
+                .or_else(|| {
+                    if matches!(key, Key::ArrowUp | Key::ArrowLeft) {
+                        items.last()
+                    } else {
+                        items.first()
+                    }
+                })
         };
         if let Some((entry, _)) = target {
             self.select_entry(entry.path.clone(), context);
@@ -1060,6 +1163,70 @@ impl FileManager {
                 self.expanded.insert(path.to_path_buf());
             }
             Err(error) => self.message = Some(format!("Cannot expand directory: {error}")),
+        }
+    }
+
+    fn toggle_recursive_expansion(&mut self, path: PathBuf) {
+        if self.expanded.contains(&path)
+            && self
+                .expanded
+                .iter()
+                .any(|child| child != &path && child.starts_with(&path))
+        {
+            self.expanded
+                .retain(|child| child == &path || !child.starts_with(&path));
+            return;
+        }
+        let root_depth = path
+            .strip_prefix(&self.current)
+            .map_or(0, |path| path.components().count().saturating_sub(1));
+        let mut budget = files::ReadBudget {
+            remaining: RECURSIVE_MAX_ENTRIES,
+            deadline: std::time::Instant::now() + RECURSIVE_MAX_TIME,
+        };
+        let mut pending = vec![(path, root_depth)];
+        let mut expanded = 0;
+        let mut limited = false;
+        while let Some((path, depth)) = pending.pop() {
+            if depth >= 64 || depth - root_depth >= RECURSIVE_MAX_DEPTH {
+                limited = true;
+                continue;
+            }
+            if expanded >= RECURSIVE_MAX_FOLDERS {
+                limited = true;
+                break;
+            }
+            match files::entries_with_budget(
+                &path,
+                self.settings.hidden,
+                self.settings.sequences,
+                &mut budget,
+            ) {
+                Ok(children) => {
+                    pending.extend(
+                        children
+                            .iter()
+                            .filter(|entry| entry.directory && !entry.symlink)
+                            .map(|entry| (entry.path.clone(), depth + 1)),
+                    );
+                    self.tree_cache.insert(path.clone(), children);
+                    self.expanded.insert(path);
+                    expanded += 1;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    limited = true;
+                    break;
+                }
+                Err(error) => self.message = Some(format!("Cannot expand directory: {error}")),
+            }
+        }
+        if limited {
+            self.message = Some(format!(
+                "Recursive expansion limited to {RECURSIVE_MAX_DEPTH} levels, \
+                 {RECURSIVE_MAX_FOLDERS} folders, {RECURSIVE_MAX_ENTRIES} scanned entries \
+                 or {} ms. Open remaining folders manually.",
+                RECURSIVE_MAX_TIME.as_millis()
+            ));
         }
     }
 
@@ -1567,6 +1734,15 @@ impl FileManager {
                         .color(MUTED),
                 );
                 ui.separator();
+                if self.visual_line && !self.sidebar_focused {
+                    ui.label(
+                        RichText::new("-- VISUAL LINE --")
+                            .size(12.0)
+                            .strong()
+                            .color(visual_accent(ui.visuals().dark_mode)),
+                    );
+                    ui.separator();
+                }
                 if !self.sidebar_focused && self.selection.len() > 1 {
                     ui.label(
                         RichText::new(format!("{} selected", self.selection.len())).size(12.0),
@@ -2137,7 +2313,7 @@ impl FileManager {
                             ui.painter().rect_stroke(
                                 rect.shrink(1.0),
                                 0.0,
-                                Stroke::new(2.0, ACCENT),
+                                Stroke::new(2.0, ui.visuals().selection.stroke.color),
                                 egui::StrokeKind::Inside,
                             );
                         }
@@ -2471,6 +2647,18 @@ impl FileManager {
 
     fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
         if outcome.changed {
+            let nearby = self.selected.as_ref().and_then(|selected| {
+                let index = self
+                    .visible_paths
+                    .iter()
+                    .position(|path| path == selected)?;
+                self.visible_paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, path)| std::fs::symlink_metadata(path).is_ok())
+                    .min_by_key(|(position, _)| position.abs_diff(index))
+                    .map(|(_, path)| path.clone())
+            });
             self.message = None;
             for (from, to) in &outcome.renames {
                 let relocate = |path: &Path| {
@@ -2499,6 +2687,7 @@ impl FileManager {
             }
             let selected = outcome
                 .selected
+                .or(nearby)
                 .filter(|path| {
                     path.parent() == Some(self.current.as_path())
                         || (self.settings.view == View::Tree
@@ -2732,6 +2921,15 @@ impl eframe::App for FileManager {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
             .show(context, |ui| {
+                if self.visual_line {
+                    let visuals = ui.visuals_mut();
+                    visuals.selection.bg_fill = if visuals.dark_mode {
+                        Color32::from_rgb(79, 45, 108)
+                    } else {
+                        Color32::from_rgb(224, 199, 245)
+                    };
+                    visuals.selection.stroke = Stroke::new(1.0, visual_accent(visuals.dark_mode));
+                }
                 let background = ui.interact(
                     ui.available_rect_before_wrap(),
                     ui.id().with("directory-background"),

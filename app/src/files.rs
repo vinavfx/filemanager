@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 pub struct Entry {
@@ -42,9 +42,51 @@ impl Entry {
     }
 }
 
+pub struct ReadBudget {
+    pub remaining: usize,
+    pub deadline: Instant,
+}
+
+impl ReadBudget {
+    fn check(&mut self) -> io::Result<()> {
+        if self.remaining == 0 || Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Directory read budget exhausted.",
+            ));
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
 pub fn entries(path: &Path, hidden: bool, sequences: bool) -> io::Result<Vec<Entry>> {
+    read_entries(path, hidden, sequences, None)
+}
+
+pub fn entries_with_budget(
+    path: &Path,
+    hidden: bool,
+    sequences: bool,
+    budget: &mut ReadBudget,
+) -> io::Result<Vec<Entry>> {
+    read_entries(path, hidden, sequences, Some(budget))
+}
+
+fn read_entries(
+    path: &Path,
+    hidden: bool,
+    sequences: bool,
+    mut budget: Option<&mut ReadBudget>,
+) -> io::Result<Vec<Entry>> {
+    if let Some(budget) = budget.as_deref_mut() {
+        budget.check()?;
+    }
     let mut entries = Vec::new();
     for item in fs::read_dir(path)? {
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.check()?;
+        }
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
         if !hidden && name.starts_with('.') {
@@ -54,11 +96,24 @@ pub fn entries(path: &Path, hidden: bool, sequences: bool) -> io::Result<Vec<Ent
         let metadata = item.metadata().ok();
         let directory = item.path().is_dir();
         let item_count = if directory {
-            fs::read_dir(item.path()).ok().and_then(|mut items| {
-                items
-                    .try_fold(0, |count, item| item.map(|_| count + 1))
-                    .ok()
-            })
+            if let Ok(items) = fs::read_dir(item.path()) {
+                let mut count = Some(0);
+                for item in items {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.check()?;
+                    }
+                    match item {
+                        Ok(_) => count = count.map(|count| count + 1),
+                        Err(_) => {
+                            count = None;
+                            break;
+                        }
+                    }
+                }
+                count
+            } else {
+                None
+            }
         } else {
             None
         };

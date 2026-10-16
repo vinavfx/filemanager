@@ -21,7 +21,16 @@ inglés.
 
 ## Uso
 
-- Un clic selecciona; doble clic o `Enter` abre.
+- Un clic selecciona; doble clic o `Enter` abre. `Esc` quita la selección sin olvidar el último icono: el siguiente movimiento con flechas o
+  `h/j/k/l` vuelve a seleccionarlo si sigue en la vista actual.
+- `Ctrl+V` activa Visual Line desde el icono actual. `h/j/k/l` o las flechas amplían o reducen el rango seleccionado, también en `Tree`;
+  `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera. `Esc` o `Ctrl+V` salen
+  del modo y dejan seleccionado solo el icono actual. La barra de estado indica `VISUAL LINE`; fuera de este modo, `d` conserva su función
+  de añadir marcadores. Fuera de Visual Line, `gg` y `Mayús+G` solo mueven el cursor al principio o al final, sin ampliar la selección.
+- En `Tree`, `o` abre o cierra la carpeta seleccionada. `Mayús+O` alterna entre expandir recursivamente sus subcarpetas y cerrarlas todas,
+  manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión
+  recursiva se limita a 5 niveles, 64 carpetas y 2000 entradas examinadas, incluidos los recuentos de contenido de las carpetas, con un
+  presupuesto de 250 ms comprobado entre lecturas. Al alcanzar un límite, muestra un aviso; `o` permite abrir manualmente lo restante.
 - `Light`/`Dark`, en la barra superior, alterna entre los temas claro y oscuro; la elección se conserva al reiniciar.
 - Arrastra una carpeta desde `Grid` o `Tree` a la barra de marcadores, o selecciónala y pulsa `D` o `Ctrl+D`.
 - Los accesos a la carpeta personal y sus carpetas principales aparecen arriba, con iconos propios y rutas XDG. Clic derecho permite
@@ -58,8 +67,9 @@ inglés.
   comprimirlo, copiar su ruta, actualizar y alternar archivos ocultos.
 - El menú de carpetas e imágenes permite comprimirlas a ZIP en segundo plano. El archivo queda junto al original, sin sobrescribir archivos
   existentes; los enlaces simbólicos se conservan como enlaces.
-- `Alt+←` y `Alt+→` recorren el historial; `Alt+↑` abre el directorio superior.
-- `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos.
+- `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial; `Ctrl+H`/`Alt+↑` abre el directorio superior y `Ctrl+L` avanza por la ruta
+  conservada. Estos atajos, `F5` y `Ctrl+Mayús+H` funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto.
+- `F5` actualiza el contenido y el espacio del disco. `Ctrl+Mayús+H` o `Hidden` alterna los archivos ocultos.
 - El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
   la creación de carpetas, la edición de la dirección o la selección.
 
