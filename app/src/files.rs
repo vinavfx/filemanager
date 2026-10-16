@@ -236,7 +236,7 @@ pub fn video_file(path: &Path) -> bool {
         })
 }
 
-pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
+fn entry_path(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let mut components = Path::new(name).components();
     if name.trim().is_empty()
         || !matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -245,12 +245,41 @@ pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Enter a single folder name without path separators.",
+            "Enter a single name without path separators.",
         ));
     }
-    let path = parent.join(name);
+    Ok(parent.join(name))
+}
+
+pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
+    let path = entry_path(parent, name)?;
     fs::create_dir(&path)?;
     Ok(path)
+}
+
+pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
+    let parent = source.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Cannot rename the root directory.",
+        )
+    })?;
+    let target = entry_path(parent, name)?;
+    if source == target {
+        return Ok(target);
+    }
+    match fs::symlink_metadata(&target) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "An item with this name already exists.",
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    fs::rename(source, &target)?;
+    Ok(target)
 }
 
 pub fn compress(path: &Path) -> io::Result<PathBuf> {

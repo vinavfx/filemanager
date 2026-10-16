@@ -87,7 +87,9 @@ struct Disk {
     free: u64,
 }
 
-struct NewFolder {
+struct NameDialog {
+    source: Option<PathBuf>,
+    submit: bool,
     parent: PathBuf,
     name: String,
     focus: bool,
@@ -110,6 +112,10 @@ struct FileManager {
     scroll_to_selection: bool,
     page_scroll_delta: f32,
     pending_g: bool,
+    sidebar_focused: bool,
+    pending_window_command: bool,
+    sidebar_cursor: Option<usize>,
+    scroll_to_bookmark: bool,
     editing_path: bool,
     focus_path: bool,
     search: Option<search::Search>,
@@ -122,7 +128,7 @@ struct FileManager {
     disk: Option<Disk>,
     home_places: Vec<places::Place>,
     bookmarks: bookmarks::Bookmarks,
-    new_folder: Option<NewFolder>,
+    new_folder: Option<NameDialog>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -189,6 +195,10 @@ impl FileManager {
             scroll_to_selection: false,
             page_scroll_delta: 0.0,
             pending_g: false,
+            sidebar_focused: false,
+            pending_window_command: false,
+            sidebar_cursor: None,
+            scroll_to_bookmark: false,
             editing_path: false,
             focus_path: false,
             search: None,
@@ -495,7 +505,9 @@ impl FileManager {
             ui.close_menu();
         }
         if ui.button("New folder…").clicked() {
-            self.new_folder = Some(NewFolder {
+            self.new_folder = Some(NameDialog {
+                source: None,
+                submit: false,
                 parent: self.current.clone(),
                 name: String::new(),
                 focus: true,
@@ -593,7 +605,67 @@ impl FileManager {
         }
     }
 
+    fn pane_shortcuts(&mut self, context: &egui::Context) {
+        if self.new_folder.is_some() {
+            self.pending_window_command = false;
+            return;
+        }
+        let mut sidebar = None;
+        context.input_mut(|input| {
+            input.events.retain(|event| {
+                if sidebar.is_some()
+                    && matches!(event, egui::Event::Text(text) if text.eq_ignore_ascii_case("h") || text.eq_ignore_ascii_case("l"))
+                {
+                    return false;
+                }
+                if let egui::Event::PointerButton { pressed: true, .. } = event {
+                    self.pending_window_command = false;
+                }
+                if let egui::Event::Key {
+                    key,
+                    modifiers,
+                    pressed: true,
+                    repeat: false,
+                    ..
+                } = event
+                {
+                    if *key == Key::W && modifiers.matches_logically(egui::Modifiers::CTRL) {
+                        self.pending_window_command = true;
+                        return false;
+                    }
+                    if std::mem::take(&mut self.pending_window_command) {
+                        match key {
+                            Key::H | Key::ArrowLeft => sidebar = Some(true),
+                            Key::L | Key::ArrowRight => sidebar = Some(false),
+                            _ => return true,
+                        }
+                        return false;
+                    }
+                }
+                true
+            });
+        });
+        if let Some(sidebar) = sidebar {
+            self.sidebar_focused = sidebar;
+            self.pending_g = false;
+            self.editing_path = false;
+            if sidebar {
+                self.sidebar_cursor = None;
+                self.scroll_to_bookmark = true;
+            }
+            if let Some(search) = &mut self.search {
+                search.focus = !sidebar;
+            }
+            context.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+        }
+    }
+
     fn shortcuts(&mut self, context: &egui::Context) {
+        self.pane_shortcuts(context);
         if context.input(|input| {
             input.events.iter().any(|event| match event {
                 egui::Event::Key {
@@ -632,6 +704,7 @@ impl FileManager {
         }) {
             self.search = None;
             self.address = self.current.to_string_lossy().into_owned();
+            self.sidebar_focused = false;
             self.editing_path = true;
             self.focus_path = true;
         }
@@ -646,6 +719,9 @@ impl FileManager {
             } else {
                 self.select(None, context);
             }
+        }
+        if self.sidebar_focused && self.new_folder.is_none() && !self.text_input_focused(context) {
+            return;
         }
         if self.search.is_some() && self.new_folder.is_none() {
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::F5))
@@ -710,6 +786,9 @@ impl FileManager {
                 self.navigate_breadcrumb(next, context);
             }
         }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::N)) {
+            self.start_rename();
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::O)) {
             if let Some(path) = self.selected.clone() {
                 if self.settings.view == View::Tree && path.is_dir() && !path.is_symlink() {
@@ -737,20 +816,9 @@ impl FileManager {
                 .is_some_and(|id| egui::text_edit::TextEditState::load(context, id).is_some())
     }
 
-    fn navigate_items(
-        &mut self,
-        items: &[(Entry, egui::Pos2)],
-        viewport_height: f32,
-        context: &egui::Context,
-    ) {
-        self.visible_paths = items.iter().map(|(entry, _)| entry.path.clone()).collect();
-        if self.search.is_some()
-            || self.new_folder.is_some()
-            || self.text_input_focused(context)
-            || items.is_empty()
-        {
-            self.pending_g = false;
-            return;
+    fn navigation_jump(&mut self, count: usize, context: &egui::Context) -> Option<usize> {
+        if count == 0 {
+            return None;
         }
         let mut jump = None;
         context.input_mut(|input| {
@@ -766,7 +834,7 @@ impl FileManager {
                     if modifiers.matches_logically(egui::Modifiers::SHIFT) {
                         self.pending_g = false;
                         if !repeat {
-                            jump = Some(items.len() - 1);
+                            jump = Some(count - 1);
                         }
                         return false;
                     }
@@ -784,7 +852,28 @@ impl FileManager {
                 true
             });
         });
-        if let Some(index) = jump {
+        jump
+    }
+
+    fn navigate_items(
+        &mut self,
+        items: &[(Entry, egui::Pos2)],
+        viewport_height: f32,
+        context: &egui::Context,
+    ) {
+        self.visible_paths = items.iter().map(|(entry, _)| entry.path.clone()).collect();
+        if self.sidebar_focused {
+            return;
+        }
+        if self.search.is_some()
+            || self.new_folder.is_some()
+            || self.text_input_focused(context)
+            || items.is_empty()
+        {
+            self.pending_g = false;
+            return;
+        }
+        if let Some(index) = self.navigation_jump(items.len(), context) {
             self.select(Some(items[index].0.path.clone()), context);
             self.scroll_to_selection = true;
             return;
@@ -1060,6 +1149,7 @@ impl FileManager {
     }
 
     fn start_search(&mut self, context: &egui::Context) {
+        self.sidebar_focused = false;
         self.editing_path = false;
         if let Some(search) = &mut self.search {
             search.focus = true;
@@ -1085,11 +1175,14 @@ impl FileManager {
                 response.request_focus();
                 search.focus = false;
             }
+            if response.has_focus() {
+                self.sidebar_focused = false;
+            }
             if response.changed() {
                 search.submit();
             }
             let mut open = None;
-            if let Some(update) = &search.update {
+            if let Some(update) = search.update.as_ref().filter(|_| !self.sidebar_focused) {
                 if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::ArrowDown)) {
                     search.cursor = (search.cursor + 1).min(update.hits.len().saturating_sub(1));
                     search.reveal_cursor = true;
@@ -1184,6 +1277,7 @@ impl FileManager {
         ui: &mut egui::Ui,
         bookmark: &bookmarks::Bookmark,
         kind: Option<places::Kind>,
+        index: usize,
         context: &egui::Context,
     ) {
         let (rect, response) =
@@ -1191,9 +1285,17 @@ impl FileManager {
         paint_selection(
             ui,
             rect,
-            bookmark.path.as_ref() == Some(&self.current),
-            response.hovered(),
+            if self.sidebar_focused {
+                self.sidebar_cursor == Some(index)
+            } else {
+                bookmark.path.as_ref() == Some(&self.current)
+            },
+            false,
         );
+        if self.sidebar_focused && self.sidebar_cursor == Some(index) && self.scroll_to_bookmark {
+            ui.scroll_to_rect(rect, None);
+            self.scroll_to_bookmark = false;
+        }
         let icon = egui::Rect::from_center_size(
             egui::pos2(rect.left() + 16.0, rect.center().y),
             Vec2::splat(18.0),
@@ -1215,14 +1317,15 @@ impl FileManager {
             |path| path.to_string_lossy().into_owned(),
         ));
         if response.clicked() {
-            if let Some(path) = &bookmark.path {
-                self.navigate(path.clone(), context);
-            } else if let Err(error) = std::process::Command::new("xdg-open")
-                .arg(&bookmark.uri)
-                .spawn()
-            {
-                self.message = Some(format!("Cannot open bookmark: {error}"));
-            }
+            self.sidebar_focused = true;
+            self.editing_path = false;
+            context.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+            self.sidebar_cursor = Some(index);
+            self.open_bookmark(bookmark, context);
         }
         response.context_menu(|ui| {
             if ui.button("Remove bookmark").clicked() {
@@ -1244,8 +1347,127 @@ impl FileManager {
         });
     }
 
+    fn open_bookmark(&mut self, bookmark: &bookmarks::Bookmark, context: &egui::Context) {
+        if let Some(path) = &bookmark.path {
+            self.navigate(path.clone(), context);
+        } else if let Err(error) = std::process::Command::new("xdg-open")
+            .arg(&bookmark.uri)
+            .spawn()
+        {
+            self.message = Some(format!("Cannot open bookmark: {error}"));
+        }
+    }
+
     fn sidebar(&mut self, context: &egui::Context) {
+        let mut entries: Vec<_> = self
+            .home_places
+            .iter()
+            .filter(|place| !self.settings.removed_places.contains(&place.path))
+            .map(|place| {
+                (
+                    bookmarks::Bookmark {
+                        uri: String::new(),
+                        path: Some(place.path.clone()),
+                        label: place.label.into(),
+                        exists: true,
+                    },
+                    Some(place.kind),
+                )
+            })
+            .collect();
+        let default_count = entries.len();
+        entries.extend(
+            self.bookmarks
+                .entries
+                .iter()
+                .filter(|bookmark| {
+                    bookmark.exists
+                        && !self
+                            .home_places
+                            .iter()
+                            .any(|place| bookmark.path.as_ref() == Some(&place.path))
+                })
+                .cloned()
+                .map(|bookmark| (bookmark, None)),
+        );
+        if self.sidebar_focused && self.new_folder.is_none() && !self.text_input_focused(context) {
+            let mut cursor = self
+                .sidebar_cursor
+                .unwrap_or_else(|| {
+                    entries
+                        .iter()
+                        .position(|(bookmark, _)| bookmark.path.as_ref() == Some(&self.current))
+                        .unwrap_or(0)
+                })
+                .min(entries.len().saturating_sub(1));
+            let previous = cursor;
+            if context.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, Key::ArrowDown)
+                    || input.consume_key(egui::Modifiers::NONE, Key::J)
+            }) {
+                cursor = (cursor + 1).min(entries.len().saturating_sub(1));
+            }
+            if context.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, Key::ArrowUp)
+                    || input.consume_key(egui::Modifiers::NONE, Key::K)
+            }) {
+                cursor = cursor.saturating_sub(1);
+            }
+            if let Some(index) = self.navigation_jump(entries.len(), context) {
+                cursor = index;
+            }
+            let page_direction = context.input_mut(|input| {
+                if input.consume_key(egui::Modifiers::CTRL, Key::D) {
+                    1.0
+                } else if input.consume_key(egui::Modifiers::CTRL, Key::U) {
+                    -1.0
+                } else {
+                    0.0
+                }
+            });
+            if page_direction != 0.0 {
+                self.page_scroll_delta = page_direction * context.available_rect().height() / 2.0;
+                let rows = (self.page_scroll_delta.abs()
+                    / (32.0 + context.style().spacing.item_spacing.y))
+                    .round()
+                    .max(1.0) as usize;
+                cursor = if page_direction > 0.0 {
+                    cursor
+                        .saturating_add(rows)
+                        .min(entries.len().saturating_sub(1))
+                } else {
+                    cursor.saturating_sub(rows)
+                };
+                self.scroll_to_bookmark = false;
+            } else {
+                self.scroll_to_bookmark |= cursor != previous;
+            }
+            self.sidebar_cursor = Some(cursor);
+            if context.input_mut(|input| {
+                input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                    || input.consume_key(egui::Modifiers::NONE, Key::Space)
+                    || input.consume_key(egui::Modifiers::NONE, Key::O)
+            }) {
+                if let Some((bookmark, _)) = entries.get(cursor) {
+                    self.open_bookmark(bookmark, context);
+                }
+            }
+        }
         egui::SidePanel::left("bookmarks")
+            .frame(
+                egui::Frame::side_top_panel(&context.style()).stroke(Stroke::new(
+                    1.0,
+                    if self.sidebar_focused {
+                        context
+                            .style()
+                            .visuals
+                            .panel_fill
+                            .lerp_to_gamma(ACCENT, 0.25)
+                    } else {
+                        context.style().visuals.panel_fill
+                    },
+                )),
+            )
             .default_width(180.0)
             .width_range(140.0..=280.0)
             .show(context, |ui| {
@@ -1279,34 +1501,14 @@ impl FileManager {
                     });
                 });
                 ui.add_space(12.0);
-                egui::ScrollArea::vertical()
+                self.entry_scroll_area(ui, "bookmark-list")
                     .drag_to_scroll(false)
                     .show(ui, |ui| {
-                        for place in self.home_places.clone() {
-                            if !self.settings.removed_places.contains(&place.path) {
-                                self.bookmark_row(
-                                    ui,
-                                    &bookmarks::Bookmark {
-                                        uri: String::new(),
-                                        path: Some(place.path),
-                                        label: place.label.into(),
-                                        exists: true,
-                                    },
-                                    Some(place.kind),
-                                    context,
-                                );
+                        for (index, (bookmark, kind)) in entries.iter().enumerate() {
+                            if index == default_count {
+                                ui.separator();
                             }
-                        }
-                        ui.separator();
-                        for bookmark in self.bookmarks.entries.clone() {
-                            if bookmark.exists
-                                && !self
-                                    .home_places
-                                    .iter()
-                                    .any(|place| bookmark.path.as_ref() == Some(&place.path))
-                            {
-                                self.bookmark_row(ui, &bookmark, None, context);
-                            }
+                            self.bookmark_row(ui, bookmark, *kind, index, context);
                         }
                         ui.label(
                             RichText::new("Drag folders here\nor press D to bookmark")
@@ -1446,8 +1648,18 @@ impl FileManager {
     }
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
+        if self
+            .new_folder
+            .as_ref()
+            .is_some_and(|dialog| dialog.source.as_ref() == Some(&entry.path))
+        {
+            return;
+        }
         if entry.directory {
             response.dnd_set_drag_payload(entry.path.clone());
+        }
+        if response.clicked() || response.secondary_clicked() {
+            self.sidebar_focused = false;
         }
         if response.clicked()
             || (response.secondary_clicked() && !self.selection.contains(&entry.path))
@@ -1755,7 +1967,11 @@ impl FileManager {
                                         entry,
                                     );
                                 }
-                                {
+                                let name_rect = egui::Rect::from_min_size(
+                                    egui::pos2(rect.left() + 7.0, rect.top() + height * 0.66),
+                                    Vec2::new(width - 14.0, 24.0),
+                                );
+                                if !self.rename_field(ui, name_rect, entry, context) {
                                     let mut job = egui::text::LayoutJob::simple(
                                         entry.name.clone(),
                                         egui::FontId::proportional(12.0),
@@ -1895,6 +2111,11 @@ impl FileManager {
                                 egui::StrokeKind::Inside,
                             );
                         }
+                        let name_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.left() + 4.0, (rect.bottom() - 26.0).max(rect.top())),
+                            egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
+                        );
+                        self.rename_field(ui, name_rect, entry, context);
                         self.entry_response(response, entry, context);
                     }
                     y += height;
@@ -2138,13 +2359,19 @@ impl FileManager {
                 let name_left = icon.right() + 10.0;
                 let date_left = row.right() - TREE_DATE_WIDTH;
                 let name_right = date_left - TREE_SIZE_WIDTH;
-                paint_name(
-                    ui,
-                    &entry.name,
-                    egui::pos2(name_left, row.center().y),
-                    (name_right - name_left - 8.0).max(1.0),
-                    14.0,
+                let name_rect = egui::Rect::from_min_size(
+                    egui::pos2(name_left, row.top() + 4.0),
+                    Vec2::new((name_right - name_left - 8.0).max(1.0), row.height() - 8.0),
                 );
+                if !self.rename_field(ui, name_rect, &entry, context) {
+                    paint_name(
+                        ui,
+                        &entry.name,
+                        egui::pos2(name_left, row.center().y),
+                        name_rect.width(),
+                        14.0,
+                    );
+                }
                 let size = if entry.directory {
                     entry.item_count.map_or_else(
                         || "—".to_owned(),
@@ -2177,51 +2404,169 @@ impl FileManager {
         }
     }
 
+    fn start_rename(&mut self) {
+        let Some(source) = self.selected.clone() else {
+            return;
+        };
+        if self.selection.len() > 1 {
+            self.message = Some("Select a single item to rename.".into());
+            return;
+        }
+        if self
+            .entries
+            .iter()
+            .chain(self.tree_cache.values().flatten())
+            .any(|entry| entry.path == source && entry.sequence.is_some())
+        {
+            self.message = Some("Disable sequence grouping before renaming a frame.".into());
+            return;
+        }
+        let (Some(parent), Some(name)) = (source.parent(), source.file_name()) else {
+            return;
+        };
+        let Some(name) = name.to_str() else {
+            self.message = Some("Cannot edit a name that is not valid UTF-8.".into());
+            return;
+        };
+        self.new_folder = Some(NameDialog {
+            parent: parent.to_path_buf(),
+            name: name.to_owned(),
+            source: Some(source),
+            submit: false,
+            focus: true,
+            error: None,
+        });
+    }
+
+    fn rename_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        entry: &Entry,
+        context: &egui::Context,
+    ) -> bool {
+        let Some(dialog) = self
+            .new_folder
+            .as_mut()
+            .filter(|dialog| dialog.source.as_ref() == Some(&entry.path))
+        else {
+            return false;
+        };
+        let id = ui.make_persistent_id(("rename-entry", &entry.path));
+        let response = ui.put(rect, egui::TextEdit::singleline(&mut dialog.name).id(id));
+        if dialog.focus {
+            response.request_focus();
+            if let Some(mut state) = egui::TextEdit::load_state(context, id) {
+                let length = if entry.directory {
+                    dialog.name.chars().count()
+                } else {
+                    entry
+                        .path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map_or(dialog.name.chars().count(), |stem| stem.chars().count())
+                };
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(length),
+                    )));
+                state.store(context, id);
+            }
+            dialog.focus = false;
+        }
+        dialog.submit = (response.has_focus() || response.lost_focus())
+            && ui.input(|input| input.key_pressed(Key::Enter));
+        if response.lost_focus() && !dialog.submit {
+            self.new_folder = None;
+        }
+        true
+    }
+
     fn new_folder_window(&mut self, context: &egui::Context) {
         let mut open = true;
         let mut create = false;
         let mut cancel = false;
         if let Some(folder) = &mut self.new_folder {
-            egui::Window::new("New folder")
-                .id(egui::Id::new("new-folder"))
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .show(context, |ui| {
-                    ui.label(folder.parent.to_string_lossy());
-                    let response = ui
-                        .add(egui::TextEdit::singleline(&mut folder.name).hint_text("Folder name"));
-                    if folder.focus {
-                        response.request_focus();
-                        folder.focus = false;
-                    }
-                    create = (response.has_focus() || response.lost_focus())
-                        && ui.input(|input| input.key_pressed(Key::Enter));
-                    if let Some(error) = &folder.error {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    }
-                    ui.horizontal(|ui| {
-                        create |= ui
-                            .add_enabled(
-                                !folder.name.trim().is_empty(),
-                                egui::Button::new("Create"),
-                            )
-                            .clicked();
-                        cancel = ui.button("Cancel").clicked();
+            if folder.source.is_some() {
+                create = folder.submit;
+            } else {
+                egui::Window::new("New folder")
+                    .id(egui::Id::new("new-folder"))
+                    .open(&mut open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(context, |ui| {
+                        ui.label(folder.parent.to_string_lossy());
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut folder.name).hint_text("Folder name"),
+                        );
+                        if folder.focus {
+                            response.request_focus();
+                            folder.focus = false;
+                        }
+                        create = (response.has_focus() || response.lost_focus())
+                            && ui.input(|input| input.key_pressed(Key::Enter));
+                        if let Some(error) = &folder.error {
+                            ui.colored_label(ui.visuals().error_fg_color, error);
+                        }
+                        ui.horizontal(|ui| {
+                            create |= ui
+                                .add_enabled(
+                                    !folder.name.trim().is_empty(),
+                                    egui::Button::new("Create"),
+                                )
+                                .clicked();
+                            cancel = ui.button("Cancel").clicked();
+                        });
                     });
-                });
+            }
         }
         if !open || cancel {
             self.new_folder = None;
         } else if create {
             if let Some(folder) = &mut self.new_folder {
-                match files::create_directory(&folder.parent, &folder.name) {
+                let source = folder.source.clone();
+                let result = if let Some(source) = &source {
+                    files::rename_entry(source, &folder.name)
+                } else {
+                    files::create_directory(&folder.parent, &folder.name)
+                };
+                match result {
                     Ok(path) => {
+                        if self.message == folder.error {
+                            self.message = None;
+                        }
+                        if let Some(source) = source {
+                            self.expanded = self
+                                .expanded
+                                .iter()
+                                .map(|expanded| {
+                                    expanded.strip_prefix(&source).map_or_else(
+                                        |_| expanded.clone(),
+                                        |suffix| path.join(suffix),
+                                    )
+                                })
+                                .collect();
+                        }
                         self.new_folder = None;
                         self.refresh(context);
+                        for expanded in self.expanded.clone() {
+                            self.expand_directory(&expanded);
+                        }
                         self.select(Some(path), context);
+                        self.scroll_to_selection = true;
                     }
-                    Err(error) => folder.error = Some(format!("Cannot create folder: {error}")),
+                    Err(error) => {
+                        let error = format!("Cannot save name: {error}");
+                        if folder.source.is_some() {
+                            self.message = Some(error.clone());
+                            folder.focus = true;
+                            folder.submit = false;
+                        }
+                        folder.error = Some(error);
+                    }
                 }
             }
         }
@@ -2264,7 +2609,22 @@ impl eframe::App for FileManager {
         self.statusbar(context);
         self.sidebar(context);
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
+            .frame(
+                egui::Frame::central_panel(&context.style())
+                    .inner_margin(0)
+                    .stroke(Stroke::new(
+                        1.0,
+                        if self.sidebar_focused {
+                            context.style().visuals.panel_fill
+                        } else {
+                            context
+                                .style()
+                                .visuals
+                                .panel_fill
+                                .lerp_to_gamma(ACCENT, 0.25)
+                        },
+                    )),
+            )
             .show(context, |ui| {
                 let background = ui.interact(
                     ui.available_rect_before_wrap(),
@@ -2309,6 +2669,7 @@ impl eframe::App for FileManager {
                     }
                 }
                 if background.clicked() || background.secondary_clicked() {
+                    self.sidebar_focused = false;
                     self.select(None, context);
                 }
                 background.context_menu(|ui| self.directory_menu(ui, context));
