@@ -31,6 +31,11 @@ inglés.
   manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión
   recursiva se limita a 5 niveles, 64 carpetas y 2000 entradas examinadas, incluidos los recuentos de contenido de las carpetas, con un
   presupuesto de 250 ms comprobado entre lecturas. Al alcanzar un límite, muestra un aviso; `o` permite abrir manualmente lo restante.
+- Los archivos sin miniatura usan los iconos MIME del tema activo del sistema, consultados mediante `gio`. Los iconos SVG/XPM se rasterizan
+  con `gdk-pixbuf-thumbnailer`. La carga se realiza en segundo plano y se reutiliza por extensión; si faltan herramientas o un icono, se
+  conserva el genérico. El tema se detecta al iniciar la aplicación.
+- Las carpetas con contenido muestran dos hojas dentro del icono; las vacías mantienen su aspecto anterior. El indicador utiliza el recuento
+  existente, incluidos los archivos ocultos, y se actualiza con `F5`.
 - `Light`/`Dark`, en la barra superior, alterna entre los temas claro y oscuro; la elección se conserva al reiniciar.
 - Arrastra una carpeta desde `Grid` o `Tree` a la barra de marcadores, o selecciónala y pulsa `D` o `Ctrl+D`.
 - Los accesos a la carpeta personal y sus carpetas principales aparecen arriba, con iconos propios y rutas XDG. Clic derecho permite
@@ -61,15 +66,16 @@ inglés.
   esté activado `Sequences`. `F5` vuelve a recorrer las carpetas. Se reutiliza el índice mientras la búsqueda está abierta; el tiempo total
   incluye el recorrido del disco, el proceso de fzf y la interfaz, por lo que no se garantiza la misma latencia que fzf sobre una lista ya
   cargada.
-- `Ctrl+L` o `Edit` activa la dirección editable; `Path` vuelve a los botones de ruta. Admite rutas relativas y `~`. Al pulsar un directorio
+- `Ctrl+L` o `Edit` alterna entre la dirección editable y los botones de ruta. Admite rutas relativas y `~`. Al pulsar un directorio
   anterior se conservan los botones siguientes hasta abrir otra ruta.
 - Clic derecho en el espacio vacío, sin seleccionar nada, permite abrir Konsole, crear una carpeta, añadir el directorio a marcadores,
   comprimirlo, copiar su ruta, actualizar y alternar archivos ocultos.
 - El menú de carpetas e imágenes permite comprimirlas a ZIP en segundo plano. El archivo queda junto al original, sin sobrescribir archivos
   existentes; los enlaces simbólicos se conservan como enlaces.
-- `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial; `Ctrl+H`/`Alt+↑` abre el directorio superior y `Ctrl+L` avanza por la ruta
-  conservada. Estos atajos, `F5` y `Ctrl+Mayús+H` funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto.
-- `F5` actualiza el contenido y el espacio del disco. `Ctrl+Mayús+H` o `Hidden` alterna los archivos ocultos.
+- `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial. `gT` o `Alt+↑` sube al directorio padre; `gt` baja por la ruta conservada.
+  Funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto. `Tree`, `Grid` y `Media` se eligen únicamente
+  con los botones de la barra superior, sin atajos.
+- `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos en ambos paneles.
 - El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
   la creación de carpetas, la edición de la dirección o la selección.
 
