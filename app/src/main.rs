@@ -248,6 +248,7 @@ struct FileManager {
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
     directory_frame: Option<DirectoryFrame>,
     preparing_directory: bool,
+    wait_for_thumbnails: bool,
     directory_ready: bool,
     prepared_view: Vec<(PathBuf, egui::Rect)>,
     settings: Settings,
@@ -357,6 +358,7 @@ impl FileManager {
             directory_refresh: None,
             directory_frame: None,
             preparing_directory: false,
+            wait_for_thumbnails: false,
             directory_ready: true,
             prepared_view: Vec::new(),
             address: current.to_string_lossy().into_owned(),
@@ -455,7 +457,7 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
-        self.preparing_directory = self.directory_frame.is_some();
+        self.wait_for_thumbnails = false;
         self.media_scan = None;
         self.directory_refresh = None;
         if self.settings.recursive_media && !files::is_trash(&self.current) {
@@ -566,6 +568,7 @@ impl FileManager {
     }
 
     fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>, context: &egui::Context) {
+        self.wait_for_thumbnails = false;
         self.directory_refresh = None;
         self.directory_selections.insert(
             self.current.clone(),
@@ -2997,7 +3000,7 @@ impl FileManager {
             rect
         };
         let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
-            if self.preparing_directory {
+            if self.wait_for_thumbnails {
                 self.directory_ready &= self.thumbnails.entry_ready(entry);
             }
             paint_thumbnail_placeholder(ui, image_bounds);
@@ -4085,6 +4088,8 @@ impl FileManager {
             } else {
                 self.address = self.current.to_string_lossy().into_owned();
                 self.refresh(context);
+                self.preparing_directory = self.directory_frame.is_some();
+                self.wait_for_thumbnails = self.preparing_directory;
             }
             let selected = outcome
                 .selected
@@ -4498,6 +4503,7 @@ impl eframe::App for FileManager {
             return;
         }
         self.preparing_directory = false;
+        self.wait_for_thumbnails = false;
         self.directory_frame = Some(DirectoryFrame {
             graphics: context.graphics(Clone::clone),
             _textures: self
