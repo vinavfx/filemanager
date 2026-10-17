@@ -142,6 +142,9 @@ struct Disk {
 }
 
 struct NameDialog {
+    preview: Option<Arc<Vec<Entry>>>,
+    previous_selection: Option<DirectorySelection>,
+    anchor: Option<PathBuf>,
     source: Option<PathBuf>,
     sources: Vec<PathBuf>,
     submit: bool,
@@ -149,6 +152,29 @@ struct NameDialog {
     name: String,
     focus: bool,
     error: Option<String>,
+}
+
+impl NameDialog {
+    fn creation_order(&self, path: &Path) -> Option<Vec<PathBuf>> {
+        let (_, entries) = self.preview.as_ref()?.split_last()?;
+        let mut order: Vec<_> = entries.iter().map(|entry| entry.path.clone()).collect();
+        let index = self
+            .anchor
+            .as_ref()
+            .and_then(|anchor| order.iter().position(|entry| entry == anchor))
+            .map_or(0, |index| index + 1);
+        order.insert(index, path.to_path_buf());
+        Some(order)
+    }
+
+    fn editing_path(&self) -> Option<&PathBuf> {
+        self.source.as_ref().or_else(|| {
+            self.preview
+                .as_ref()
+                .and_then(|entries| entries.last())
+                .map(|entry| &entry.path)
+        })
+    }
 }
 
 #[derive(Default)]
@@ -1018,7 +1044,12 @@ impl FileManager {
         let anchor = if into_folder {
             None
         } else {
-            self.selected.clone()
+            siblings
+                .iter()
+                .rev()
+                .find(|path| self.selection.contains(*path))
+                .cloned()
+                .or_else(|| self.selected.clone())
         };
         self.paste_placement = Some(PastePlacement {
             directory: if self.settings.view == View::Tree {
@@ -1196,19 +1227,11 @@ impl FileManager {
         if ui
             .add_enabled(
                 self.operation_job.is_none(),
-                egui::Button::new("New folder…"),
+                egui::Button::new("New folder… · Ctrl+N"),
             )
             .clicked()
         {
-            self.new_folder = Some(NameDialog {
-                source: None,
-                sources: Vec::new(),
-                submit: false,
-                parent: self.current.clone(),
-                name: String::new(),
-                focus: true,
-                error: None,
-            });
+            self.start_new_folder(context);
             ui.close_menu();
         }
         if ui.button("Bookmark this folder").clicked() {
@@ -1837,11 +1860,18 @@ impl FileManager {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::L)) {
             self.toggle_path_field(context);
         }
+        if self.new_folder.is_none()
+            && self.search.is_none()
+            && !self.text_input_focused(context)
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::N))
+        {
+            self.start_new_folder(context);
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            if self.message.is_some() {
+            if self.new_folder.is_some() {
+                self.cancel_name_edit(context);
+            } else if self.message.is_some() {
                 self.message = None;
-            } else if self.new_folder.is_some() {
-                self.new_folder = None;
             } else if self.find_query.is_some() {
                 self.find_query = None;
                 context.memory_mut(|memory| memory.surrender_focus(egui::Id::new("find-input")));
@@ -3292,7 +3322,7 @@ impl FileManager {
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
         if self.new_folder.as_ref().is_some_and(|dialog| {
-            dialog.source.as_ref() == Some(&entry.path) || dialog.sources.contains(&entry.path)
+            dialog.editing_path() == Some(&entry.path) || dialog.sources.contains(&entry.path)
         }) {
             return;
         }
@@ -3727,8 +3757,17 @@ impl FileManager {
         }
     }
 
+    fn display_entries(&self) -> Arc<Vec<Entry>> {
+        self.new_folder
+            .as_ref()
+            .filter(|dialog| dialog.parent == self.current)
+            .and_then(|dialog| dialog.preview.as_ref())
+            .cloned()
+            .unwrap_or_else(|| Arc::clone(&self.entries))
+    }
+
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        let entries = self.entries.clone();
+        let entries = self.display_entries();
         let width = 116.0 * self.settings.zoom;
         let height = 126.0 * self.settings.zoom;
         let gutter = self.number_width();
@@ -3863,7 +3902,7 @@ impl FileManager {
     }
 
     fn prepare_media_layout(&mut self, width: f32, target: f32, context: &egui::Context) {
-        let source = Arc::clone(&self.entries);
+        let source = self.display_entries();
         let source_changed = self.media_layout.source.as_ptr() != Arc::as_ptr(&source);
         let resized = self.media_layout.width != width || self.media_layout.target != target;
         if !source_changed && !resized && self.media_layout.complete {
@@ -3954,6 +3993,10 @@ impl FileManager {
             .map_or(0, |(range, _)| range.end);
         let mut new_rows = layout::justified_rows(&aspects[start..], width, target);
         if !complete
+            && self
+                .new_folder
+                .as_ref()
+                .is_none_or(|dialog| dialog.preview.is_none())
             && new_rows.last().is_some_and(|(range, _)| {
                 aspects[start + range.start..start + range.end]
                     .iter()
@@ -4338,6 +4381,15 @@ impl FileManager {
         {
             order_entries(entries, order);
         }
+        if let Some(dialog) = &self.new_folder {
+            if let Some(path) = dialog.editing_path() {
+                if path.parent() == entries.first().and_then(|entry| entry.path.parent()) {
+                    if let Some(order) = dialog.creation_order(path) {
+                        order_entries(entries, &order);
+                    }
+                }
+            }
+        }
     }
 
     fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
@@ -4351,7 +4403,7 @@ impl FileManager {
             }
         }
         let mut items = Vec::new();
-        self.tree_items(self.entries.as_ref().clone(), 0, &mut items);
+        self.tree_items(self.display_entries().as_ref().clone(), 0, &mut items);
         let items = Arc::new(items);
         self.tree_layout = Some(TreeLayout {
             sort: self.settings.tree_sort,
@@ -4375,7 +4427,15 @@ impl FileManager {
             let y = items.len() as f32 * (30.0 * self.settings.zoom).max(32.0);
             items.push((entry, egui::pos2(depth as f32, y)));
             if self.expanded.contains(&path) && depth < 64 {
-                if let Some(children) = self.tree_cache.get(&path) {
+                let preview = self
+                    .new_folder
+                    .as_ref()
+                    .filter(|dialog| dialog.parent == path)
+                    .and_then(|dialog| dialog.preview.as_ref());
+                if let Some(children) = preview
+                    .map(AsRef::as_ref)
+                    .or_else(|| self.tree_cache.get(&path))
+                {
                     self.tree_items(children.clone(), depth + 1, items);
                 }
             }
@@ -4861,6 +4921,112 @@ impl FileManager {
         }
     }
 
+    fn start_new_folder(&mut self, context: &egui::Context) {
+        if self.operation_job.is_some() || files::is_trash(&self.current) {
+            return;
+        }
+        let into_folder = self.settings.view == View::Tree
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|path| path.is_dir() && self.expanded.contains(path));
+        let parent = if self.settings.view != View::Tree {
+            self.current.clone()
+        } else if into_folder {
+            self.selected
+                .clone()
+                .unwrap_or_else(|| self.current.clone())
+        } else {
+            self.selected
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or(&self.current)
+                .to_path_buf()
+        };
+        let anchor = if into_folder {
+            None
+        } else {
+            self.selected.clone()
+        };
+        let mut name = "New folder".to_owned();
+        let mut index = 1;
+        while parent.join(&name).symlink_metadata().is_ok() {
+            name = format!("New folder ({index})");
+            index += 1;
+        }
+        let path = parent.join(&name);
+        let mut entries = if parent == self.current {
+            self.entries.as_ref().clone()
+        } else {
+            self.tree_cache.get(&parent).cloned().unwrap_or_default()
+        };
+        if self.settings.view == View::Tree {
+            self.sort_tree_entries(&mut entries);
+        }
+        entries.push(Entry {
+            path: path.clone(),
+            name: name.clone(),
+            directory: true,
+            symlink: false,
+            size: 0,
+            item_count: Some(0),
+            modified: None,
+            modified_label: String::new(),
+            sequence: None,
+        });
+        let previous_selection = DirectorySelection {
+            selected: self.selected.clone(),
+            last_selected: self.last_selected.clone(),
+            paths: self.selection.clone(),
+            anchor: self.selection_anchor.clone(),
+            visual_line: self.visual_line,
+        };
+        self.select(None, context);
+        self.selected = Some(path.clone());
+        self.selection_anchor = Some(path.clone());
+        self.selection.insert(path);
+        self.scroll_to_selection = true;
+        self.sidebar_focused = false;
+        self.tree_layout = None;
+        self.search = None;
+        self.find_query = None;
+        self.editing_path = false;
+        self.new_folder = Some(NameDialog {
+            preview: Some(Arc::new(entries)),
+            previous_selection: Some(previous_selection),
+            anchor,
+            source: None,
+            sources: Vec::new(),
+            submit: false,
+            parent,
+            name,
+            focus: true,
+            error: None,
+        });
+        context.request_repaint();
+    }
+
+    fn cancel_name_edit(&mut self, context: &egui::Context) {
+        if let Some(selection) = self
+            .new_folder
+            .take()
+            .and_then(|dialog| dialog.previous_selection)
+        {
+            self.select(selection.selected, context);
+            self.last_selected = selection.last_selected;
+            self.selection = selection.paths;
+            self.selection_anchor = selection.anchor;
+            self.visual_line = selection.visual_line;
+            if self.selection.len() > 1 {
+                self.size_job = None;
+                self.selection_size = None;
+            }
+            self.scroll_to_selection = self.selected.is_some();
+            self.tree_layout = None;
+        }
+        context.request_repaint();
+    }
+
     fn start_rename(&mut self) {
         if self.operation_job.is_some() || files::is_trash(&self.current) {
             return;
@@ -4913,6 +5079,9 @@ impl FileManager {
                 .unwrap_or_else(|| name.to_owned())
         };
         self.new_folder = Some(NameDialog {
+            preview: None,
+            previous_selection: None,
+            anchor: None,
             parent: parent.to_path_buf(),
             name,
             source: Some(source),
@@ -4933,7 +5102,7 @@ impl FileManager {
         let Some(dialog) = self.new_folder.as_mut() else {
             return false;
         };
-        let active = dialog.source.as_ref() == Some(&entry.path);
+        let active = dialog.editing_path() == Some(&entry.path);
         if !active && !dialog.sources.contains(&entry.path) {
             return false;
         }
@@ -4988,7 +5157,7 @@ impl FileManager {
         dialog.submit = (response.has_focus() || response.lost_focus())
             && ui.input(|input| input.key_pressed(Key::Enter));
         if response.lost_focus() && !dialog.submit {
-            self.new_folder = None;
+            self.cancel_name_edit(context);
         }
         true
     }
@@ -5024,48 +5193,9 @@ impl FileManager {
         }
     }
 
-    fn new_folder_window(&mut self, context: &egui::Context) {
-        let mut open = true;
-        let mut create = false;
-        let mut cancel = false;
-        if let Some(folder) = &mut self.new_folder {
-            if folder.source.is_some() {
-                create = folder.submit;
-            } else {
-                egui::Window::new("New folder")
-                    .id(egui::Id::new("new-folder"))
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .show(context, |ui| {
-                        ui.label(folder.parent.to_string_lossy());
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut folder.name).hint_text("Folder name"),
-                        );
-                        if folder.focus {
-                            response.request_focus();
-                            folder.focus = false;
-                        }
-                        create = (response.has_focus() || response.lost_focus())
-                            && ui.input(|input| input.key_pressed(Key::Enter));
-                        if let Some(error) = &folder.error {
-                            ui.colored_label(ui.visuals().error_fg_color, error);
-                        }
-                        ui.horizontal(|ui| {
-                            create |= ui
-                                .add_enabled(
-                                    !folder.name.trim().is_empty(),
-                                    egui::Button::new("Create"),
-                                )
-                                .clicked();
-                            cancel = ui.button("Cancel").clicked();
-                        });
-                    });
-            }
-        }
-        if !open || cancel {
-            self.new_folder = None;
-        } else if create && self.operation_job.is_none() {
+    fn submit_name_edit(&mut self, context: &egui::Context) {
+        let create = self.new_folder.as_ref().is_some_and(|folder| folder.submit);
+        if create && self.operation_job.is_none() {
             if let Some(folder) = &mut self.new_folder {
                 let source = folder.source.clone();
                 let sequence = source.as_ref().and_then(|source| {
@@ -5115,8 +5245,14 @@ impl FileManager {
                             renames.push((source, path.clone()));
                         } else {
                             self.operations.discard_redo();
+                            if let Some(order) = folder.creation_order(&path) {
+                                self.settings
+                                    .entry_order
+                                    .insert(folder.parent.clone(), order);
+                            }
                         }
                         self.new_folder = None;
+                        self.save();
                         self.complete_operation(
                             operations::Outcome {
                                 changed: true,
@@ -5131,11 +5267,9 @@ impl FileManager {
                     }
                     Err(error) => {
                         let error = format!("Cannot save name: {error}");
-                        if folder.source.is_some() {
-                            self.message = Some(error.clone());
-                            folder.focus = true;
-                            folder.submit = false;
-                        }
+                        self.message = Some(error.clone());
+                        folder.focus = true;
+                        folder.submit = false;
                         folder.error = Some(error);
                     }
                 }
@@ -5227,7 +5361,7 @@ impl eframe::App for FileManager {
                 );
                 if self.search.is_some() {
                     self.search_results(ui, context);
-                } else if self.entries.is_empty() {
+                } else if self.display_entries().is_empty() {
                     ui.centered_and_justified(|ui| {
                         let message = if self.media_scan.is_some() {
                             "Scanning media…"
@@ -5318,7 +5452,7 @@ impl eframe::App for FileManager {
                 }
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
-        self.new_folder_window(context);
+        self.submit_name_edit(context);
         self.empty_trash_window(context);
         if self.current != frame_directory
             || ((self.settings.view != View::Media || self.search.is_some())
