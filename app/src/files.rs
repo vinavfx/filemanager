@@ -673,10 +673,22 @@ pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
         )
     })?;
     let target = entry_path(parent, name)?;
+    move_entry(source, &target)?;
+    Ok(target)
+}
+
+pub fn move_entry(source: &Path, target: &Path) -> io::Result<()> {
     if source == target {
-        return Ok(target);
+        return Ok(());
     }
-    match fs::symlink_metadata(&target) {
+    let directory = target
+        .parent()
+        .ok_or_else(|| io::Error::other("Invalid destination directory."))?
+        .canonicalize()?;
+    if fs::symlink_metadata(source)?.is_dir() && directory.starts_with(source.canonicalize()?) {
+        return Err(io::Error::other("Cannot move a folder into itself."));
+    }
+    match fs::symlink_metadata(target) {
         Ok(_) => {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -691,8 +703,8 @@ pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
         &["-T", "-C"],
         &[source.as_os_str(), target.as_os_str()],
     )?;
-    crate::images::rename_cached_thumbnails(source, &target);
-    Ok(target)
+    crate::images::rename_cached_thumbnails(source, target);
+    Ok(())
 }
 
 pub(crate) fn gio(command: &str, options: &[&str], paths: &[&OsStr]) -> io::Result<Vec<u8>> {

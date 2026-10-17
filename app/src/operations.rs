@@ -237,10 +237,7 @@ impl Action {
     fn apply(&self, trash: &mut Option<TrashEntries>) -> io::Result<Self> {
         match self {
             Self::Rename { from, to } => {
-                let name = to.file_name().and_then(OsStr::to_str).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination name.")
-                })?;
-                files::rename_entry(from, name)?;
+                files::move_entry(from, to)?;
                 Ok(Self::Rename {
                     from: to.clone(),
                     to: from.clone(),

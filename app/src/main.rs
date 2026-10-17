@@ -239,6 +239,7 @@ struct DirectoryFrame {
 
 enum FileOperation {
     Rename(Vec<(PathBuf, PathBuf)>),
+    Move(Vec<(PathBuf, PathBuf)>),
     Copy(Vec<PathBuf>, PathBuf),
     Trash(Vec<PathBuf>),
     EmptyTrash,
@@ -3072,7 +3073,10 @@ impl FileManager {
                             );
                         });
                 });
-                if drop.dnd_hover_payload::<PathBuf>().is_some() {
+                if drop
+                    .dnd_hover_payload::<Vec<PathBuf>>()
+                    .is_some_and(|paths| paths.iter().any(|path| path.is_dir()))
+                {
                     ui.painter().rect_stroke(
                         ui.max_rect().shrink(2.0),
                         4.0,
@@ -3080,8 +3084,10 @@ impl FileManager {
                         egui::StrokeKind::Inside,
                     );
                 }
-                if let Some(path) = drop.dnd_release_payload::<PathBuf>() {
-                    self.add_bookmark((*path).clone());
+                if let Some(paths) = drop.dnd_release_payload::<Vec<PathBuf>>() {
+                    for path in paths.iter().filter(|path| path.is_dir()) {
+                        self.add_bookmark(path.clone());
+                    }
                 }
             });
     }
@@ -3288,8 +3294,48 @@ impl FileManager {
         {
             return;
         }
+        if response.drag_started() && !files::is_trash(&self.current) {
+            let paths = if self.selection.contains(&entry.path) {
+                self.visible_paths
+                    .iter()
+                    .filter(|path| self.selection.contains(*path))
+                    .filter(|path| {
+                        !path
+                            .ancestors()
+                            .skip(1)
+                            .any(|parent| self.selection.contains(parent))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                self.select(Some(entry.path.clone()), context);
+                vec![entry.path.clone()]
+            };
+            let paths = paths
+                .into_iter()
+                .flat_map(|path| {
+                    self.entries
+                        .iter()
+                        .chain(self.tree_cache.values().flatten())
+                        .find(|entry| entry.path == path)
+                        .and_then(|entry| entry.sequence.as_ref())
+                        .map_or_else(|| vec![path], |frames| frames.as_ref().clone())
+                })
+                .collect::<Vec<_>>();
+            response.dnd_set_drag_payload(paths);
+        }
         if entry.directory {
-            response.dnd_set_drag_payload(entry.path.clone());
+            if response.dnd_hover_payload::<Vec<PathBuf>>().is_some() {
+                context.layer_painter(response.layer_id).rect_stroke(
+                    response.rect.shrink(2.0),
+                    4.0,
+                    Stroke::new(2.0, ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(paths) = response.dnd_release_payload::<Vec<PathBuf>>() {
+                self.move_paths(&paths, &entry.path, context);
+            }
         }
         if response.clicked() || response.secondary_clicked() {
             self.sidebar_focused = false;
@@ -3764,11 +3810,7 @@ impl FileManager {
                                 for entry in row {
                                     let (rect, response) = ui.allocate_exact_size(
                                         Vec2::new(width, height),
-                                        if entry.directory {
-                                            egui::Sense::click_and_drag()
-                                        } else {
-                                            egui::Sense::click()
-                                        },
+                                        egui::Sense::click_and_drag(),
                                     );
                                     if !self.sidebar_focused && self.selection.contains(&entry.path)
                                     {
@@ -4037,11 +4079,7 @@ impl FileManager {
                             let response = ui.interact(
                                 rect,
                                 ui.id().with(&entry.path),
-                                if entry.directory {
-                                    egui::Sense::click_and_drag()
-                                } else {
-                                    egui::Sense::click()
-                                },
+                                egui::Sense::click_and_drag(),
                             );
                             let highlighted =
                                 !self.sidebar_focused && self.selection.contains(&entry.path);
@@ -4413,11 +4451,7 @@ impl FileManager {
                 let response = ui.interact(
                     content,
                     ui.id().with("entry"),
-                    if entry.directory {
-                        egui::Sense::click_and_drag()
-                    } else {
-                        egui::Sense::click()
-                    },
+                    egui::Sense::click_and_drag(),
                 );
                 paint_selection(
                     ui,
@@ -4531,6 +4565,21 @@ impl FileManager {
         }
     }
 
+    fn move_paths(&mut self, paths: &[PathBuf], directory: &Path, context: &egui::Context) {
+        if self.operation_job.is_some() || files::is_trash(directory) {
+            return;
+        }
+        let paths = paths
+            .iter()
+            .filter(|path| path.parent() != Some(directory))
+            .filter_map(|path| {
+                path.file_name()
+                    .map(|name| (path.clone(), directory.join(name)))
+            })
+            .collect();
+        self.start_operation(FileOperation::Move(paths), context);
+    }
+
     fn start_operation(&mut self, operation: FileOperation, context: &egui::Context) {
         if self.new_folder.is_some() {
             return;
@@ -4559,6 +4608,8 @@ impl FileManager {
         let label = match &operation {
             FileOperation::Rename(paths) if paths.is_empty() => return,
             FileOperation::Rename(_) => "Renaming",
+            FileOperation::Move(paths) if paths.is_empty() => return,
+            FileOperation::Move(_) => "Moving",
             FileOperation::Copy(paths, _) if paths.is_empty() => return,
             FileOperation::Copy(_, _) => "Copying",
             FileOperation::Trash(paths) if paths.is_empty() => return,
@@ -4577,7 +4628,7 @@ impl FileManager {
             _ => HashSet::new(),
         };
         let total = match &operation {
-            FileOperation::Rename(paths) => paths.len(),
+            FileOperation::Rename(paths) | FileOperation::Move(paths) => paths.len(),
             FileOperation::Copy(paths, _) => paths.len(),
             _ => trash_paths.len(),
         };
@@ -4616,7 +4667,9 @@ impl FileManager {
                 context.request_repaint();
             };
             let outcome = match operation {
-                FileOperation::Rename(paths) => history.rename(paths, &mut progress),
+                FileOperation::Rename(paths) | FileOperation::Move(paths) => {
+                    history.rename(paths, &mut progress)
+                }
                 FileOperation::Copy(paths, directory) => {
                     history.copy(paths, &directory, &mut progress)
                 }
@@ -5209,6 +5262,9 @@ impl eframe::App for FileManager {
                     self.sidebar_focused = false;
                     self.select(None, context);
                 }
+                if let Some(paths) = background.dnd_release_payload::<Vec<PathBuf>>() {
+                    self.move_paths(&paths, &self.current.clone(), context);
+                }
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
         self.new_folder_window(context);
@@ -5238,7 +5294,7 @@ impl eframe::App for FileManager {
                 .cloned()
                 .collect(),
         });
-        if let Some(path) = egui::DragAndDrop::payload::<PathBuf>(context) {
+        if let Some(paths) = egui::DragAndDrop::payload::<Vec<PathBuf>>(context) {
             context.set_cursor_icon(egui::CursorIcon::Grabbing);
             if let Some(pointer) = context.pointer_hover_pos() {
                 egui::Area::new(egui::Id::new("dragged-folder"))
@@ -5247,7 +5303,13 @@ impl eframe::App for FileManager {
                     .interactable(false)
                     .show(context, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                            if paths.len() == 1 {
+                                ui.label(
+                                    paths[0].file_name().unwrap_or_default().to_string_lossy(),
+                                );
+                            } else {
+                                ui.label(format!("{} items", paths.len()));
+                            }
                         });
                     });
             }
