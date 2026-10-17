@@ -49,6 +49,20 @@ fn apply_theme(context: &egui::Context, dark_mode: bool) {
     context.set_visuals(visuals);
 }
 
+fn with_scrollbar_color<R>(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui, Arc<egui::Style>) -> R,
+) -> R {
+    let content_style = Arc::clone(ui.style());
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.inactive.bg_fill = ACCENT;
+    widgets.hovered.bg_fill = ACCENT;
+    widgets.active.bg_fill = ACCENT;
+    let result = add_contents(ui, Arc::clone(&content_style));
+    ui.set_style(content_style);
+    result
+}
+
 #[derive(Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum View {
     Tree,
@@ -213,6 +227,7 @@ enum OperationUpdate {
 
 struct OperationJob {
     receiver: mpsc::Receiver<OperationUpdate>,
+    trash_paths: Vec<PathBuf>,
     label: &'static str,
     completed: usize,
     total: usize,
@@ -927,13 +942,21 @@ impl FileManager {
                     job.path = path;
                 }
                 Ok(OperationUpdate::Finished(history, outcome)) => {
+                    let restore = !job.trash_paths.is_empty() && !outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
+                    if restore {
+                        self.refresh(context);
+                    }
                     self.complete_operation(outcome, context);
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    let restore = !job.trash_paths.is_empty();
                     self.operation_job = None;
+                    if restore {
+                        self.refresh(context);
+                    }
                     self.message = Some("The file operation stopped unexpectedly.".into());
                 }
             }
@@ -2396,21 +2419,24 @@ impl FileManager {
                     });
                 });
                 ui.add_space(12.0);
-                self.entry_scroll_area(ui, "bookmark-list")
-                    .drag_to_scroll(false)
-                    .show(ui, |ui| {
-                        for (index, (bookmark, kind)) in entries.iter().enumerate() {
-                            if index == default_count {
-                                ui.separator();
+                with_scrollbar_color(ui, |ui, content_style| {
+                    self.entry_scroll_area(ui, "bookmark-list")
+                        .drag_to_scroll(false)
+                        .show(ui, |ui| {
+                            ui.set_style(content_style);
+                            for (index, (bookmark, kind)) in entries.iter().enumerate() {
+                                if index == default_count {
+                                    ui.separator();
+                                }
+                                self.bookmark_row(ui, bookmark, *kind, index, context);
                             }
-                            self.bookmark_row(ui, bookmark, *kind, index, context);
-                        }
-                        ui.label(
-                            RichText::new("Drag folders here\nor press D to bookmark")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    });
+                            ui.label(
+                                RichText::new("Drag folders here\nor press D to bookmark")
+                                    .size(12.0)
+                                    .color(MUTED),
+                            );
+                        });
+                });
                 if drop.dnd_hover_payload::<PathBuf>().is_some() {
                     ui.painter().rect_stroke(
                         ui.max_rect().shrink(2.0),
@@ -2584,7 +2610,25 @@ impl FileManager {
                                     .color(ACCENT),
                                 );
                             }
-                            if let Some((completed, total)) = self.thumbnails.progress(context) {
+                            if let Some(job) = &self.operation_job {
+                                let fraction = job.completed as f32 / job.total.max(1) as f32;
+                                ui.add(
+                                    egui::ProgressBar::new(fraction)
+                                        .desired_width(ui.available_width().min(240.0))
+                                        .desired_height(16.0)
+                                        .text(
+                                            RichText::new(format!(
+                                                "{} · {}/{}",
+                                                job.label, job.completed, job.total
+                                            ))
+                                            .size(12.0),
+                                        ),
+                                )
+                                .on_hover_text(job.path.to_string_lossy());
+                                ui.spinner();
+                            } else if let Some((completed, total)) =
+                                self.thumbnails.progress(context)
+                            {
                                 let label = if completed == total {
                                     "Thumbnails ready"
                                 } else {
@@ -2610,18 +2654,6 @@ impl FileManager {
                         });
                     },
                 );
-                if let Some(job) = &self.operation_job {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let fraction = job.completed as f32 / job.total.max(1) as f32;
-                        ui.add(
-                            egui::ProgressBar::new(fraction)
-                                .desired_width(240.0)
-                                .text(format!("{} · {}/{}", job.label, job.completed, job.total)),
-                        );
-                        ui.add(egui::Label::new(job.path.to_string_lossy()).truncate());
-                    });
-                }
                 if self.compression_job.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -2922,108 +2954,111 @@ impl FileManager {
                             );
                         }
                     }
-                    egui::ScrollArea::vertical()
-                        .id_salt("search-results")
-                        .auto_shrink([false, false])
-                        .show_rows(ui, row_height, update.hits.len(), |ui, range| {
-                            if search.reveal_cursor && !update.hits.is_empty() {
-                                let height = row_height + ui.spacing().item_spacing.y;
-                                let top = ui.max_rect().top()
-                                    + (search.cursor as f32 - range.start as f32) * height;
-                                ui.scroll_to_rect(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(ui.max_rect().left(), top),
+                    with_scrollbar_color(ui, |ui, content_style| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("search-results")
+                            .auto_shrink([false, false])
+                            .show_rows(ui, row_height, update.hits.len(), |ui, range| {
+                                ui.set_style(content_style);
+                                if search.reveal_cursor && !update.hits.is_empty() {
+                                    let height = row_height + ui.spacing().item_spacing.y;
+                                    let top = ui.max_rect().top()
+                                        + (search.cursor as f32 - range.start as f32) * height;
+                                    ui.scroll_to_rect(
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(ui.max_rect().left(), top),
+                                            Vec2::new(ui.available_width(), row_height),
+                                        ),
+                                        None,
+                                    );
+                                    search.reveal_cursor = false;
+                                }
+                                for index in range {
+                                    let hit = &update.hits[index];
+                                    let (rect, response) = ui.allocate_exact_size(
                                         Vec2::new(ui.available_width(), row_height),
-                                    ),
-                                    None,
-                                );
-                                search.reveal_cursor = false;
-                            }
-                            for index in range {
-                                let hit = &update.hits[index];
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(ui.available_width(), row_height),
-                                    egui::Sense::click(),
-                                );
-                                if index % 2 == 1 {
-                                    ui.painter().rect_filled(
+                                        egui::Sense::click(),
+                                    );
+                                    if index % 2 == 1 {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            0.0,
+                                            ui.visuals().faint_bg_color,
+                                        );
+                                    }
+                                    paint_selection(
+                                        ui,
                                         rect,
-                                        0.0,
-                                        ui.visuals().faint_bg_color,
+                                        !self.sidebar_focused && search.cursor == index,
+                                        response.hovered(),
                                     );
-                                }
-                                paint_selection(
-                                    ui,
-                                    rect,
-                                    !self.sidebar_focused && search.cursor == index,
-                                    response.hovered(),
-                                );
-                                let icon_rect = egui::Rect::from_center_size(
-                                    egui::pos2(rect.left() + 20.0, rect.center().y),
-                                    Vec2::splat(22.0),
-                                );
-                                self.prepared_view.push((hit.path.clone(), icon_rect));
-                                if !hit.directory {
-                                    self.directory_ready &= self.icons.ready(&hit.path);
-                                }
-                                if hit.directory {
-                                    paint_folder(ui, icon_rect);
-                                } else if let Some(texture) = self.icons.get(&hit.path) {
-                                    ui.painter().image(
-                                        texture.id(),
-                                        icon_rect,
-                                        egui::Rect::from_min_max(
-                                            egui::Pos2::ZERO,
-                                            egui::pos2(1.0, 1.0),
-                                        ),
-                                        Color32::WHITE,
+                                    let icon_rect = egui::Rect::from_center_size(
+                                        egui::pos2(rect.left() + 20.0, rect.center().y),
+                                        Vec2::splat(22.0),
                                     );
-                                } else {
-                                    ui.painter().rect_stroke(
-                                        icon_rect.shrink2(Vec2::new(4.0, 1.0)),
-                                        2.0,
-                                        Stroke::new(1.5, MUTED),
-                                        egui::StrokeKind::Inside,
+                                    self.prepared_view.push((hit.path.clone(), icon_rect));
+                                    if !hit.directory {
+                                        self.directory_ready &= self.icons.ready(&hit.path);
+                                    }
+                                    if hit.directory {
+                                        paint_folder(ui, icon_rect);
+                                    } else if let Some(texture) = self.icons.get(&hit.path) {
+                                        ui.painter().image(
+                                            texture.id(),
+                                            icon_rect,
+                                            egui::Rect::from_min_max(
+                                                egui::Pos2::ZERO,
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            Color32::WHITE,
+                                        );
+                                    } else {
+                                        ui.painter().rect_stroke(
+                                            icon_rect.shrink2(Vec2::new(4.0, 1.0)),
+                                            2.0,
+                                            Stroke::new(1.5, MUTED),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                    }
+                                    let name =
+                                        hit.path.file_name().unwrap_or_default().to_string_lossy();
+                                    let parent = Path::new(&hit.label)
+                                        .parent()
+                                        .filter(|path| !path.as_os_str().is_empty());
+                                    let location = parent.map_or_else(
+                                        || "This folder".into(),
+                                        |path| path.to_string_lossy(),
                                     );
+                                    for (text, left, right, color) in [
+                                        (name, 40.0, name_width - 16.0, ui.visuals().text_color()),
+                                        (location, name_width, rect.width() - 12.0, MUTED),
+                                    ] {
+                                        let text_rect = egui::Rect::from_min_max(
+                                            egui::pos2(rect.left() + left, rect.top()),
+                                            egui::pos2(rect.left() + right, rect.bottom()),
+                                        );
+                                        let mut cell = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(text_rect).layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                            ),
+                                        );
+                                        cell.set_clip_rect(ui.clip_rect().intersect(text_rect));
+                                        let (position, galley, _) =
+                                            egui::Label::new(RichText::new(text).color(color))
+                                                .truncate()
+                                                .layout_in_ui(&mut cell);
+                                        cell.painter().galley(position, galley, color);
+                                    }
+                                    if response.clicked() {
+                                        search.cursor = index;
+                                        select = Some(hit.path.clone());
+                                    }
+                                    if response.double_clicked() {
+                                        open = Some(hit.path.clone());
+                                    }
                                 }
-                                let name =
-                                    hit.path.file_name().unwrap_or_default().to_string_lossy();
-                                let parent = Path::new(&hit.label)
-                                    .parent()
-                                    .filter(|path| !path.as_os_str().is_empty());
-                                let location = parent.map_or_else(
-                                    || "This folder".into(),
-                                    |path| path.to_string_lossy(),
-                                );
-                                for (text, left, right, color) in [
-                                    (name, 40.0, name_width - 16.0, ui.visuals().text_color()),
-                                    (location, name_width, rect.width() - 12.0, MUTED),
-                                ] {
-                                    let text_rect = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left() + left, rect.top()),
-                                        egui::pos2(rect.left() + right, rect.bottom()),
-                                    );
-                                    let mut cell = ui.new_child(
-                                        egui::UiBuilder::new().max_rect(text_rect).layout(
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                        ),
-                                    );
-                                    cell.set_clip_rect(ui.clip_rect().intersect(text_rect));
-                                    let (position, galley, _) =
-                                        egui::Label::new(RichText::new(text).color(color))
-                                            .truncate()
-                                            .layout_in_ui(&mut cell);
-                                    cell.painter().galley(position, galley, color);
-                                }
-                                if response.clicked() {
-                                    search.cursor = index;
-                                    select = Some(hit.path.clone());
-                                }
-                                if response.double_clicked() {
-                                    open = Some(hit.path.clone());
-                                }
-                            }
-                        });
+                            });
+                    });
                 }
             });
         }
@@ -3092,81 +3127,85 @@ impl FileManager {
                 self.scroll_to_selection = false;
                 self.center_selection = false;
             }
-            scroll
-                .auto_shrink([false, false])
-                .id_salt("grid")
-                .drag_to_scroll(false)
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                .show_rows(ui, height, rows, |ui, range| {
-                    let start = (range.start * columns).min(entries.len());
-                    let end = (range.end * columns).min(entries.len());
-                    for (index, row) in entries[start..end].chunks(columns).enumerate() {
-                        ui.horizontal(|ui| {
-                            if gutter > 0.0 {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(gutter, height),
-                                    egui::Sense::hover(),
-                                );
-                                self.paint_relative_number(
-                                    ui,
-                                    rect,
-                                    range.start + index,
-                                    current_row,
-                                );
-                            }
-                            ui.add_space(8.0);
-                            for entry in row {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    Vec2::new(width, height),
-                                    if entry.directory {
-                                        egui::Sense::click_and_drag()
-                                    } else {
-                                        egui::Sense::click()
-                                    },
-                                );
-                                if !self.sidebar_focused && self.selection.contains(&entry.path) {
-                                    ui.painter().rect_filled(
-                                        rect.shrink(2.0),
-                                        8.0,
-                                        ui.visuals().selection.bg_fill,
+            with_scrollbar_color(ui, |ui, content_style| {
+                scroll
+                    .auto_shrink([false, false])
+                    .id_salt("grid")
+                    .drag_to_scroll(false)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show_rows(ui, height, rows, |ui, range| {
+                        ui.set_style(content_style);
+                        let start = (range.start * columns).min(entries.len());
+                        let end = (range.end * columns).min(entries.len());
+                        for (index, row) in entries[start..end].chunks(columns).enumerate() {
+                            ui.horizontal(|ui| {
+                                if gutter > 0.0 {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        Vec2::new(gutter, height),
+                                        egui::Sense::hover(),
                                     );
-                                }
-                                let icon_rect = egui::Rect::from_center_size(
-                                    rect.center_top() + Vec2::new(0.0, height * 0.34),
-                                    Vec2::splat(64.0 * self.settings.zoom),
-                                );
-                                if !self.paint_thumbnail(ui, icon_rect, entry, &response) {
-                                    self.paint_entry_icon(
+                                    self.paint_relative_number(
                                         ui,
-                                        icon_rect.shrink(8.0 * self.settings.zoom),
-                                        entry,
+                                        rect,
+                                        range.start + index,
+                                        current_row,
                                     );
                                 }
-                                let name_rect = egui::Rect::from_min_size(
-                                    egui::pos2(rect.left() + 7.0, rect.top() + height * 0.66),
-                                    Vec2::new(width - 14.0, 24.0),
-                                );
-                                if !self.rename_field(ui, name_rect, entry, context) {
-                                    let mut job = egui::text::LayoutJob::simple(
-                                        entry.name.clone(),
-                                        egui::FontId::proportional(12.0),
-                                        ui.visuals().text_color(),
-                                        width - 14.0,
+                                ui.add_space(8.0);
+                                for entry in row {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        Vec2::new(width, height),
+                                        if entry.directory {
+                                            egui::Sense::click_and_drag()
+                                        } else {
+                                            egui::Sense::click()
+                                        },
                                     );
-                                    job.wrap.max_rows = 2;
-                                    job.halign = egui::Align::Center;
-                                    let galley = ui.painter().layout_job(job);
-                                    ui.painter().galley(
-                                        egui::pos2(rect.center().x, rect.top() + height * 0.66),
-                                        galley,
-                                        ui.visuals().text_color(),
+                                    if !self.sidebar_focused && self.selection.contains(&entry.path)
+                                    {
+                                        ui.painter().rect_filled(
+                                            rect.shrink(2.0),
+                                            8.0,
+                                            ui.visuals().selection.bg_fill,
+                                        );
+                                    }
+                                    let icon_rect = egui::Rect::from_center_size(
+                                        rect.center_top() + Vec2::new(0.0, height * 0.34),
+                                        Vec2::splat(64.0 * self.settings.zoom),
                                     );
+                                    if !self.paint_thumbnail(ui, icon_rect, entry, &response) {
+                                        self.paint_entry_icon(
+                                            ui,
+                                            icon_rect.shrink(8.0 * self.settings.zoom),
+                                            entry,
+                                        );
+                                    }
+                                    let name_rect = egui::Rect::from_min_size(
+                                        egui::pos2(rect.left() + 7.0, rect.top() + height * 0.66),
+                                        Vec2::new(width - 14.0, 24.0),
+                                    );
+                                    if !self.rename_field(ui, name_rect, entry, context) {
+                                        let mut job = egui::text::LayoutJob::simple(
+                                            entry.name.clone(),
+                                            egui::FontId::proportional(12.0),
+                                            ui.visuals().text_color(),
+                                            width - 14.0,
+                                        );
+                                        job.wrap.max_rows = 2;
+                                        job.halign = egui::Align::Center;
+                                        let galley = ui.painter().layout_job(job);
+                                        ui.painter().galley(
+                                            egui::pos2(rect.center().x, rect.top() + height * 0.66),
+                                            galley,
+                                            ui.visuals().text_color(),
+                                        );
+                                    }
+                                    self.entry_response(response, entry, context);
                                 }
-                                self.entry_response(response, entry, context);
-                            }
-                        });
-                    }
-                });
+                            });
+                        }
+                    });
+            });
         });
     }
 
@@ -3219,106 +3258,114 @@ impl FileManager {
             .iter()
             .position(|(range, _)| range.contains(&current_index))
             .unwrap_or(0);
-        self.entry_scroll_area(ui, "media")
-            .auto_shrink([false, false])
-            .drag_to_scroll(false)
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-            .show_viewport(ui, |ui, _| {
-                ui.set_min_size(Vec2::new(width + gutter, total_height));
-                let origin = ui.min_rect().min;
-                let mut y = origin.y;
-                for (row, (range, height)) in rows.into_iter().enumerate() {
-                    self.paint_relative_number(
-                        ui,
-                        egui::Rect::from_min_size(
-                            egui::pos2(origin.x, y),
-                            Vec2::new(gutter, height),
-                        ),
-                        row,
-                        current_row,
-                    );
-                    let mut x = origin.x + gutter;
-                    for index in range {
-                        let entry = &entries[index];
-                        let rect = egui::Rect::from_min_size(
-                            egui::pos2(x, y),
-                            Vec2::new(aspects[index] * height, height),
+        with_scrollbar_color(ui, |ui, content_style| {
+            self.entry_scroll_area(ui, "media")
+                .auto_shrink([false, false])
+                .drag_to_scroll(false)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show_viewport(ui, |ui, _| {
+                    ui.set_style(content_style);
+                    ui.set_min_size(Vec2::new(width + gutter, total_height));
+                    let origin = ui.min_rect().min;
+                    let mut y = origin.y;
+                    for (row, (range, height)) in rows.into_iter().enumerate() {
+                        self.paint_relative_number(
+                            ui,
+                            egui::Rect::from_min_size(
+                                egui::pos2(origin.x, y),
+                                Vec2::new(gutter, height),
+                            ),
+                            row,
+                            current_row,
                         );
-                        x = rect.right();
-                        if self.scroll_to_selection && self.selected.as_ref() == Some(&entry.path) {
-                            ui.scroll_to_rect(
+                        let mut x = origin.x + gutter;
+                        for index in range {
+                            let entry = &entries[index];
+                            let rect = egui::Rect::from_min_size(
+                                egui::pos2(x, y),
+                                Vec2::new(aspects[index] * height, height),
+                            );
+                            x = rect.right();
+                            if self.scroll_to_selection
+                                && self.selected.as_ref() == Some(&entry.path)
+                            {
+                                ui.scroll_to_rect(
+                                    rect,
+                                    self.center_selection.then_some(egui::Align::Center),
+                                );
+                                self.scroll_to_selection = false;
+                                self.center_selection = false;
+                            }
+                            if !ui.is_rect_visible(rect) {
+                                continue;
+                            }
+                            let response = ui.interact(
                                 rect,
-                                self.center_selection.then_some(egui::Align::Center),
+                                ui.id().with(&entry.path),
+                                if entry.directory {
+                                    egui::Sense::click_and_drag()
+                                } else {
+                                    egui::Sense::click()
+                                },
                             );
-                            self.scroll_to_selection = false;
-                            self.center_selection = false;
-                        }
-                        if !ui.is_rect_visible(rect) {
-                            continue;
-                        }
-                        let response = ui.interact(
-                            rect,
-                            ui.id().with(&entry.path),
+                            let highlighted =
+                                !self.sidebar_focused && self.selection.contains(&entry.path);
+                            ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+                            if !self.paint_thumbnail(ui, rect, entry, &response) {
+                                let edge = (64.0 * self.settings.zoom)
+                                    .min(rect.width().min(rect.height()) * 0.5);
+                                self.paint_entry_icon(
+                                    ui,
+                                    egui::Rect::from_center_size(rect.center(), Vec2::splat(edge)),
+                                    entry,
+                                );
+                            }
                             if entry.directory {
-                                egui::Sense::click_and_drag()
-                            } else {
-                                egui::Sense::click()
-                            },
-                        );
-                        let highlighted =
-                            !self.sidebar_focused && self.selection.contains(&entry.path);
-                        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
-                        if !self.paint_thumbnail(ui, rect, entry, &response) {
-                            let edge = (64.0 * self.settings.zoom)
-                                .min(rect.width().min(rect.height()) * 0.5);
-                            self.paint_entry_icon(
-                                ui,
-                                egui::Rect::from_center_size(rect.center(), Vec2::splat(edge)),
-                                entry,
+                                let label = egui::Rect::from_min_max(
+                                    egui::pos2(rect.left(), (rect.bottom() - 26.0).max(rect.top())),
+                                    rect.max,
+                                );
+                                ui.painter()
+                                    .rect_filled(label, 0.0, ui.visuals().panel_fill);
+                                let mut job = egui::text::LayoutJob::simple(
+                                    entry.name.clone(),
+                                    egui::FontId::proportional(12.0),
+                                    ui.visuals().text_color(),
+                                    (label.width() - 12.0).max(1.0),
+                                );
+                                job.wrap.max_rows = 1;
+                                job.halign = egui::Align::Center;
+                                let galley = ui.painter().layout_job(job);
+                                let position = egui::pos2(
+                                    label.center().x,
+                                    label.center().y - galley.size().y / 2.0,
+                                );
+                                ui.painter()
+                                    .with_clip_rect(ui.clip_rect().intersect(label))
+                                    .galley(position, galley, ui.visuals().text_color());
+                            }
+                            if highlighted {
+                                ui.painter().rect_stroke(
+                                    rect.shrink(1.0),
+                                    0.0,
+                                    Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                            let name_rect = egui::Rect::from_min_max(
+                                egui::pos2(
+                                    rect.left() + 4.0,
+                                    (rect.bottom() - 26.0).max(rect.top()),
+                                ),
+                                egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
                             );
+                            self.rename_field(ui, name_rect, entry, context);
+                            self.entry_response(response, entry, context);
                         }
-                        if entry.directory {
-                            let label = egui::Rect::from_min_max(
-                                egui::pos2(rect.left(), (rect.bottom() - 26.0).max(rect.top())),
-                                rect.max,
-                            );
-                            ui.painter()
-                                .rect_filled(label, 0.0, ui.visuals().panel_fill);
-                            let mut job = egui::text::LayoutJob::simple(
-                                entry.name.clone(),
-                                egui::FontId::proportional(12.0),
-                                ui.visuals().text_color(),
-                                (label.width() - 12.0).max(1.0),
-                            );
-                            job.wrap.max_rows = 1;
-                            job.halign = egui::Align::Center;
-                            let galley = ui.painter().layout_job(job);
-                            let position = egui::pos2(
-                                label.center().x,
-                                label.center().y - galley.size().y / 2.0,
-                            );
-                            ui.painter()
-                                .with_clip_rect(ui.clip_rect().intersect(label))
-                                .galley(position, galley, ui.visuals().text_color());
-                        }
-                        if highlighted {
-                            ui.painter().rect_stroke(
-                                rect.shrink(1.0),
-                                0.0,
-                                Stroke::new(2.0, ui.visuals().selection.stroke.color),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        let name_rect = egui::Rect::from_min_max(
-                            egui::pos2(rect.left() + 4.0, (rect.bottom() - 26.0).max(rect.top())),
-                            egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
-                        );
-                        self.rename_field(ui, name_rect, entry, context);
-                        self.entry_response(response, entry, context);
+                        y += height;
                     }
-                    y += height;
-                }
-            });
+                });
+        });
     }
 
     fn tree_header(&mut self, ui: &mut egui::Ui) {
@@ -3628,25 +3675,72 @@ impl FileManager {
         }
     }
 
+    fn hide_pending_trash(&mut self, context: &egui::Context) {
+        let Some(job) = &self.operation_job else {
+            return;
+        };
+        if job.trash_paths.is_empty() {
+            return;
+        }
+        let hidden = |path: &Path| job.trash_paths.iter().any(|root| path.starts_with(root));
+        let mut changed = false;
+        if self.entries.iter().any(|entry| hidden(&entry.path)) {
+            Arc::make_mut(&mut self.entries).retain(|entry| !hidden(&entry.path));
+            changed = true;
+        }
+        self.tree_cache.retain(|path, entries| {
+            if hidden(path) {
+                changed = true;
+                return false;
+            }
+            let count = entries.len();
+            entries.retain(|entry| !hidden(&entry.path));
+            changed |= entries.len() != count;
+            true
+        });
+        self.visible_paths.retain(|path| !hidden(path));
+        if let Some(search) = &mut self.search {
+            if let Some(update) = &mut search.update {
+                update.hits.retain(|hit| !hidden(&hit.path));
+                search.cursor = search.cursor.min(update.hits.len().saturating_sub(1));
+            }
+        }
+        if changed {
+            self.tree_layout = None;
+            self.retain_visible_selection(context);
+        }
+    }
+
     fn start_operation(&mut self, operation: FileOperation, context: &egui::Context) {
         if self.operation_job.is_some() || self.new_folder.is_some() {
             return;
         }
         let label = match &operation {
             FileOperation::Trash(paths) if paths.is_empty() => return,
-            FileOperation::Trash(_) => "Moving to trash",
+            FileOperation::Trash(_) => {
+                if self.visual_line {
+                    self.select(self.selected.clone(), context);
+                }
+                "Moving to trash"
+            }
             FileOperation::Undo => "Undoing",
             FileOperation::Redo => "Redoing",
+        };
+        let trash_paths = match &operation {
+            FileOperation::Trash(paths) => paths.clone(),
+            _ => Vec::new(),
         };
         let mut history = std::mem::take(&mut self.operations);
         let (sender, receiver) = mpsc::channel();
         self.operation_job = Some(OperationJob {
             receiver,
+            trash_paths,
             label,
             completed: 0,
             total: 0,
             path: PathBuf::new(),
         });
+        self.hide_pending_trash(context);
         let context = context.clone();
         std::thread::spawn(move || {
             let mut progress = |completed, total, path: &Path| {
@@ -3987,6 +4081,7 @@ impl eframe::App for FileManager {
         if !self.preparing_directory {
             self.shortcuts(context);
         }
+        self.hide_pending_trash(context);
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
@@ -4073,15 +4168,23 @@ impl eframe::App for FileManager {
                                     self.scroll_to_selection = false;
                                     self.center_selection = false;
                                 }
-                                scroll
-                                    .auto_shrink([false, false])
-                                    .drag_to_scroll(false)
-                                    .scroll_bar_visibility(
-                                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                                    )
-                                    .show_rows(ui, height, items.len(), |ui, range| {
-                                        self.tree(ui, &items[range.clone()], range.start, context);
-                                    });
+                                with_scrollbar_color(ui, |ui, content_style| {
+                                    scroll
+                                        .auto_shrink([false, false])
+                                        .drag_to_scroll(false)
+                                        .scroll_bar_visibility(
+                                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                        )
+                                        .show_rows(ui, height, items.len(), |ui, range| {
+                                            ui.set_style(content_style);
+                                            self.tree(
+                                                ui,
+                                                &items[range.clone()],
+                                                range.start,
+                                                context,
+                                            );
+                                        });
+                                });
                             });
                         }
                     }
