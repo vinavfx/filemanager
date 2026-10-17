@@ -76,6 +76,8 @@ struct Settings {
     media_margin: u32,
     hidden: bool,
     sequences: bool,
+    #[serde(skip)]
+    recursive_media: bool,
     dark_mode: bool,
 }
 
@@ -90,6 +92,7 @@ impl Default for Settings {
             media_margin: 4,
             hidden: false,
             sequences: true,
+            recursive_media: false,
             dark_mode: true,
         }
     }
@@ -197,6 +200,25 @@ struct DirectoryFrame {
     _textures: Vec<egui::TextureHandle>,
 }
 
+enum FileOperation {
+    Trash(Vec<PathBuf>),
+    Undo,
+    Redo,
+}
+
+enum OperationUpdate {
+    Progress(usize, usize, PathBuf),
+    Finished(operations::History, operations::Outcome),
+}
+
+struct OperationJob {
+    receiver: mpsc::Receiver<OperationUpdate>,
+    label: &'static str,
+    completed: usize,
+    total: usize,
+    path: PathBuf,
+}
+
 struct FileManager {
     directory_frame: Option<DirectoryFrame>,
     preparing_directory: bool,
@@ -210,8 +232,10 @@ struct FileManager {
     icons: icons::Icons,
     entries: Arc<Vec<Entry>>,
     folder_counts: files::FolderCounts,
+    media_scan: Option<files::MediaScan>,
     history: Vec<PathBuf>,
     operations: operations::History,
+    operation_job: Option<OperationJob>,
     position: usize,
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
@@ -310,6 +334,7 @@ impl FileManager {
             address: current.to_string_lossy().into_owned(),
             history: vec![current.clone()],
             operations: operations::History::default(),
+            operation_job: None,
             breadcrumb_path: current.clone(),
             thumbnails: images::Thumbnails::new(context.egui_ctx.clone()),
             icons: icons::Icons::new(context.egui_ctx.clone()),
@@ -318,6 +343,7 @@ impl FileManager {
             settings,
             entries: Arc::default(),
             folder_counts: files::FolderCounts::new(context.egui_ctx.clone()),
+            media_scan: None,
             position: 0,
             selected: None,
             last_selected: None,
@@ -382,36 +408,69 @@ impl FileManager {
         }
     }
 
-    fn refresh(&mut self, context: &egui::Context) {
-        let counts: HashMap<_, _> = self
-            .entries
-            .iter()
-            .chain(self.tree_cache.values().flatten())
-            .filter_map(|entry| entry.item_count.map(|count| (entry.path.clone(), count)))
-            .collect();
-        match files::entries(&self.current, self.settings.hidden, self.settings.sequences) {
-            Ok(entries) => self.entries = Arc::new(entries),
-            Err(error) => {
-                self.entries = Arc::default();
-                self.message = Some(format!("Cannot read directory: {error}"));
-            }
-        }
+    fn start_media_scan(&mut self, context: &egui::Context) {
+        self.media_scan = None;
+        self.entries = Arc::default();
+        self.visible_paths.clear();
         self.tree_cache.clear();
         self.tree_layout = None;
         self.folder_counts.cancel();
-        self.folder_counts.request(&self.entries);
-        for expanded in self.expanded.clone() {
-            if expanded.is_dir() {
-                self.expand_directory(&expanded);
-            }
-        }
-        for entry in Arc::make_mut(&mut self.entries)
-            .iter_mut()
-            .chain(self.tree_cache.values_mut().flatten())
-        {
-            entry.item_count = counts.get(&entry.path).copied();
-        }
         self.thumbnails.cancel();
+        self.media_scan = Some(files::MediaScan::new(
+            self.current.clone(),
+            self.settings.hidden,
+            self.settings.sequences,
+            context.clone(),
+        ));
+    }
+
+    fn refresh(&mut self, context: &egui::Context) {
+        self.media_scan = None;
+        if self.settings.recursive_media {
+            self.start_media_scan(context);
+        } else {
+            let counts: HashMap<_, _> = self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .filter_map(|entry| entry.item_count.map(|count| (entry.path.clone(), count)))
+                .collect();
+            match files::entries(&self.current, self.settings.hidden, self.settings.sequences) {
+                Ok(entries) => self.entries = Arc::new(entries),
+                Err(error) => {
+                    self.entries = Arc::default();
+                    self.message = Some(format!("Cannot read directory: {error}"));
+                }
+            }
+            self.tree_cache.clear();
+            self.tree_layout = None;
+            self.folder_counts.cancel();
+            self.folder_counts.request(&self.entries);
+            for expanded in self.expanded.clone() {
+                if expanded.is_dir() {
+                    self.expand_directory(&expanded);
+                }
+            }
+            for entry in Arc::make_mut(&mut self.entries)
+                .iter_mut()
+                .chain(self.tree_cache.values_mut().flatten())
+            {
+                entry.item_count = counts.get(&entry.path).copied();
+            }
+            self.thumbnails.cancel();
+            self.retain_visible_selection(context);
+        }
+        self.refresh_disk(context);
+        if let Some(search) = self.search.take() {
+            let mut replacement =
+                search::Search::new(self.current.clone(), self.settings.hidden, context.clone());
+            replacement.query.clone_from(&search.query);
+            replacement.submit();
+            self.search = Some(replacement);
+        }
+    }
+
+    fn retain_visible_selection(&mut self, context: &egui::Context) {
         if !self.selection.is_empty() {
             let visible: HashSet<_> = if self.settings.view == View::Tree {
                 self.tree_layout()
@@ -448,14 +507,6 @@ impl FileManager {
                     self.selection_size = None;
                 }
             }
-        }
-        self.refresh_disk(context);
-        if let Some(search) = self.search.take() {
-            let mut replacement =
-                search::Search::new(self.current.clone(), self.settings.hidden, context.clone());
-            replacement.query.clone_from(&search.query);
-            replacement.submit();
-            self.search = Some(replacement);
         }
     }
 
@@ -502,12 +553,18 @@ impl FileManager {
         self.address = self.current.to_string_lossy().into_owned();
         self.tree_cache.clear();
         self.tree_layout = None;
-        for expanded in std::mem::take(&mut self.expanded) {
-            if expanded.is_dir() {
-                self.expand_directory(&expanded);
+        if self.settings.recursive_media {
+            self.select(None, context);
+            self.start_media_scan(context);
+        } else {
+            self.media_scan = None;
+            for expanded in std::mem::take(&mut self.expanded) {
+                if expanded.is_dir() {
+                    self.expand_directory(&expanded);
+                }
             }
+            self.restore_directory_selection(context);
         }
-        self.restore_directory_selection(context);
     }
 
     fn restore_directory_selection(&mut self, context: &egui::Context) {
@@ -792,7 +849,13 @@ impl FileManager {
             self.open_terminal(&self.current.clone());
             ui.close_menu();
         }
-        if ui.button("New folder…").clicked() {
+        if ui
+            .add_enabled(
+                self.operation_job.is_none(),
+                egui::Button::new("New folder…"),
+            )
+            .clicked()
+        {
             self.new_folder = Some(NameDialog {
                 source: None,
                 submit: false,
@@ -856,6 +919,50 @@ impl FileManager {
     }
 
     fn poll(&mut self, context: &egui::Context) {
+        while let Some(job) = &mut self.operation_job {
+            match job.receiver.try_recv() {
+                Ok(OperationUpdate::Progress(completed, total, path)) => {
+                    job.completed = completed;
+                    job.total = total;
+                    job.path = path;
+                }
+                Ok(OperationUpdate::Finished(history, outcome)) => {
+                    self.operations = history;
+                    self.operation_job = None;
+                    self.complete_operation(outcome, context);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.operation_job = None;
+                    self.message = Some("The file operation stopped unexpectedly.".into());
+                }
+            }
+        }
+        if let Some(result) = self
+            .media_scan
+            .as_ref()
+            .and_then(|scan| scan.receiver.try_recv().ok())
+        {
+            self.media_scan = None;
+            match result {
+                Ok(result) => {
+                    self.entries = Arc::new(result.entries);
+                    self.tree_layout = None;
+                    if self.directory_selections.contains_key(&self.current) {
+                        self.restore_directory_selection(context);
+                    } else {
+                        self.retain_visible_selection(context);
+                    }
+                    if result.unreadable > 0 {
+                        self.message = Some(format!(
+                            "Recursive media: {} unreadable directories skipped.",
+                            result.unreadable
+                        ));
+                    }
+                }
+                Err(error) => self.message = Some(format!("Cannot scan media: {error}")),
+            }
+        }
         if let Some(search) = &mut self.search {
             search.poll();
         }
@@ -1209,12 +1316,10 @@ impl FileManager {
                 }
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::U)) {
-                let outcome = self.operations.undo();
-                self.complete_operation(outcome, context);
+                self.start_operation(FileOperation::Undo, context);
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R)) {
-                let outcome = self.operations.redo();
-                self.complete_operation(outcome, context);
+                self.start_operation(FileOperation::Redo, context);
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft))
                 || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::O))
@@ -1718,7 +1823,7 @@ impl FileManager {
                 let navigation =
                     egui::Rect::from_min_max(row.min, egui::pos2(row.left() + 176.0, row.bottom()));
                 let options =
-                    egui::Rect::from_min_max(egui::pos2(row.right() - 396.0, row.top()), row.max);
+                    egui::Rect::from_min_max(egui::pos2(row.right() - 344.0, row.top()), row.max);
                 let address = egui::Rect::from_min_max(
                     egui::pos2(navigation.right() + 16.0, row.top()),
                     egui::pos2(options.left() - 16.0, row.bottom()),
@@ -1784,30 +1889,18 @@ impl FileManager {
                             apply_theme(context, self.settings.dark_mode);
                             self.save();
                         }
-                        if ui
-                            .add_sized(
-                                [64.0, 32.0],
-                                egui::Button::new("Hidden").selected(self.settings.hidden),
-                            )
-                            .clicked()
-                        {
+                        if hidden_button(ui, self.settings.hidden).clicked() {
                             self.settings.hidden = !self.settings.hidden;
                             self.refresh(context);
                             self.save();
                         }
-                        if ui
-                            .add_sized(
-                                [92.0, 32.0],
-                                egui::Button::new(if self.settings.sequences {
-                                    "Sequences"
-                                } else {
-                                    "Images"
-                                })
-                                .selected(self.settings.sequences),
-                            )
-                            .clicked()
-                        {
+                        if sequences_button(ui, self.settings.sequences).clicked() {
                             self.settings.sequences = !self.settings.sequences;
+                            self.refresh(context);
+                            self.save();
+                        }
+                        if recursive_media_button(ui, self.settings.recursive_media).clicked() {
+                            self.settings.recursive_media = !self.settings.recursive_media;
                             self.refresh(context);
                             self.save();
                         }
@@ -2398,6 +2491,11 @@ impl FileManager {
                                 .color(MUTED),
                         );
                         ui.separator();
+                        if self.media_scan.is_some() {
+                            ui.spinner();
+                            ui.label(RichText::new("Scanning media…").size(12.0).color(MUTED));
+                            ui.separator();
+                        }
                         if self.visual_line && !self.sidebar_focused {
                             ui.label(
                                 RichText::new("-- VISUAL LINE --")
@@ -2512,6 +2610,18 @@ impl FileManager {
                         });
                     },
                 );
+                if let Some(job) = &self.operation_job {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let fraction = job.completed as f32 / job.total.max(1) as f32;
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(240.0)
+                                .text(format!("{} · {}/{}", job.label, job.completed, job.total)),
+                        );
+                        ui.add(egui::Label::new(job.path.to_string_lossy()).truncate());
+                    });
+                }
                 if self.compression_job.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -3518,16 +3628,63 @@ impl FileManager {
         }
     }
 
+    fn start_operation(&mut self, operation: FileOperation, context: &egui::Context) {
+        if self.operation_job.is_some() || self.new_folder.is_some() {
+            return;
+        }
+        let label = match &operation {
+            FileOperation::Trash(paths) if paths.is_empty() => return,
+            FileOperation::Trash(_) => "Moving to trash",
+            FileOperation::Undo => "Undoing",
+            FileOperation::Redo => "Redoing",
+        };
+        let mut history = std::mem::take(&mut self.operations);
+        let (sender, receiver) = mpsc::channel();
+        self.operation_job = Some(OperationJob {
+            receiver,
+            label,
+            completed: 0,
+            total: 0,
+            path: PathBuf::new(),
+        });
+        let context = context.clone();
+        std::thread::spawn(move || {
+            let mut progress = |completed, total, path: &Path| {
+                let _ = sender.send(OperationUpdate::Progress(
+                    completed,
+                    total,
+                    path.to_path_buf(),
+                ));
+                context.request_repaint();
+            };
+            let outcome = match operation {
+                FileOperation::Trash(paths) => history.trash(paths, &mut progress),
+                FileOperation::Undo => history.undo(&mut progress),
+                FileOperation::Redo => history.redo(&mut progress),
+            };
+            let _ = sender.send(OperationUpdate::Finished(history, outcome));
+            context.request_repaint();
+        });
+    }
+
     fn trash_selection(&mut self, context: &egui::Context) {
+        if self.operation_job.is_some() {
+            return;
+        }
+        let sequences: HashMap<_, _> = self
+            .entries
+            .iter()
+            .chain(self.tree_cache.values().flatten())
+            .filter_map(|entry| {
+                entry
+                    .sequence
+                    .as_ref()
+                    .map(|sequence| (&entry.path, sequence))
+            })
+            .collect();
         let mut paths = Vec::new();
         for path in &self.selection {
-            let sequence = self
-                .entries
-                .iter()
-                .chain(self.tree_cache.values().flatten())
-                .find(|entry| &entry.path == path)
-                .and_then(|entry| entry.sequence.as_ref());
-            if let Some(sequence) = sequence {
+            if let Some(sequence) = sequences.get(path) {
                 paths.extend(sequence.iter().cloned());
             } else {
                 paths.push(path.clone());
@@ -3535,17 +3692,18 @@ impl FileManager {
         }
         paths.sort();
         paths.dedup();
+        let selected: HashSet<_> = paths.iter().map(PathBuf::as_path).collect();
         let roots = paths
             .iter()
             .filter(|path| {
-                !paths
-                    .iter()
-                    .any(|parent| parent != *path && path.starts_with(parent))
+                !path
+                    .ancestors()
+                    .skip(1)
+                    .any(|parent| selected.contains(parent))
             })
             .cloned()
             .collect();
-        let outcome = self.operations.trash(roots);
-        self.complete_operation(outcome, context);
+        self.start_operation(FileOperation::Trash(roots), context);
     }
 
     fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
@@ -3615,6 +3773,9 @@ impl FileManager {
     }
 
     fn start_rename(&mut self) {
+        if self.operation_job.is_some() {
+            return;
+        }
         let Some(source) = self.selected.clone() else {
             return;
         };
@@ -3735,7 +3896,7 @@ impl FileManager {
         }
         if !open || cancel {
             self.new_folder = None;
-        } else if create {
+        } else if create && self.operation_job.is_none() {
             if let Some(folder) = &mut self.new_folder {
                 let source = folder.source.clone();
                 let result = if let Some(source) = &source {
@@ -3857,7 +4018,14 @@ impl eframe::App for FileManager {
                     self.search_results(ui, context);
                 } else if self.entries.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("This folder is empty").color(MUTED));
+                        let message = if self.media_scan.is_some() {
+                            "Scanning media…"
+                        } else if self.settings.recursive_media {
+                            "No media found"
+                        } else {
+                            "This folder is empty"
+                        };
+                        ui.label(RichText::new(message).color(MUTED));
                     });
                 } else {
                     match self.settings.view {
@@ -4006,6 +4174,72 @@ fn view_button(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response 
         }
     }
     response
+}
+
+fn hidden_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").selected(selected));
+    let center = response.rect.center();
+    let stroke = Stroke::new(1.5, ui.visuals().text_color());
+    let outline = [
+        Vec2::new(-9.0, 0.0),
+        Vec2::new(-5.0, -5.0),
+        Vec2::new(0.0, -6.0),
+        Vec2::new(5.0, -5.0),
+        Vec2::new(9.0, 0.0),
+        Vec2::new(5.0, 5.0),
+        Vec2::new(0.0, 6.0),
+        Vec2::new(-5.0, 5.0),
+    ];
+    ui.painter().add(egui::Shape::closed_line(
+        outline.into_iter().map(|offset| center + offset).collect(),
+        stroke,
+    ));
+    ui.painter().circle_stroke(center, 2.5, stroke);
+    response.on_hover_text("Hidden")
+}
+
+fn sequences_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").selected(selected));
+    let center = response.rect.center();
+    let stroke = Stroke::new(1.5, ui.visuals().text_color());
+    for offset in [-3.0, 0.0, 3.0] {
+        ui.painter().rect_stroke(
+            egui::Rect::from_center_size(center + Vec2::splat(offset), Vec2::new(12.0, 10.0)),
+            1.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    response.on_hover_text("Sequences")
+}
+
+fn recursive_media_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").selected(selected));
+    let center = response.rect.center();
+    let stroke = Stroke::new(1.5, ui.visuals().text_color());
+    ui.painter().line_segment(
+        [
+            center + Vec2::new(-8.0, -8.0),
+            center + Vec2::new(-8.0, 8.0),
+        ],
+        stroke,
+    );
+    for y in [-6.0, 6.0] {
+        ui.painter().line_segment(
+            [center + Vec2::new(-8.0, y), center + Vec2::new(-3.0, y)],
+            stroke,
+        );
+    }
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            center + Vec2::new(0.0, -7.0),
+            center + Vec2::new(9.0, 0.0),
+            center + Vec2::new(0.0, 7.0),
+        ],
+        ui.visuals().text_color(),
+        Stroke::NONE,
+    ));
+    response.on_hover_text("Recursive media")
 }
 
 fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {

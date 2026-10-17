@@ -116,6 +116,76 @@ impl Drop for FolderCounts {
     }
 }
 
+pub struct MediaEntries {
+    pub entries: Vec<Entry>,
+    pub unreadable: usize,
+}
+
+pub struct MediaScan {
+    pub receiver: mpsc::Receiver<io::Result<MediaEntries>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl MediaScan {
+    pub fn new(root: PathBuf, hidden: bool, sequences: bool, context: egui::Context) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let active = Arc::clone(&cancelled);
+        std::thread::spawn(move || {
+            let result = (|| {
+                let mut result = MediaEntries {
+                    entries: Vec::new(),
+                    unreadable: 0,
+                };
+                let mut pending = vec![root.clone()];
+                while let Some(path) = pending.pop() {
+                    if active.load(Ordering::Relaxed) {
+                        return Ok(result);
+                    }
+                    let children = match entries(&path, hidden, sequences) {
+                        Ok(children) => children,
+                        Err(error) if path == root => return Err(error),
+                        Err(_) => {
+                            result.unreadable += 1;
+                            continue;
+                        }
+                    };
+                    for entry in children {
+                        if entry.directory {
+                            if !entry.symlink {
+                                pending.push(entry.path);
+                            }
+                        } else if entry.sequence.is_some()
+                            || image_file(&entry.path)
+                            || video_file(&entry.path)
+                        {
+                            result.entries.push(entry);
+                        }
+                    }
+                }
+                result
+                    .entries
+                    .sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.path.clone()));
+                Ok(result)
+            })();
+            if !active.load(Ordering::Relaxed) {
+                let _ = sender.send(result);
+                context.request_repaint();
+            }
+        });
+        Self {
+            receiver,
+            cancelled,
+        }
+    }
+}
+
+impl Drop for MediaScan {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
 pub struct ReadBudget {
     pub remaining: usize,
     pub deadline: Instant,

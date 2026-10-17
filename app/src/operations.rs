@@ -47,9 +47,13 @@ impl History {
         self.redo.clear();
     }
 
-    pub fn trash(&mut self, paths: Vec<PathBuf>) -> Outcome {
+    pub fn trash(
+        &mut self,
+        paths: Vec<PathBuf>,
+        progress: &mut impl FnMut(usize, usize, &Path),
+    ) -> Outcome {
         let mut actions = paths.into_iter().rev().map(Action::Trash).collect();
-        let (inverse, outcome) = execute(&mut actions);
+        let (inverse, outcome) = execute(&mut actions, progress);
         if !inverse.is_empty() {
             self.undo.push(inverse);
             self.redo.clear();
@@ -57,23 +61,28 @@ impl History {
         outcome
     }
 
-    pub fn undo(&mut self) -> Outcome {
-        replay(&mut self.undo, &mut self.redo, "Nothing to undo.")
+    pub fn undo(&mut self, progress: &mut impl FnMut(usize, usize, &Path)) -> Outcome {
+        replay(&mut self.undo, &mut self.redo, "Nothing to undo.", progress)
     }
 
-    pub fn redo(&mut self) -> Outcome {
-        replay(&mut self.redo, &mut self.undo, "Nothing to redo.")
+    pub fn redo(&mut self, progress: &mut impl FnMut(usize, usize, &Path)) -> Outcome {
+        replay(&mut self.redo, &mut self.undo, "Nothing to redo.", progress)
     }
 }
 
-fn replay(source: &mut Vec<Vec<Action>>, target: &mut Vec<Vec<Action>>, empty: &str) -> Outcome {
+fn replay(
+    source: &mut Vec<Vec<Action>>,
+    target: &mut Vec<Vec<Action>>,
+    empty: &str,
+    progress: &mut impl FnMut(usize, usize, &Path),
+) -> Outcome {
     let Some(mut actions) = source.pop() else {
         return Outcome {
             error: Some(empty.into()),
             ..Outcome::default()
         };
     };
-    let (inverse, outcome) = execute(&mut actions);
+    let (inverse, outcome) = execute(&mut actions, progress);
     if !actions.is_empty() {
         source.push(actions);
     }
@@ -83,10 +92,15 @@ fn replay(source: &mut Vec<Vec<Action>>, target: &mut Vec<Vec<Action>>, empty: &
     outcome
 }
 
-fn execute(actions: &mut Vec<Action>) -> (Vec<Action>, Outcome) {
+fn execute(
+    actions: &mut Vec<Action>,
+    progress: &mut impl FnMut(usize, usize, &Path),
+) -> (Vec<Action>, Outcome) {
     let mut inverse = Vec::new();
     let mut outcome = Outcome::default();
+    let total = actions.len();
     while let Some(action) = actions.last() {
+        progress(inverse.len(), total, action.path());
         match action.apply() {
             Ok(reverse) => {
                 match action {
@@ -99,6 +113,7 @@ fn execute(actions: &mut Vec<Action>) -> (Vec<Action>, Outcome) {
                 }
                 outcome.changed = true;
                 inverse.push(reverse);
+                progress(inverse.len(), total, action.path());
                 actions.pop();
             }
             Err(error) => {
