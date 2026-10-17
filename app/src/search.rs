@@ -38,6 +38,7 @@ pub struct Hit {
     pub path: PathBuf,
     pub label: String,
     pub directory: bool,
+    pub deletion_locked: bool,
 }
 
 pub struct Update {
@@ -180,6 +181,7 @@ fn scan(root: PathBuf, hidden: bool, cancel: Arc<AtomicBool>, sender: mpsc::Sync
                 .to_string_lossy()
                 .into_owned();
             batch.hits.push(Hit {
+                deletion_locked: crate::files::deletion_locked(&path),
                 path,
                 label,
                 directory: kind.is_dir(),

@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +18,7 @@ pub struct Entry {
     pub name: String,
     pub directory: bool,
     pub symlink: bool,
+    pub deletion_locked: bool,
     pub size: u64,
     pub item_count: Option<usize>,
     pub modified: Option<SystemTime>,
@@ -282,6 +284,32 @@ pub fn is_trash(path: &Path) -> bool {
     path == Path::new("trash:///")
 }
 
+pub fn deletion_locked(path: &Path) -> bool {
+    use rustix::fs::{accessat, Access, AtFlags, CWD};
+
+    let Some(parent) = path.parent() else {
+        return true;
+    };
+    if accessat(
+        CWD,
+        parent,
+        Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    )
+    .is_err()
+    {
+        return true;
+    }
+    let Ok(parent_metadata) = fs::metadata(parent) else {
+        return true;
+    };
+    let uid = rustix::process::geteuid().as_raw();
+    parent_metadata.mode() & 0o1000 != 0
+        && uid != 0
+        && uid != parent_metadata.uid()
+        && fs::symlink_metadata(path).is_ok_and(|metadata| uid != metadata.uid())
+}
+
 pub fn entries(path: &Path, hidden: bool, sequences: bool) -> io::Result<Vec<Entry>> {
     if is_trash(path) {
         return trash_entries();
@@ -318,6 +346,7 @@ fn trash_entries() -> io::Result<Vec<Entry>> {
             name: path
                 .file_name()
                 .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            deletion_locked: deletion_locked(&path),
             directory: metadata.is_dir(),
             symlink: metadata.is_symlink(),
             size: metadata.len(),
@@ -372,6 +401,7 @@ fn read_entries(
         entries.push(Entry {
             directory,
             symlink: kind.is_symlink(),
+            deletion_locked: deletion_locked(&item.path()),
             size: metadata.as_ref().map_or(0, |value| value.len()),
             item_count: None,
             modified: metadata.and_then(|value| value.modified().ok()),
@@ -553,6 +583,7 @@ fn group_sequences(entries: Vec<Entry>) -> Vec<Entry> {
                 .iter()
                 .fold(0_u64, |size, (_, entry)| size.saturating_add(entry.size));
             entry.modified = group.iter().filter_map(|(_, entry)| entry.modified).max();
+            entry.deletion_locked = group.iter().any(|(_, entry)| entry.deletion_locked);
             entry.sequence = Some(Arc::new(
                 group.iter().map(|(_, entry)| entry.path.clone()).collect(),
             ));

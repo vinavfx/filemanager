@@ -1337,15 +1337,11 @@ impl FileManager {
                     self.pending_delete.append(&mut outcome.pending_delete);
                     let previous_selection = job.previous_selection.take();
                     let preserve_selection = job.preserve_selection;
-                    let trashed = !job.trash_paths.is_empty();
-                    let restore = trashed && !outcome.changed;
+                    let changed = outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
-                    if restore {
-                        self.refresh(context);
-                    }
                     self.complete_operation(outcome, preserve_selection, context);
-                    if let Some((directory, mut state)) = previous_selection {
+                    if let Some((directory, mut state)) = previous_selection.filter(|_| changed) {
                         if directory == self.current && !self.pending_delete.is_empty() {
                             state
                                 .paths
@@ -3489,6 +3485,7 @@ impl FileManager {
         } else {
             paint_icon(ui, rect, entry);
         }
+        paint_deletion_lock(ui, rect, entry.deletion_locked);
     }
 
     fn paint_thumbnail(
@@ -3523,6 +3520,7 @@ impl FileManager {
                 self.directory_ready &= self.thumbnails.entry_ready(entry);
             }
             paint_thumbnail_placeholder(ui, image_bounds);
+            paint_deletion_lock(ui, image_bounds, entry.deletion_locked);
             return true;
         };
         let dimensions = texture.size_vec2();
@@ -3573,6 +3571,7 @@ impl FileManager {
                 ACCENT,
             );
         }
+        paint_deletion_lock(ui, image_rect, entry.deletion_locked);
         true
     }
 
@@ -3743,6 +3742,7 @@ impl FileManager {
                                             egui::StrokeKind::Inside,
                                         );
                                     }
+                                    paint_deletion_lock(ui, icon_rect, hit.deletion_locked);
                                     let name =
                                         hit.path.file_name().unwrap_or_default().to_string_lossy();
                                     let location =
@@ -4702,11 +4702,20 @@ impl FileManager {
             job.total += paths.len();
             job.trash_paths.extend(paths.iter().cloned());
             job.pending_trash.extend(paths);
-            if self.visual_line {
-                self.select(self.selected.clone(), context);
-            }
             return;
         }
+        let previous_selection = matches!(operation, FileOperation::Trash(_)).then(|| {
+            (
+                self.current.clone(),
+                DirectorySelection {
+                    selected: self.selected.clone(),
+                    last_selected: self.last_selected.clone(),
+                    paths: self.selection.clone(),
+                    anchor: self.selection_anchor.clone(),
+                    visual_line: self.visual_line,
+                },
+            )
+        });
         let label = match &operation {
             FileOperation::Rename(paths) if paths.is_empty() => return,
             FileOperation::Rename(_) => "Renaming",
@@ -4715,12 +4724,7 @@ impl FileManager {
             FileOperation::Copy(paths, _) if paths.is_empty() => return,
             FileOperation::Copy(_, _) => "Copying",
             FileOperation::Trash(paths) if paths.is_empty() => return,
-            FileOperation::Trash(_) => {
-                if self.visual_line {
-                    self.select(self.selected.clone(), context);
-                }
-                "Moving to trash"
-            }
+            FileOperation::Trash(_) => "Moving to trash",
             FileOperation::Delete(paths) if paths.is_empty() => return,
             FileOperation::Delete(_) => "Permanently deleting",
             FileOperation::EmptyTrash => "Emptying trash",
@@ -4737,18 +4741,6 @@ impl FileManager {
             _ => trash_paths.len(),
         };
         let preserve_selection = matches!(operation, FileOperation::Undo | FileOperation::Redo);
-        let previous_selection = matches!(operation, FileOperation::Trash(_)).then(|| {
-            (
-                self.current.clone(),
-                DirectorySelection {
-                    selected: self.selected.clone(),
-                    last_selected: self.last_selected.clone(),
-                    paths: self.selection.clone(),
-                    anchor: self.selection_anchor.clone(),
-                    visual_line: self.visual_line,
-                },
-            )
-        });
         let history = std::mem::take(&mut self.operations);
         let receiver = Self::run_operation(history, operation, context);
         self.operation_job = Some(OperationJob {
@@ -5023,6 +5015,7 @@ impl FileManager {
             name: name.clone(),
             directory: true,
             symlink: false,
+            deletion_locked: false,
             size: 0,
             item_count: Some(0),
             modified: None,
@@ -6006,6 +5999,34 @@ fn paint_folder(ui: &egui::Ui, rect: egui::Rect) {
         4.0,
         ACCENT,
     );
+}
+
+fn paint_deletion_lock(ui: &egui::Ui, rect: egui::Rect, locked: bool) {
+    if !locked || !ui.is_rect_visible(rect) {
+        return;
+    }
+    let edge = (rect.width().min(rect.height()) * 0.4).clamp(12.0, 22.0);
+    let badge =
+        egui::Rect::from_min_size(rect.right_bottom() - Vec2::splat(edge), Vec2::splat(edge));
+    let painter = ui.painter();
+    painter.rect_filled(badge, edge * 0.2, ui.visuals().panel_fill);
+    let color = ui.visuals().text_color();
+    let shackle = egui::Rect::from_min_max(
+        badge.min + Vec2::new(edge * 0.32, edge * 0.16),
+        badge.min + Vec2::new(edge * 0.68, edge * 0.62),
+    );
+    painter.rect_stroke(
+        shackle,
+        edge * 0.18,
+        Stroke::new((edge * 0.09).max(1.2), color),
+        egui::StrokeKind::Inside,
+    );
+    let body = egui::Rect::from_min_max(
+        badge.min + Vec2::new(edge * 0.2, edge * 0.44),
+        badge.min + Vec2::new(edge * 0.8, edge * 0.86),
+    );
+    painter.rect_filled(body, edge * 0.08, color);
+    painter.circle_filled(body.center(), edge * 0.06, ui.visuals().panel_fill);
 }
 
 fn paint_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {

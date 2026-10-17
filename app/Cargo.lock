@@ -2338,6 +2338,7 @@ dependencies = [
  "eframe",
  "fs2",
  "image",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "url",

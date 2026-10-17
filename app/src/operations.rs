@@ -92,6 +92,9 @@ impl History {
             .rev()
             .map(|action| action.path().to_path_buf())
             .collect();
+        if !outcome.pending_delete.is_empty() {
+            outcome.error = None;
+        }
         if !inverse.is_empty() {
             self.undo.push(inverse);
             self.redo.clear();
