@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -155,6 +155,7 @@ impl MediaScanControl {
 
 pub struct MediaScan {
     pub receiver: mpsc::Receiver<io::Result<MediaEntries>>,
+    pub paths: HashSet<PathBuf>,
     control: Arc<MediaScanControl>,
     worker: std::thread::Thread,
 }
@@ -236,6 +237,7 @@ impl MediaScan {
         });
         Self {
             receiver,
+            paths: HashSet::new(),
             control,
             worker: worker.thread().clone(),
         }

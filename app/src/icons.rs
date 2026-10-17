@@ -337,6 +337,13 @@ impl Icons {
                     egui::TextureOptions::LINEAR,
                 )
             });
+            if let Some(texture) = &texture {
+                context.animate_bool_with_time(
+                    egui::Id::new(("loaded-texture", texture.id())),
+                    false,
+                    0.12,
+                );
+            }
             self.order.push_back(key.clone());
             self.cache.insert(key, texture);
         }

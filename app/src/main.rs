@@ -320,6 +320,7 @@ struct MediaLayout {
     indices: HashMap<PathBuf, usize>,
     items: Arc<Vec<(Entry, egui::Pos2, f32)>>,
     complete: bool,
+    thumbnail_revision: u64,
     aspects: HashMap<PathBuf, f32>,
     paths: Vec<PathBuf>,
     rows: Vec<(std::ops::Range<usize>, f32)>,
@@ -540,11 +541,15 @@ impl FileManager {
     fn start_media_scan(&mut self, context: &egui::Context) {
         self.media_directories = Arc::default();
         self.media_watch = None;
-        self.media_layout = MediaLayout::default();
+        self.media_layout.complete = false;
         self.directory_refresh = None;
         self.media_scan = None;
-        self.entries = Arc::default();
-        self.visible_paths.clear();
+        Arc::make_mut(&mut self.entries).retain(|entry| {
+            !entry.directory
+                && (entry.sequence.is_some()
+                    || files::image_file(&entry.path)
+                    || files::video_file(&entry.path))
+        });
         self.tree_cache.clear();
         self.tree_layout = None;
         self.folder_counts.cancel();
@@ -555,13 +560,13 @@ impl FileManager {
             self.settings.sequences,
             context.clone(),
         ));
+        self.retain_visible_selection(context);
     }
 
     fn refresh(&mut self, context: &egui::Context) {
         self.media_cache.clear();
         self.media_directories = Arc::default();
         self.media_watch = None;
-        self.media_layout = MediaLayout::default();
         self.wait_for_thumbnails = false;
         self.media_scan = None;
         self.directory_refresh = None;
@@ -1414,8 +1419,26 @@ impl FileManager {
             match result {
                 Ok(result) => {
                     Arc::make_mut(&mut self.media_directories).extend(result.directories);
+                    let Some(scan) = &mut self.media_scan else {
+                        return;
+                    };
                     let entries = Arc::make_mut(&mut self.entries);
-                    entries.extend(result.entries);
+                    let indices: HashMap<_, _> = entries
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| (entry.path.clone(), index))
+                        .collect();
+                    for entry in result.entries {
+                        scan.paths.insert(entry.path.clone());
+                        if let Some(&index) = indices.get(&entry.path) {
+                            entries[index] = entry;
+                        } else {
+                            entries.push(entry);
+                        }
+                    }
+                    if result.complete {
+                        entries.retain(|entry| scan.paths.contains(&entry.path));
+                    }
                     entries.sort_by_cached_key(|entry| {
                         (entry.name.to_lowercase(), entry.path.clone())
                     });
@@ -3429,7 +3452,7 @@ impl FileManager {
                 texture.id(),
                 rect,
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
+                texture_tint(ui, texture),
             );
             if entry.symlink {
                 ui.painter().text(
@@ -3460,7 +3483,7 @@ impl FileManager {
             return false;
         }
         self.prepared_view.push((entry.path.clone(), rect));
-        let progress = if video && response.hovered() && !self.preparing_directory {
+        let progress = if video && response.hovered() {
             response.hover_pos().map(|pointer| {
                 ((pointer.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0)
             })
@@ -3487,7 +3510,11 @@ impl FileManager {
             texture.id(),
             image_rect,
             egui::Rect::from_center_size(egui::pos2(0.5, 0.5), uv_size),
-            Color32::WHITE,
+            if video {
+                Color32::WHITE
+            } else {
+                texture_tint(ui, texture)
+            },
         );
         if progress.is_some() {
             let displayed = self
@@ -3683,7 +3710,7 @@ impl FileManager {
                                                 egui::Pos2::ZERO,
                                                 egui::pos2(1.0, 1.0),
                                             ),
-                                            Color32::WHITE,
+                                            texture_tint(ui, texture),
                                         );
                                     } else {
                                         ui.painter().rect_stroke(
@@ -3886,7 +3913,14 @@ impl FileManager {
         let source = self.display_entries();
         let source_changed = self.media_layout.source.as_ptr() != Arc::as_ptr(&source);
         let resized = self.media_layout.width != width || self.media_layout.target != target;
-        if !source_changed && !resized && self.media_layout.complete {
+        if !source_changed
+            && !resized
+            && self.media_layout.thumbnail_revision == self.thumbnails.revision()
+            && (self.media_layout.complete || self.thumbnails.is_loading())
+        {
+            if !self.media_layout.complete {
+                context.request_repaint_after(std::time::Duration::from_millis(50));
+            }
             return;
         }
         if source_changed {
@@ -3911,6 +3945,20 @@ impl FileManager {
             self.media_layout.indices = indices;
             self.media_layout.source = Arc::downgrade(&source);
         }
+        self.media_layout.thumbnail_revision = self.thumbnails.revision();
+        let previous_count = self.media_layout.paths.len();
+        self.media_layout.paths.retain(|path| {
+            let entry = &source[self.media_layout.indices[path]];
+            entry.directory || self.thumbnails.entry_available(entry)
+        });
+        let removed = self.media_layout.paths.len() != previous_count;
+        if removed {
+            self.media_layout.aspects.retain(|path, _| {
+                let entry = &source[self.media_layout.indices[path]];
+                entry.directory || self.thumbnails.entry_available(entry)
+            });
+            self.media_layout.rows.clear();
+        }
         let resized =
             resized || self.media_layout.width != width || self.media_layout.target != target;
         if resized {
@@ -3919,15 +3967,19 @@ impl FileManager {
             self.media_layout.target = target;
         }
         let mut requested = 0;
+        let mut resolved = 0;
         for entry in source
             .iter()
             .filter(|entry| self.media_layout.indices.contains_key(&entry.path))
         {
             if self.media_layout.aspects.contains_key(&entry.path) {
+                resolved += 1;
                 continue;
             }
-            if !entry.directory && !self.thumbnails.entry_ready(entry) {
-                if requested < 18 {
+            if !entry.directory && !self.thumbnails.entry_available(entry) {
+                if self.thumbnails.entry_ready(entry) {
+                    resolved += 1;
+                } else if requested < 18 {
                     let frame = if entry.animated() {
                         images::VIDEO_POSTER
                     } else {
@@ -3938,6 +3990,7 @@ impl FileManager {
                 }
                 continue;
             }
+            resolved += 1;
             let aspect = if entry.directory {
                 1.0
             } else {
@@ -3961,8 +4014,7 @@ impl FileManager {
             .iter()
             .map(|path| self.media_layout.aspects[path])
             .collect();
-        let complete =
-            self.media_scan.is_none() && aspects.len() == self.media_layout.indices.len();
+        let complete = self.media_scan.is_none() && resolved == self.media_layout.indices.len();
         self.media_layout.complete = complete;
         if !complete {
             context.request_repaint_after(std::time::Duration::from_millis(50));
@@ -3974,6 +4026,7 @@ impl FileManager {
             .map_or(0, |(range, _)| range.end);
         let mut new_rows = layout::justified_rows(&aspects[start..], width, target);
         if !complete
+            && !self.media_layout.rows.is_empty()
             && self
                 .new_folder
                 .as_ref()
@@ -3998,7 +4051,7 @@ impl FileManager {
             .rows
             .last()
             .map_or(0, |(range, _)| range.end);
-        if source_changed || resized || self.media_layout.items.len() != count {
+        if source_changed || resized || removed || self.media_layout.items.len() != count {
             let mut items = Vec::with_capacity(count);
             let mut y = 0.0;
             for (range, height) in &self.media_layout.rows {
@@ -5268,14 +5321,6 @@ impl eframe::App for FileManager {
             self.preparing_directory = false;
             self.wait_for_thumbnails = false;
         }
-        if self.preparing_directory {
-            context.input_mut(|input| {
-                input.events.clear();
-                input.pointer = Default::default();
-                input.raw_scroll_delta = Vec2::ZERO;
-                input.smooth_scroll_delta = Vec2::ZERO;
-            });
-        }
         context.input_mut(|input| {
             for event in &mut input.events {
                 if let egui::Event::Key {
@@ -5305,7 +5350,7 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        if !self.preparing_directory && !self.confirm_empty_trash {
+        if !self.confirm_empty_trash {
             self.shortcuts(context);
         }
         self.hide_pending_trash(context);
@@ -5765,6 +5810,15 @@ fn paint_media_badge(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
             text_color,
         );
     }
+}
+
+fn texture_tint(ui: &egui::Ui, texture: &egui::TextureHandle) -> Color32 {
+    let opacity = ui.ctx().animate_bool_with_time(
+        egui::Id::new(("loaded-texture", texture.id())),
+        true,
+        0.12,
+    );
+    Color32::WHITE.gamma_multiply(opacity)
 }
 
 fn paint_thumbnail_placeholder(ui: &egui::Ui, rect: egui::Rect) {

@@ -335,6 +335,7 @@ pub struct Thumbnails {
     pending: HashSet<ThumbnailKey>,
     cache: HashMap<ThumbnailKey, Result<egui::TextureHandle, String>>,
     cache_bytes: usize,
+    revision: u64,
     fingerprints: HashMap<ThumbnailKey, (Option<u64>, Instant)>,
     last_used: HashMap<ThumbnailKey, Instant>,
     completed: usize,
@@ -392,6 +393,7 @@ impl Thumbnails {
             pending: HashSet::new(),
             cache: HashMap::new(),
             cache_bytes: 0,
+            revision: 0,
             fingerprints: HashMap::new(),
             last_used: HashMap::new(),
             completed: 0,
@@ -401,8 +403,20 @@ impl Thumbnails {
         }
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn is_loading(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn poll(&mut self, context: &egui::Context) {
-        while let Ok((generation, path, image)) = self.receiver.try_recv() {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(3) {
+            let Ok((generation, path, image)) = self.receiver.try_recv() else {
+                break;
+            };
             if generation != self.generation.load(Ordering::Relaxed) {
                 continue;
             }
@@ -425,6 +439,13 @@ impl Thumbnails {
                     egui::TextureOptions::LINEAR,
                 )
             });
+            if let Ok(texture) = &texture {
+                context.animate_bool_with_time(
+                    egui::Id::new(("loaded-texture", texture.id())),
+                    self.cache.get(&path).is_some_and(|image| image.is_ok()),
+                    0.12,
+                );
+            }
             let bytes = texture.as_ref().map_or(0, egui::TextureHandle::byte_size);
             while self.cache_bytes + bytes > MEMORY_BUDGET_BYTES {
                 let Some(oldest) = self
@@ -441,18 +462,25 @@ impl Thumbnails {
             self.remove_cached_texture(&path);
             self.last_used.insert(path.clone(), Instant::now());
             self.cache.insert(path, texture);
+            self.revision = self.revision.wrapping_add(1);
             self.cache_bytes += bytes;
             if self.pending.is_empty() {
                 self.finished_until = context.input(|input| input.time) + 0.8;
                 context.request_repaint_after(Duration::from_millis(800));
             }
         }
+        if started.elapsed() >= Duration::from_millis(3) {
+            context.request_repaint_after(Duration::from_millis(16));
+        }
     }
 
     fn remove_cached_texture(&mut self, key: &ThumbnailKey) {
         self.last_used.remove(key);
-        if let Some(Ok(texture)) = self.cache.remove(key) {
-            self.cache_bytes -= texture.byte_size();
+        if let Some(texture) = self.cache.remove(key) {
+            self.revision = self.revision.wrapping_add(1);
+            if let Ok(texture) = texture {
+                self.cache_bytes -= texture.byte_size();
+            }
         }
     }
 
@@ -528,6 +556,7 @@ impl Thumbnails {
                 .insert(path.clone(), (Some(key), Instant::now()));
             self.last_used.insert(path.clone(), Instant::now());
             self.cache.insert(path, Ok(texture));
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
@@ -538,6 +567,7 @@ impl Thumbnails {
             0
         };
         let key = (path.to_path_buf(), frame);
+        let mut outdated = false;
         if self.cache.contains_key(&key)
             && self
                 .fingerprints
@@ -548,11 +578,9 @@ impl Thumbnails {
             let previous = self
                 .fingerprints
                 .insert(key.clone(), (current, Instant::now()));
-            if previous.is_none_or(|(fingerprint, _)| fingerprint != current) {
-                self.remove_cached_texture(&key);
-            }
+            outdated = previous.is_none_or(|(fingerprint, _)| fingerprint != current);
         }
-        if !self.cache.contains_key(&key)
+        if (outdated || !self.cache.contains_key(&key))
             && !self.pending.contains(&key)
             && self
                 .sender
@@ -623,6 +651,14 @@ impl Thumbnails {
         })
     }
 
+    pub fn entry_available(&self, entry: &crate::files::Entry) -> bool {
+        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
+        let (path, frame) = entry.thumbnail(poster);
+        self.cache
+            .get(&(path.to_path_buf(), frame))
+            .is_some_and(|image| image.is_ok())
+    }
+
     pub fn entry_ready(&self, entry: &crate::files::Entry) -> bool {
         let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
         let (path, frame) = entry.thumbnail(poster);
@@ -665,6 +701,7 @@ impl Thumbnails {
 
     pub fn cancel(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        self.revision = self.revision.wrapping_add(1);
         self.pending.clear();
         self.cache.retain(|_, texture| texture.is_ok());
         self.fingerprints
