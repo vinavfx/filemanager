@@ -116,35 +116,77 @@ impl Drop for FolderCounts {
     }
 }
 
+#[derive(Clone)]
+pub struct MediaDirectory {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+pub fn media_directories_changed(directories: &[MediaDirectory]) -> bool {
+    directories.iter().any(|directory| {
+        directory.modified.is_none()
+            || fs::metadata(&directory.path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                != directory.modified
+    })
+}
+
 pub struct MediaEntries {
     pub entries: Vec<Entry>,
+    pub directories: Vec<MediaDirectory>,
     pub unreadable: usize,
     pub complete: bool,
 }
 
+struct MediaScanControl {
+    cancelled: AtomicBool,
+    paused: AtomicBool,
+}
+
+impl MediaScanControl {
+    fn wait_until_active(&self) -> bool {
+        while self.paused.load(Ordering::Acquire) && !self.cancelled.load(Ordering::Acquire) {
+            std::thread::park();
+        }
+        !self.cancelled.load(Ordering::Acquire)
+    }
+}
+
 pub struct MediaScan {
     pub receiver: mpsc::Receiver<io::Result<MediaEntries>>,
-    cancelled: Arc<AtomicBool>,
+    control: Arc<MediaScanControl>,
+    worker: std::thread::Thread,
 }
 
 impl MediaScan {
     pub fn new(root: PathBuf, hidden: bool, sequences: bool, context: egui::Context) -> Self {
         let (sender, receiver) = mpsc::channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let active = Arc::clone(&cancelled);
-        std::thread::spawn(move || {
+        let control = Arc::new(MediaScanControl {
+            cancelled: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+        });
+        let active = Arc::clone(&control);
+        let worker = std::thread::spawn(move || {
             let result = (|| {
                 let mut result = MediaEntries {
                     entries: Vec::new(),
+                    directories: Vec::new(),
                     unreadable: 0,
                     complete: false,
                 };
                 let mut published = Instant::now();
                 let mut pending = vec![root.clone()];
                 while let Some(path) = pending.pop() {
-                    if active.load(Ordering::Relaxed) {
+                    if !active.wait_until_active() {
                         return Ok(result);
                     }
+                    result.directories.push(MediaDirectory {
+                        modified: fs::metadata(&path)
+                            .and_then(|metadata| metadata.modified())
+                            .ok(),
+                        path: path.clone(),
+                    });
                     let children = match entries(&path, hidden, sequences) {
                         Ok(children) => children,
                         Err(error) if path == root => return Err(error),
@@ -154,7 +196,7 @@ impl MediaScan {
                         }
                     };
                     for entry in children {
-                        if active.load(Ordering::Relaxed) {
+                        if !active.wait_until_active() {
                             return Ok(result);
                         }
                         if entry.directory {
@@ -173,6 +215,7 @@ impl MediaScan {
                     {
                         let update = MediaEntries {
                             entries: std::mem::take(&mut result.entries),
+                            directories: std::mem::take(&mut result.directories),
                             unreadable: result.unreadable,
                             complete: false,
                         };
@@ -186,21 +229,32 @@ impl MediaScan {
                 result.complete = true;
                 Ok(result)
             })();
-            if !active.load(Ordering::Relaxed) {
+            if !active.cancelled.load(Ordering::Acquire) {
                 let _ = sender.send(result);
                 context.request_repaint();
             }
         });
         Self {
             receiver,
-            cancelled,
+            control,
+            worker: worker.thread().clone(),
         }
+    }
+
+    pub fn pause(&self) {
+        self.control.paused.store(true, Ordering::Release);
+    }
+
+    pub fn resume(&self) {
+        self.control.paused.store(false, Ordering::Release);
+        self.worker.unpark();
     }
 }
 
 impl Drop for MediaScan {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Relaxed);
+        self.control.cancelled.store(true, Ordering::Release);
+        self.worker.unpark();
     }
 }
 

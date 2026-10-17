@@ -242,6 +242,16 @@ struct DirectoryContents {
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
 }
 
+struct CachedMediaDirectory {
+    path: PathBuf,
+    hidden: bool,
+    sequences: bool,
+    entries: Arc<Vec<Entry>>,
+    directories: Arc<Vec<files::MediaDirectory>>,
+    layout: MediaLayout,
+    scan: Option<files::MediaScan>,
+}
+
 #[derive(Default)]
 struct MediaLayout {
     source: std::sync::Weak<Vec<Entry>>,
@@ -271,6 +281,10 @@ struct FileManager {
     entries: Arc<Vec<Entry>>,
     folder_counts: files::FolderCounts,
     media_scan: Option<files::MediaScan>,
+    media_cache: Vec<CachedMediaDirectory>,
+    media_directories: Arc<Vec<files::MediaDirectory>>,
+    media_watch: Option<mpsc::Receiver<bool>>,
+    media_checked_at: std::time::Instant,
     history: Vec<PathBuf>,
     operations: operations::History,
     operation_job: Option<OperationJob>,
@@ -385,6 +399,10 @@ impl FileManager {
             entries: Arc::default(),
             folder_counts: files::FolderCounts::new(context.egui_ctx.clone()),
             media_scan: None,
+            media_cache: Vec::new(),
+            media_directories: Arc::default(),
+            media_watch: None,
+            media_checked_at: std::time::Instant::now(),
             position: 0,
             selected: None,
             last_selected: None,
@@ -452,6 +470,8 @@ impl FileManager {
     }
 
     fn start_media_scan(&mut self, context: &egui::Context) {
+        self.media_directories = Arc::default();
+        self.media_watch = None;
         self.media_layout = MediaLayout::default();
         self.directory_refresh = None;
         self.media_scan = None;
@@ -470,6 +490,9 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
+        self.media_cache.clear();
+        self.media_directories = Arc::default();
+        self.media_watch = None;
         self.media_layout = MediaLayout::default();
         self.wait_for_thumbnails = false;
         self.media_scan = None;
@@ -581,8 +604,47 @@ impl FileManager {
         });
     }
 
+    fn cache_media_directory(&mut self, scan: Option<files::MediaScan>, layout: MediaLayout) {
+        if self.operation_job.is_some() || self.entries.len() > 50_000 {
+            return;
+        }
+        self.media_cache
+            .retain(|cached| cached.path != self.current);
+        while self.media_cache.len() >= 8
+            || self
+                .media_cache
+                .iter()
+                .map(|cached| cached.entries.len())
+                .sum::<usize>()
+                + self.entries.len()
+                > 50_000
+        {
+            self.media_cache.remove(0);
+        }
+        self.media_cache.push(CachedMediaDirectory {
+            path: self.current.clone(),
+            hidden: self.settings.hidden,
+            sequences: self.settings.sequences,
+            entries: Arc::clone(&self.entries),
+            directories: Arc::clone(&self.media_directories),
+            layout,
+            scan,
+        });
+    }
+
     fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>, context: &egui::Context) {
+        if let Some(scan) = self.media_scan.take() {
+            scan.pause();
+            let layout = std::mem::take(&mut self.media_layout);
+            self.cache_media_directory(Some(scan), layout);
+        } else if let Some(cached) = self.media_cache.iter_mut().find(|cached| {
+            cached.path == self.current && Arc::ptr_eq(&cached.entries, &self.entries)
+        }) {
+            cached.layout = std::mem::take(&mut self.media_layout);
+        }
         self.media_layout = MediaLayout::default();
+        self.media_directories = Arc::default();
+        self.media_watch = None;
         self.wait_for_thumbnails = false;
         self.directory_refresh = None;
         self.directory_selections.insert(
@@ -613,7 +675,30 @@ impl FileManager {
             self.refresh(context);
         } else if self.settings.recursive_media {
             self.select(None, context);
-            self.start_media_scan(context);
+            if let Some(index) = self.media_cache.iter().position(|cached| {
+                cached.path == self.current
+                    && cached.hidden == self.settings.hidden
+                    && cached.sequences == self.settings.sequences
+            }) {
+                let mut cached = self.media_cache.remove(index);
+                if files::media_directories_changed(&cached.directories) {
+                    self.start_media_scan(context);
+                } else {
+                    self.media_scan = cached.scan.take();
+                    if let Some(scan) = &self.media_scan {
+                        scan.resume();
+                    }
+                    self.entries = Arc::clone(&cached.entries);
+                    self.media_directories = Arc::clone(&cached.directories);
+                    self.media_layout = std::mem::take(&mut cached.layout);
+                    if self.media_scan.is_none() {
+                        self.media_cache.push(cached);
+                    }
+                    self.restore_directory_selection(context);
+                }
+            } else {
+                self.start_media_scan(context);
+            }
         } else {
             self.media_scan = None;
             for expanded in std::mem::take(&mut self.expanded) {
@@ -1148,6 +1233,7 @@ impl FileManager {
         {
             match result {
                 Ok(result) => {
+                    Arc::make_mut(&mut self.media_directories).extend(result.directories);
                     let entries = Arc::make_mut(&mut self.entries);
                     entries.extend(result.entries);
                     entries.sort_by_cached_key(|entry| {
@@ -1156,6 +1242,9 @@ impl FileManager {
                     self.tree_layout = None;
                     if result.complete {
                         self.media_scan = None;
+                        if result.unreadable == 0 {
+                            self.cache_media_directory(None, MediaLayout::default());
+                        }
                         if self.directory_selections.contains_key(&self.current) {
                             self.restore_directory_selection(context);
                         } else {
@@ -1175,6 +1264,7 @@ impl FileManager {
                 }
             }
         }
+        self.watch_media_directories(context);
         if let Some(search) = &mut self.search {
             search.poll();
         }
@@ -1213,6 +1303,7 @@ impl FileManager {
             .and_then(|job| job.try_recv().ok())
         {
             self.compression_job = None;
+            self.media_cache.clear();
             match result {
                 Ok(path) => {
                     if path.parent() == Some(self.current.as_path()) {
@@ -1223,6 +1314,41 @@ impl FileManager {
                 Err(error) => self.message = Some(format!("Cannot compress: {error}")),
             }
         }
+    }
+
+    fn watch_media_directories(&mut self, context: &egui::Context) {
+        if !self.settings.recursive_media
+            || self.media_scan.is_some()
+            || self.media_directories.is_empty()
+            || self.operation_job.is_some()
+        {
+            return;
+        }
+        if let Some(changed) = self
+            .media_watch
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            self.media_watch = None;
+            if changed {
+                self.refresh(context);
+                return;
+            }
+        }
+        if self.media_watch.is_none()
+            && self.media_checked_at.elapsed() >= std::time::Duration::from_secs(1)
+        {
+            self.media_checked_at = std::time::Instant::now();
+            let directories = Arc::clone(&self.media_directories);
+            let context = context.clone();
+            let (sender, receiver) = mpsc::channel();
+            self.media_watch = Some(receiver);
+            std::thread::spawn(move || {
+                let _ = sender.send(files::media_directories_changed(&directories));
+                context.request_repaint();
+            });
+        }
+        context.request_repaint_after(std::time::Duration::from_secs(1));
     }
 
     fn pane_shortcuts(&mut self, context: &egui::Context) {
@@ -4153,6 +4279,7 @@ impl FileManager {
         if self.new_folder.is_some() {
             return;
         }
+        self.media_cache.clear();
         if let Some(job) = &mut self.operation_job {
             let FileOperation::Trash(mut paths) = operation else {
                 return;
@@ -4274,6 +4401,7 @@ impl FileManager {
     }
 
     fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
+        self.media_cache.clear();
         if outcome.changed {
             let nearby = self.selected.as_ref().and_then(|selected| {
                 let index = self
