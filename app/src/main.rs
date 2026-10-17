@@ -183,6 +183,15 @@ struct TreeLayout {
     items: Arc<Vec<(Entry, egui::Pos2)>>,
 }
 
+#[derive(Default)]
+struct DirectorySelection {
+    selected: Option<PathBuf>,
+    last_selected: Option<PathBuf>,
+    paths: HashSet<PathBuf>,
+    anchor: Option<PathBuf>,
+    visual_line: bool,
+}
+
 struct DirectoryFrame {
     graphics: egui::layers::GraphicLayers,
     _textures: Vec<egui::TextureHandle>,
@@ -208,6 +217,7 @@ struct FileManager {
     last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
     selection_anchor: Option<PathBuf>,
+    directory_selections: HashMap<PathBuf, DirectorySelection>,
     visual_line: bool,
     motion_count: usize,
     v_key_is_shortcut: Option<bool>,
@@ -313,6 +323,7 @@ impl FileManager {
             last_selected: None,
             selection: HashSet::new(),
             selection_anchor: None,
+            directory_selections: HashMap::new(),
             visual_line: false,
             motion_count: 0,
             v_key_is_shortcut: None,
@@ -468,7 +479,17 @@ impl FileManager {
         });
     }
 
-    fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>) {
+    fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>, context: &egui::Context) {
+        self.directory_selections.insert(
+            self.current.clone(),
+            DirectorySelection {
+                selected: self.selected.take(),
+                last_selected: self.last_selected.take(),
+                paths: std::mem::take(&mut self.selection),
+                anchor: self.selection_anchor.take(),
+                visual_line: self.visual_line,
+            },
+        );
         self.preparing_directory = self.directory_frame.is_some();
         self.find_query = None;
         self.directory_expansions
@@ -486,6 +507,43 @@ impl FileManager {
                 self.expand_directory(&expanded);
             }
         }
+        self.restore_directory_selection(context);
+    }
+
+    fn restore_directory_selection(&mut self, context: &egui::Context) {
+        let mut state = self
+            .directory_selections
+            .remove(&self.current)
+            .unwrap_or_default();
+        let visible: HashSet<_> = if self.settings.view == View::Tree {
+            self.tree_layout()
+                .iter()
+                .map(|(entry, _)| entry.path.clone())
+                .collect()
+        } else {
+            self.entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect()
+        };
+        state.paths.retain(|path| visible.contains(path));
+        let selected = state
+            .selected
+            .filter(|path| state.paths.contains(path))
+            .or_else(|| state.paths.iter().min().cloned());
+        self.select(selected, context);
+        self.selection_anchor = state
+            .anchor
+            .filter(|path| state.paths.contains(path))
+            .or_else(|| self.selected.clone());
+        self.last_selected = state.last_selected.filter(|path| visible.contains(path));
+        self.visual_line = state.visual_line && self.selected.is_some();
+        self.selection = state.paths;
+        if self.selection.len() > 1 {
+            self.size_job = None;
+            self.selection_size = None;
+        }
+        self.scroll_to_selection = self.selected.is_some();
     }
 
     fn navigate(&mut self, path: PathBuf, context: &egui::Context) {
@@ -514,8 +572,7 @@ impl FileManager {
                     self.position = self.history.len() - 1;
                 }
                 self.breadcrumb_path = path.clone();
-                self.load_directory(path, entries);
-                self.select(None, context);
+                self.load_directory(path, entries, context);
                 self.refresh_disk(context);
             }
             Err(error) => self.message = Some(format!("Cannot open directory: {error}")),
@@ -547,8 +604,7 @@ impl FileManager {
                     if !self.breadcrumb_path.starts_with(&path) {
                         self.breadcrumb_path = path.clone();
                     }
-                    self.load_directory(path, entries);
-                    self.select(None, context);
+                    self.load_directory(path, entries, context);
                     self.refresh_disk(context);
                 }
                 Err(error) => self.message = Some(format!("Cannot open directory: {error}")),
