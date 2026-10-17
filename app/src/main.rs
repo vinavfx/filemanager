@@ -2897,6 +2897,7 @@ impl FileManager {
             egui::pos2(rect.left() + 34.0, rect.center().y),
             rect.width() - 40.0,
             13.0,
+            ui.visuals().text_color(),
         );
         if response.clicked() {
             self.sidebar_focused = true;
@@ -3880,6 +3881,18 @@ impl FileManager {
                                             entry,
                                         );
                                     }
+                                    if response.hovered() {
+                                        ui.painter().rect_filled(
+                                            rect.shrink(2.0),
+                                            8.0,
+                                            ui.visuals().panel_fill.gamma_multiply(0.18),
+                                        );
+                                    }
+                                    let text_color = if response.hovered() {
+                                        ACCENT
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
                                     let name_rect = egui::Rect::from_min_size(
                                         egui::pos2(rect.left() + 7.0, rect.top() + height * 0.66),
                                         Vec2::new(width - 14.0, 24.0),
@@ -3888,7 +3901,7 @@ impl FileManager {
                                         let mut job = egui::text::LayoutJob::simple(
                                             entry.name.clone(),
                                             egui::FontId::proportional(12.0),
-                                            ui.visuals().text_color(),
+                                            text_color,
                                             width - 14.0,
                                         );
                                         job.wrap.max_rows = 2;
@@ -3897,7 +3910,7 @@ impl FileManager {
                                         ui.painter().galley(
                                             egui::pos2(rect.center().x, rect.top() + height * 0.66),
                                             galley,
-                                            ui.visuals().text_color(),
+                                            text_color,
                                         );
                                     }
                                     self.entry_response(response, entry, context);
@@ -4578,6 +4591,13 @@ impl FileManager {
                 if !self.paint_thumbnail(ui, icon, entry, &response) {
                     self.paint_entry_icon(ui, icon, entry);
                 }
+                if response.hovered() {
+                    ui.painter().rect_filled(
+                        content,
+                        0.0,
+                        ui.visuals().panel_fill.gamma_multiply(0.18),
+                    );
+                }
                 let name_left = icon.right() + 10.0;
                 let date_left = row.right() - TREE_DATE_WIDTH;
                 let name_right = date_left - TREE_SIZE_WIDTH;
@@ -4592,6 +4612,11 @@ impl FileManager {
                         egui::pos2(name_left, row.center().y),
                         name_rect.width(),
                         14.0,
+                        if response.hovered() {
+                            ACCENT
+                        } else {
+                            ui.visuals().text_color()
+                        },
                     );
                 }
                 let size = if entry.directory {
@@ -5742,18 +5767,24 @@ fn paint_selection(ui: &egui::Ui, rect: egui::Rect, selected: bool, hovered: boo
     }
 }
 
-fn paint_name(ui: &egui::Ui, name: &str, center: egui::Pos2, width: f32, size: f32) {
+fn paint_name(
+    ui: &egui::Ui,
+    name: &str,
+    center: egui::Pos2,
+    width: f32,
+    size: f32,
+    color: Color32,
+) {
     let mut job = egui::text::LayoutJob::simple(
         name.into(),
         egui::FontId::proportional(size),
-        ui.visuals().text_color(),
+        color,
         width.max(1.0),
     );
     job.wrap.max_rows = 1;
     let galley = ui.painter().layout_job(job);
     let position = egui::pos2(center.x, center.y - galley.size().y / 2.0);
-    ui.painter()
-        .galley(position, galley, ui.visuals().text_color());
+    ui.painter().galley(position, galley, color);
 }
 
 fn paint_media_badge(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
