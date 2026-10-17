@@ -1,7 +1,7 @@
 use crate::files::{self, gio};
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -18,9 +18,9 @@ pub struct Outcome {
     pub error: Option<String>,
 }
 
-enum TrashLocation {
-    Known(String),
-    Unresolved(HashSet<String>),
+struct FileIdentity {
+    device: u64,
+    inode: u64,
 }
 
 enum Action {
@@ -31,7 +31,7 @@ enum Action {
     Trash(PathBuf),
     Restore {
         path: PathBuf,
-        location: TrashLocation,
+        identity: FileIdentity,
     },
 }
 
@@ -171,18 +171,18 @@ impl Action {
                 })
             }
             Self::Trash(path) => {
-                let previous = trash_entries()?;
-                gio("trash", &[], &[path.as_os_str()])?;
-                let location = match find_trashed(path, &previous) {
-                    Ok(uri) => TrashLocation::Known(uri),
-                    Err(_) => TrashLocation::Unresolved(previous),
+                let metadata = std::fs::symlink_metadata(path)?;
+                let identity = FileIdentity {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
                 };
+                gio("trash", &[], &[path.as_os_str()])?;
                 Ok(Self::Restore {
                     path: path.clone(),
-                    location,
+                    identity,
                 })
             }
-            Self::Restore { path, location } => {
+            Self::Restore { path, identity } => {
                 match std::fs::symlink_metadata(path) {
                     Ok(_) => {
                         return Err(io::Error::new(
@@ -193,15 +193,7 @@ impl Action {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                let uri = match location {
-                    TrashLocation::Known(uri) => uri.clone(),
-                    TrashLocation::Unresolved(previous) => find_trashed(path, previous)?,
-                };
-                if !is_original(&uri, path)? {
-                    return Err(io::Error::other(
-                        "The trashed item no longer matches this operation.",
-                    ));
-                }
+                let uri = find_trashed(path, identity)?;
                 gio("move", &["-T"], &[OsStr::new(&uri), path.as_os_str()])?;
                 Ok(Self::Trash(path.clone()))
             }
@@ -209,7 +201,22 @@ impl Action {
     }
 }
 
-fn trash_entries() -> io::Result<HashSet<String>> {
+impl FileIdentity {
+    fn matches(&self, uri: &str) -> io::Result<bool> {
+        let info = gio(
+            "info",
+            &["-n", "-a", "unix::device,unix::inode"],
+            &[OsStr::new(uri)],
+        )?;
+        let info = String::from_utf8(info)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let device = format!("  unix::device: {}", self.device);
+        let inode = format!("  unix::inode: {}", self.inode);
+        Ok(info.lines().any(|line| line == device) && info.lines().any(|line| line == inode))
+    }
+}
+
+fn trash_entries() -> io::Result<Vec<String>> {
     let output = gio("list", &["-u", "-h"], &[OsStr::new("trash:///")])?;
     let output = String::from_utf8(output)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -217,7 +224,11 @@ fn trash_entries() -> io::Result<HashSet<String>> {
 }
 
 fn is_original(uri: &str, path: &Path) -> io::Result<bool> {
-    let info = gio("info", &["-a", "trash::orig-path"], &[OsStr::new(uri)])?;
+    let info = gio(
+        "info",
+        &["-n", "-a", "trash::orig-path"],
+        &[OsStr::new(uri)],
+    )?;
     let mut attribute = b"\nattributes:\n  trash::orig-path: ".to_vec();
     for byte in path.as_os_str().as_encoded_bytes() {
         if (b' '..=b'~').contains(byte) && *byte != b'\\' {
@@ -230,17 +241,16 @@ fn is_original(uri: &str, path: &Path) -> io::Result<bool> {
     Ok(info.ends_with(&attribute))
 }
 
-fn find_trashed(path: &Path, previous: &HashSet<String>) -> io::Result<String> {
-    let current = trash_entries()?;
+fn find_trashed(path: &Path, identity: &FileIdentity) -> io::Result<String> {
     let mut found = None;
-    for uri in current.difference(previous) {
-        if is_original(uri, path)? {
+    for uri in trash_entries()? {
+        if is_original(&uri, path)? && identity.matches(&uri)? {
             if found.is_some() {
                 return Err(io::Error::other(
                     "Multiple trashed copies match this path. Restore it from the system trash.",
                 ));
             }
-            found = Some(uri.clone());
+            found = Some(uri);
         }
     }
     found.ok_or_else(|| {
