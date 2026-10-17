@@ -55,8 +55,7 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   subcarpetas en `Tree`, `Grid` y `Media`, sin carpetas ni otros archivos. El recorrido se ejecuta en segundo plano, respeta `Hidden` y
   `Sequences`, agrupa secuencias por carpeta y no sigue enlaces simbólicos a carpetas. Indica si omite directorios inaccesibles. Al
   desactivarlo se recupera el contenido habitual. Cada ventana nueva inicia con esta opción desactivada.
-- Solo en `Media`, el control `Margin` junto al zoom ajusta el margen de las miniaturas de 0 a 24 píxeles por lado; el valor inicial es 4.
-  La elección se conserva al reiniciar y no afecta a `Grid` ni a `Tree`.
+- En `Media`, las miniaturas no tienen margen y la selección se muestra con una capa de color semitransparente, sin contorno.
 - `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes con el mismo nombre y numeración consecutiva o mostrarlas
   individualmente. Cada grupo aparece como una sola entrada, con rango y número de fotogramas; admite explorar hasta ocho muestras con el
   cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los grupos. La barra

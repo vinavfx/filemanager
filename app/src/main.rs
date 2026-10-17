@@ -87,7 +87,6 @@ struct Settings {
     tree_sort: TreeSort,
     tree_descending: bool,
     zoom: f32,
-    media_margin: u32,
     hidden: bool,
     sequences: bool,
     #[serde(skip)]
@@ -103,7 +102,6 @@ impl Default for Settings {
             tree_sort: TreeSort::Name,
             tree_descending: false,
             zoom: 1.0,
-            media_margin: 4,
             hidden: false,
             sequences: true,
             recursive_media: false,
@@ -344,7 +342,6 @@ impl FileManager {
         } else {
             1.0
         };
-        settings.media_margin = settings.media_margin.min(24);
         let desktop = home_places
             .iter()
             .find(|place| matches!(place.kind, places::Kind::Desktop))
@@ -2797,24 +2794,6 @@ impl FileManager {
                                 .size(12.0)
                                 .color(MUTED),
                             );
-                            if self.settings.view == View::Media {
-                                ui.separator();
-                                let response = ui.add(
-                                    egui::Slider::new(&mut self.settings.media_margin, 0..=24)
-                                        .show_value(false),
-                                );
-                                if response.changed() {
-                                    self.save();
-                                }
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Margin: {} px",
-                                        self.settings.media_margin
-                                    ))
-                                    .size(12.0)
-                                    .color(MUTED),
-                                );
-                            }
                             ui.separator();
                             if let Some(disk) = &self.disk {
                                 ui.label(
@@ -3011,13 +2990,7 @@ impl FileManager {
         let frame = progress.map_or(poster, |progress| {
             ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
         });
-        let image_bounds = if self.settings.view == View::Media {
-            rect.shrink(
-                (self.settings.media_margin as f32).min(rect.width().min(rect.height()) / 4.0),
-            )
-        } else {
-            rect
-        };
+        let image_bounds = rect;
         let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
             if self.wait_for_thumbnails {
                 self.directory_ready &= self.thumbnails.entry_ready(entry);
@@ -3564,11 +3537,10 @@ impl FileManager {
                                     .galley(position, galley, ui.visuals().text_color());
                             }
                             if highlighted {
-                                ui.painter().rect_stroke(
-                                    rect.shrink(1.0),
+                                ui.painter().rect_filled(
+                                    rect,
                                     0.0,
-                                    Stroke::new(2.0, ui.visuals().selection.stroke.color),
-                                    egui::StrokeKind::Inside,
+                                    ui.visuals().selection.stroke.color.gamma_multiply(0.35),
                                 );
                             }
                             let name_rect = egui::Rect::from_min_max(
