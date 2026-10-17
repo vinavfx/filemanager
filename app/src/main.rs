@@ -4019,6 +4019,17 @@ impl FileManager {
         if !complete {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        if self
+            .media_layout
+            .rows
+            .last()
+            .is_some_and(|(range, height)| {
+                range.end < aspects.len()
+                    && aspects[range.clone()].iter().sum::<f32>() * height < width - 0.5
+            })
+        {
+            self.media_layout.rows.pop();
+        }
         let start = self
             .media_layout
             .rows
@@ -4087,6 +4098,10 @@ impl FileManager {
             });
             return;
         }
+        let widths: Vec<_> = items
+            .iter()
+            .map(|(entry, _, height)| self.media_layout.aspects[&entry.path] * height)
+            .collect();
         let rows = self.media_layout.rows.clone();
         let complete = self.media_layout.complete;
         let count = items.len();
@@ -4139,7 +4154,7 @@ impl FileManager {
                             let entry = &items[index].0;
                             let rect = egui::Rect::from_min_size(
                                 egui::pos2(x, y),
-                                Vec2::new(self.media_layout.aspects[&entry.path] * height, height),
+                                Vec2::new(widths[index], height),
                             );
                             x = rect.right();
                             if self.scroll_to_selection
