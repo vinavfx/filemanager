@@ -1736,6 +1736,20 @@ impl FileManager {
             self.scroll_to_selection = true;
             return;
         }
+        if self.settings.view == View::Tree
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::P))
+        {
+            self.motion_count = 0;
+            self.pending_g = false;
+            if let Some(parent) = self.selected.as_ref().and_then(|path| path.parent()) {
+                if let Some((entry, _, _)) = items.iter().find(|(entry, _, _)| entry.path == parent)
+                {
+                    self.select_entry(entry.path.clone(), context);
+                    self.scroll_to_selection = true;
+                }
+            }
+            return;
+        }
         let page_direction = context.input_mut(|input| {
             if input.consume_key(egui::Modifiers::CTRL, Key::D) {
                 1.0

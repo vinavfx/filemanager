@@ -29,6 +29,7 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera. `Esc` o `Ctrl+V` salen
   del modo y dejan seleccionado solo el icono actual. La barra de estado indica `VISUAL LINE`; fuera de este modo, `d` conserva su función
   de añadir marcadores. Fuera de Visual Line, `gg` y `Mayús+G` solo mueven el cursor al principio o al final, sin ampliar la selección.
+- En `Tree`, `p` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.
 - En `Tree`, `o` abre o cierra la carpeta seleccionada. `Mayús+O` alterna entre expandir recursivamente sus subcarpetas y cerrarlas todas,
   manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión
   recursiva se limita a 5 niveles, 64 carpetas y 2000 entradas examinadas, incluidos los recuentos de contenido de las carpetas, con un
