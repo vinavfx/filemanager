@@ -1406,16 +1406,34 @@ impl FileManager {
     fn shortcuts(&mut self, context: &egui::Context) {
         self.pane_shortcuts(context);
         if self.new_folder.is_none() {
-            for (key, view) in [
-                (Key::T, View::Tree),
-                (Key::G, View::Grid),
-                (Key::E, View::Media),
+            if !self.text_input_focused(context)
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::R))
+            {
+                self.settings.recursive_media = !self.settings.recursive_media;
+                self.refresh(context);
+                self.save();
+            }
+            if !self.text_input_focused(context)
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::S))
+            {
+                self.settings.sequences = !self.settings.sequences;
+                self.refresh(context);
+                self.save();
+            }
+            for (modifiers, key, view) in [
+                (egui::Modifiers::ALT, Key::T, View::Tree),
+                (egui::Modifiers::ALT, Key::G, View::Grid),
+                (egui::Modifiers::ALT, Key::M, View::Media),
             ] {
-                if !(self.editing_path && key == Key::E)
-                    && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key))
-                    && self.settings.view != view
+                if context.input_mut(|input| input.consume_key(modifiers, key))
+                    && (self.settings.view != view
+                        || (view == View::Media && !self.settings.recursive_media))
                 {
                     self.settings.view = view;
+                    if view == View::Media && !self.settings.recursive_media {
+                        self.settings.recursive_media = true;
+                        self.refresh(context);
+                    }
                     self.save();
                 }
             }
@@ -4612,7 +4630,7 @@ fn sequences_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
             egui::StrokeKind::Inside,
         );
     }
-    response.on_hover_text("Sequences")
+    response.on_hover_text("Sequences · Alt+S")
 }
 
 fn recursive_media_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
@@ -4641,7 +4659,7 @@ fn recursive_media_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
         ui.visuals().text_color(),
         Stroke::NONE,
     ));
-    response.on_hover_text("Recursive media")
+    response.on_hover_text("Recursive media · Alt+R")
 }
 
 fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {

@@ -52,16 +52,17 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   seleccionar. Las tres vistas cargan miniaturas en segundo plano. Los vídeos muestran una imagen del centro; mueve el cursor de izquierda a
   derecha para recorrer muestras desde el inicio hasta el final, sin reproducción continua. El zoom cambia el tamaño de las miniaturas y los
   iconos, no el de la letra.
-- `Recursive media`, junto a `Sequences` y `Hidden`, muestra únicamente imágenes, vídeos y secuencias de la carpeta actual y todas sus
-  subcarpetas en `Tree`, `Grid` y `Media`, sin carpetas ni otros archivos. El recorrido se ejecuta en segundo plano, respeta `Hidden` y
-  `Sequences`, agrupa secuencias por carpeta y no sigue enlaces simbólicos a carpetas. Indica si omite directorios inaccesibles. Al
-  desactivarlo se recupera el contenido habitual. Cada ventana nueva inicia con esta opción desactivada.
+- `Alt+R` alterna `Recursive media` sin cambiar de vista. Este control, junto a `Sequences` y `Hidden`, muestra únicamente imágenes, vídeos
+  y secuencias de la carpeta actual y todas sus subcarpetas en `Tree`, `Grid` y `Media`, sin carpetas ni otros archivos. El recorrido se
+  ejecuta en segundo plano, respeta `Hidden` y `Sequences`, agrupa secuencias por carpeta y no sigue enlaces simbólicos a carpetas. Indica
+  si omite directorios inaccesibles. Al desactivarlo se recupera el contenido habitual. Cada ventana nueva inicia con esta opción
+  desactivada.
 - En `Media`, las miniaturas no tienen margen y la selección se muestra con una capa de color semitransparente, sin contorno.
-- `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes con el mismo nombre y numeración consecutiva o mostrarlas
-  individualmente. Cada grupo aparece como una sola entrada, con rango y número de fotogramas; admite explorar hasta ocho muestras con el
-  cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los grupos. La barra
-  dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado, indica la posición
-  de la muestra mostrada, incluso mientras se carga otra.
+- `Alt+S` o `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes con el mismo nombre y numeración consecutiva o
+  mostrarlas individualmente. Cada grupo aparece como una sola entrada, con rango y número de fotogramas; admite explorar hasta ocho
+  muestras con el cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los
+  grupos. La barra dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado,
+  indica la posición de la muestra mostrada, incluso mientras se carga otra.
 - `Ctrl+F` busca por nombre entre los elementos visibles y selecciona la mejor coincidencia mientras escribes, sin filtrar ni ocultar nada.
   Ignora mayúsculas y prioriza nombres exactos, prefijos y fragmentos contiguos; también admite letras en orden con caracteres intermedios.
   En `Tree` incluye los elementos visibles de las carpetas expandidas, nunca el contenido de las cerradas. `Enter` o `Esc` cierra el campo
@@ -88,7 +89,8 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   existentes; los enlaces simbólicos se conservan como enlaces.
 - `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial. `gT` o `Alt+↑` sube al directorio padre; `gt` baja por la ruta conservada.
   Funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto.
-- `Ctrl+T` activa `Tree`, `Ctrl+G` activa `Grid` y `Ctrl+E` activa `Media`. Las tres vistas siguen disponibles en la barra superior.
+- `Alt+T` activa `Tree`, `Alt+G` activa `Grid` y `Alt+M` activa `Media` junto con `Recursive media`, incluso si ya estás en `Media`. Las
+  tres vistas siguen disponibles en la barra superior.
 - `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos en ambos paneles.
 - El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
   la creación de carpetas, la edición de la dirección o la selección.
