@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 const THUMBNAIL_EDGE: u32 = 192;
 const THUMBNAIL_VERSION: u32 = 3;
-const MEMORY_CAPACITY: usize = 512;
+const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 pub const VIDEO_FRAMES: usize = 8;
 pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
 type ThumbnailKey = (PathBuf, usize);
@@ -288,6 +288,7 @@ pub struct Thumbnails {
     generation: Arc<AtomicU64>,
     pending: HashSet<ThumbnailKey>,
     cache: HashMap<ThumbnailKey, Result<egui::TextureHandle, String>>,
+    cache_bytes: usize,
     fingerprints: HashMap<ThumbnailKey, (Option<u64>, Instant)>,
     order: VecDeque<ThumbnailKey>,
     completed: usize,
@@ -344,6 +345,7 @@ impl Thumbnails {
             generation,
             pending: HashSet::new(),
             cache: HashMap::new(),
+            cache_bytes: 0,
             fingerprints: HashMap::new(),
             order: VecDeque::new(),
             completed: 0,
@@ -360,12 +362,6 @@ impl Thumbnails {
             }
             self.pending.remove(&path);
             self.completed += 1;
-            if self.cache.len() >= MEMORY_CAPACITY {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.cache.remove(&oldest);
-                    self.fingerprints.remove(&oldest);
-                }
-            }
             let key = image
                 .as_ref()
                 .map(|cached| cached.key)
@@ -383,12 +379,29 @@ impl Thumbnails {
                     egui::TextureOptions::LINEAR,
                 )
             });
+            let bytes = texture.as_ref().map_or(0, egui::TextureHandle::byte_size);
+            while self.cache_bytes + bytes > MEMORY_BUDGET_BYTES {
+                let Some(oldest) = self.order.pop_front() else {
+                    break;
+                };
+                self.remove_cached_texture(&oldest);
+                self.fingerprints.remove(&oldest);
+            }
+            self.remove_cached_texture(&path);
+            self.order.retain(|cached| cached != &path);
             self.order.push_back(path.clone());
             self.cache.insert(path, texture);
+            self.cache_bytes += bytes;
             if self.pending.is_empty() {
                 self.finished_until = context.input(|input| input.time) + 0.8;
                 context.request_repaint_after(Duration::from_millis(800));
             }
+        }
+    }
+
+    fn remove_cached_texture(&mut self, key: &ThumbnailKey) {
+        if let Some(Ok(texture)) = self.cache.remove(key) {
+            self.cache_bytes -= texture.byte_size();
         }
     }
 
@@ -410,7 +423,7 @@ impl Thumbnails {
                 .fingerprints
                 .insert(key.clone(), (current, Instant::now()));
             if previous.is_none_or(|(fingerprint, _)| fingerprint != current) {
-                self.cache.remove(&key);
+                self.remove_cached_texture(&key);
                 self.order.retain(|cached| cached != &key);
             }
         }
