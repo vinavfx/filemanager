@@ -360,7 +360,6 @@ struct FileManager {
     directory_selections: HashMap<PathBuf, DirectorySelection>,
     visual_line: bool,
     motion_count: usize,
-    v_key_is_shortcut: Option<bool>,
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
     media_layout: MediaLayout,
@@ -479,7 +478,6 @@ impl FileManager {
             directory_selections: HashMap::new(),
             visual_line: false,
             motion_count: 0,
-            v_key_is_shortcut: None,
             visible_paths: Vec::new(),
             scroll_to_selection: false,
             media_layout: MediaLayout::default(),
@@ -1726,36 +1724,19 @@ impl FileManager {
             && !self.text_input_focused(context);
         let mut toggle = false;
         context.input_mut(|input| {
-            let ctrl = input.modifiers.ctrl;
             input.events.retain(|event| match event {
-                egui::Event::Paste(_) if ctrl => {
-                    if enabled && self.v_key_is_shortcut != Some(true) {
-                        toggle = true;
-                    }
-                    self.v_key_is_shortcut = Some(enabled);
-                    !enabled
-                }
                 egui::Event::Key {
                     key: Key::V,
-                    pressed,
+                    pressed: true,
                     repeat,
                     modifiers,
                     ..
-                } => {
-                    if *pressed {
-                        if !repeat {
-                            let shortcut = enabled && modifiers.ctrl;
-                            toggle |= shortcut && self.v_key_is_shortcut != Some(true);
-                            self.v_key_is_shortcut = Some(shortcut);
-                        }
-                    } else {
-                        toggle |= self.v_key_is_shortcut.take().is_none() && enabled;
-                    }
-                    !(enabled && modifiers.ctrl)
-                }
-                egui::Event::WindowFocused(false) => {
-                    self.v_key_is_shortcut = None;
-                    true
+                } if enabled
+                    && (modifiers.matches_exact(egui::Modifiers::NONE)
+                        || modifiers.matches_exact(egui::Modifiers::SHIFT)) =>
+                {
+                    toggle |= !repeat;
+                    false
                 }
                 _ => true,
             });

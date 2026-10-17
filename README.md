@@ -82,7 +82,7 @@ En marcadores, `j/k`, `↑/↓`, `Home/End`, `gg/G` y `Ctrl+D/U` permiten navega
 | --------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `Mayús` + flechas o `h/j/k/l`           | Extender la selección               | Selecciona un rango desde el punto inicial.                                                                                          |
 | `Ctrl+A`                                | Seleccionar todo lo visible         | En árbol incluye los hijos desplegados, no el contenido de carpetas cerradas.                                                        |
-| `Ctrl+V`                                | Activar o salir de selección visual | Los movimientos amplían o reducen el rango; la barra inferior indica `VISUAL LINE`. No pega archivos.                                |
+| `v` o `Shift+V`                         | Activar o salir de selección visual | Los movimientos amplían o reducen el rango; la barra inferior indica `VISUAL LINE`. No pega archivos.                                |
 | `yy`                                    | Copiar la selección                 | Guarda los elementos en un registro interno; una sola `y` fuera del modo visual no copia.                                            |
 | `y` en modo visual                      | Copiar y salir del modo visual      | Deja seleccionado el primer elemento del rango.                                                                                      |
 | `p`                                     | Pegar                               | Inserta el grupo después del último seleccionado; las nuevas copias quedan seleccionadas.                                            |
@@ -95,8 +95,8 @@ En marcadores, `j/k`, `↑/↓`, `Home/End`, `gg/G` y `Ctrl+D/U` permiten navega
 | `Enter` durante la edición de un nombre | Confirmar                           | Guarda el nombre o crea la carpeta provisional.                                                                                      |
 | `Esc`                                   | Cancelar o quitar selección         | Cancela primero la edición de nombres; en otros contextos cierra avisos o campos activos, sale del modo visual o quita la selección. |
 
-Al salir de selección visual con `Esc` o `Ctrl+V`, queda seleccionado el primer elemento del rango. En los campos de texto se mantienen las
-funciones habituales de edición, como `Ctrl+A` para seleccionar texto y `Ctrl+V` para pegarlo.
+Al salir de selección visual con `Esc`, `v` o `Shift+V`, queda seleccionado el primer elemento del rango. En los campos de texto se
+mantienen las funciones habituales de edición, como `Ctrl+A` para seleccionar texto y `Ctrl+V` para pegarlo.
 
 ### Búsqueda
 
