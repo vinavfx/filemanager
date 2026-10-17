@@ -3757,6 +3757,7 @@ impl FileManager {
                                     ui.visuals().selection.stroke.color.gamma_multiply(0.35),
                                 );
                             }
+                            paint_media_badge(ui, rect, entry);
                             let name_rect = egui::Rect::from_min_max(
                                 egui::pos2(
                                     rect.left() + 4.0,
@@ -4949,6 +4950,77 @@ fn paint_name(ui: &egui::Ui, name: &str, center: egui::Pos2, width: f32, size: f
     let position = egui::pos2(center.x, center.y - galley.size().y / 2.0);
     ui.painter()
         .galley(position, galley, ui.visuals().text_color());
+}
+
+fn paint_media_badge(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
+    if entry.directory || !entry.animated() || rect.width() < 32.0 || rect.height() < 32.0 {
+        return;
+    }
+    let sequence = entry.sequence.as_ref();
+    let label = sequence.map_or_else(
+        || "Video".to_owned(),
+        |frames| format!("{} frames", frames.len()),
+    );
+    let color = if sequence.is_some() {
+        Color32::from_rgb(163, 230, 200)
+    } else {
+        Color32::from_rgb(179, 211, 255)
+    };
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+    let text_color = Color32::from_rgb(245, 247, 250);
+    let galley = painter.layout_no_wrap(label, egui::FontId::proportional(11.0), text_color);
+    let show_label = galley.size().x + 40.0 <= rect.width();
+    let width = if show_label {
+        galley.size().x + 30.0
+    } else {
+        22.0
+    };
+    let badge = egui::Rect::from_min_size(rect.min + Vec2::splat(6.0), Vec2::new(width, 22.0));
+    painter.rect_filled(badge, 6.0, Color32::from_black_alpha(200));
+    painter.rect_stroke(
+        badge,
+        6.0,
+        egui::Stroke::new(1.0, Color32::from_white_alpha(40)),
+        egui::StrokeKind::Inside,
+    );
+    let center = egui::pos2(badge.left() + 11.0, badge.center().y);
+    if sequence.is_some() {
+        let back = egui::Rect::from_center_size(center + Vec2::new(1.5, -1.5), Vec2::new(9.0, 7.0));
+        painter.rect_stroke(
+            back,
+            1.5,
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+        let front = back.translate(Vec2::new(-3.0, 3.0));
+        painter.rect_filled(front, 1.5, Color32::from_rgb(26, 35, 33));
+        painter.rect_stroke(
+            front,
+            1.5,
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                center + Vec2::new(-3.0, -4.5),
+                center + Vec2::new(4.0, 0.0),
+                center + Vec2::new(-3.0, 4.5),
+            ],
+            color,
+            egui::Stroke::NONE,
+        ));
+    }
+    if show_label {
+        painter.galley(
+            egui::pos2(
+                badge.left() + 23.0,
+                badge.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            text_color,
+        );
+    }
 }
 
 fn paint_thumbnail_placeholder(ui: &egui::Ui, rect: egui::Rect) {
