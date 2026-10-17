@@ -58,11 +58,11 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   si omite directorios inaccesibles. Al desactivarlo se recupera el contenido habitual. Cada ventana nueva inicia con esta opción
   desactivada.
 - En `Media`, las miniaturas no tienen margen y la selección se muestra con una capa de color semitransparente, sin contorno.
-- `Alt+S` o `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes con el mismo nombre y numeración consecutiva o
-  mostrarlas individualmente. Cada grupo aparece como una sola entrada, con rango y número de fotogramas; admite explorar hasta ocho
-  muestras con el cursor y guarda únicamente esas miniaturas. El doble clic abre el primer fotograma. Los saltos de numeración separan los
-  grupos. La barra dentro del borde inferior de las miniaturas de vídeos y secuencias, de seis píxeles de grosor y con fondo contrastado,
-  indica la posición de la muestra mostrada, incluso mientras se carga otra.
+- `Alt+S` o `Sequences`/`Images`, en la barra superior, alterna entre agrupar imágenes numeradas con el mismo nombre base y extensión o
+  mostrarlas individualmente. Los saltos de numeración no separan los grupos. Cada grupo muestra los intervalos existentes separados por
+  espacios, con números sueltos para fotogramas aislados, y el total de archivos; admite explorar hasta ocho muestras con el cursor y guarda
+  únicamente esas miniaturas. El doble clic abre el primer fotograma. La barra dentro del borde inferior de las miniaturas de vídeos y
+  secuencias, de seis píxeles de grosor y con fondo contrastado, indica la posición de la muestra mostrada, incluso mientras se carga otra.
 - `Ctrl+F` busca por nombre entre los elementos visibles y selecciona la mejor coincidencia mientras escribes, sin filtrar ni ocultar nada.
   Ignora mayúsculas y prioriza nombres exactos, prefijos y fragmentos contiguos; también admite letras en orden con caracteres intermedios.
   En `Tree` incluye los elementos visibles de las carpetas expandidas, nunca el contenido de las cerradas. `Enter` o `Esc` cierra el campo

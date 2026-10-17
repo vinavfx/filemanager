@@ -418,31 +418,35 @@ fn group_sequences(entries: Vec<Entry>) -> Vec<Entry> {
         group.sort_by(|(a, entry_a), (b, entry_b)| {
             a.cmp(b).then_with(|| entry_a.name.cmp(&entry_b.name))
         });
-        let mut remaining = group.as_slice();
-        while !remaining.is_empty() {
-            let length = remaining
-                .windows(2)
-                .position(|pair| pair[0].0.checked_add(1) != Some(pair[1].0))
-                .map_or(remaining.len(), |index| index + 1);
-            let run = &remaining[..length];
-            let mut entry = run[0].1.clone();
-            if length > 1 {
-                entry.name = format!(
-                    "{prefix}[{}–{}]{suffix} ({length} frames)",
-                    run[0].0,
-                    run[length - 1].0
-                );
-                entry.size = run
-                    .iter()
-                    .fold(0_u64, |size, (_, entry)| size.saturating_add(entry.size));
-                entry.modified = run.iter().filter_map(|(_, entry)| entry.modified).max();
-                entry.sequence = Some(Arc::new(
-                    run.iter().map(|(_, entry)| entry.path.clone()).collect(),
-                ));
+        let length = group.len();
+        let mut entry = group[0].1.clone();
+        if length > 1 {
+            let mut ranges = Vec::new();
+            let mut remaining = group.as_slice();
+            while !remaining.is_empty() {
+                let end = remaining
+                    .windows(2)
+                    .position(|pair| pair[0].0.checked_add(1) != Some(pair[1].0))
+                    .map_or(remaining.len(), |index| index + 1);
+                let first = remaining[0].0;
+                let last = remaining[end - 1].0;
+                ranges.push(if first == last {
+                    first.to_string()
+                } else {
+                    format!("{first}-{last}")
+                });
+                remaining = &remaining[end..];
             }
-            result.push(entry);
-            remaining = &remaining[length..];
+            entry.name = format!("{prefix}[{}]{suffix} ({length} frames)", ranges.join(" "));
+            entry.size = group
+                .iter()
+                .fold(0_u64, |size, (_, entry)| size.saturating_add(entry.size));
+            entry.modified = group.iter().filter_map(|(_, entry)| entry.modified).max();
+            entry.sequence = Some(Arc::new(
+                group.iter().map(|(_, entry)| entry.path.clone()).collect(),
+            ));
         }
+        result.push(entry);
     }
     result
 }
