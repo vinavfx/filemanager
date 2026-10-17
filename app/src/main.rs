@@ -242,6 +242,15 @@ struct DirectoryContents {
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
 }
 
+#[derive(Default)]
+struct MediaLayout {
+    aspects: HashMap<PathBuf, f32>,
+    paths: Vec<PathBuf>,
+    rows: Vec<(std::ops::Range<usize>, f32)>,
+    width: f32,
+    target: f32,
+}
+
 struct FileManager {
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
     directory_frame: Option<DirectoryFrame>,
@@ -272,6 +281,7 @@ struct FileManager {
     v_key_is_shortcut: Option<bool>,
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
+    media_layout: MediaLayout,
     center_selection: bool,
     page_scroll_delta: f32,
     pending_g: bool,
@@ -382,6 +392,7 @@ impl FileManager {
             v_key_is_shortcut: None,
             visible_paths: Vec::new(),
             scroll_to_selection: false,
+            media_layout: MediaLayout::default(),
             center_selection: false,
             page_scroll_delta: 0.0,
             pending_g: false,
@@ -437,6 +448,7 @@ impl FileManager {
     }
 
     fn start_media_scan(&mut self, context: &egui::Context) {
+        self.media_layout = MediaLayout::default();
         self.directory_refresh = None;
         self.media_scan = None;
         self.entries = Arc::default();
@@ -454,6 +466,7 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
+        self.media_layout = MediaLayout::default();
         self.wait_for_thumbnails = false;
         self.media_scan = None;
         self.directory_refresh = None;
@@ -565,6 +578,7 @@ impl FileManager {
     }
 
     fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>, context: &egui::Context) {
+        self.media_layout = MediaLayout::default();
         self.wait_for_thumbnails = false;
         self.directory_refresh = None;
         self.directory_selections.insert(
@@ -3476,13 +3490,14 @@ impl FileManager {
 
     fn media(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         let source = Arc::clone(&self.entries);
-        let entries: Vec<_> = source
+        let available: HashMap<_, _> = source
             .iter()
             .filter(|entry| {
                 entry.directory || files::image_file(&entry.path) || files::video_file(&entry.path)
             })
+            .map(|entry| (entry.path.clone(), entry))
             .collect();
-        if entries.is_empty() {
+        if available.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new("No folders, images or videos in this folder").color(MUTED));
             });
@@ -3491,17 +3506,90 @@ impl FileManager {
         let gutter = self.number_width();
         let width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - gutter).max(1.0);
-        let aspects: Vec<_> = entries
+        let target = 192.0 * self.settings.zoom;
+        if self
+            .media_layout
+            .paths
             .iter()
-            .map(|entry| {
-                if entry.directory {
-                    1.0
-                } else {
-                    self.thumbnails.entry_aspect_ratio(entry)
+            .any(|path| !available.contains_key(path))
+        {
+            self.media_layout = MediaLayout::default();
+        }
+        if self.media_layout.width != width || self.media_layout.target != target {
+            self.media_layout.rows.clear();
+            self.media_layout.width = width;
+            self.media_layout.target = target;
+        }
+        let mut requested = 0;
+        for entry in source
+            .iter()
+            .filter(|entry| available.contains_key(&entry.path))
+        {
+            if self.media_layout.aspects.contains_key(&entry.path) {
+                continue;
+            }
+            if !entry.directory && !self.thumbnails.entry_ready(entry) {
+                if requested < 18 {
+                    let frame = if entry.animated() {
+                        images::VIDEO_POSTER
+                    } else {
+                        0
+                    };
+                    self.thumbnails.get_entry(entry, frame);
+                    requested += 1;
                 }
-            })
+                continue;
+            }
+            let aspect = if entry.directory {
+                1.0
+            } else {
+                self.thumbnails.entry_aspect_ratio(entry)
+            };
+            self.media_layout.aspects.insert(entry.path.clone(), aspect);
+            self.media_layout.paths.push(entry.path.clone());
+        }
+        let mut aspects: Vec<_> = self
+            .media_layout
+            .paths
+            .iter()
+            .map(|path| self.media_layout.aspects[path])
             .collect();
-        let rows = layout::justified_rows(&aspects, width, 192.0 * self.settings.zoom);
+        let complete = self.media_scan.is_none() && aspects.len() == available.len();
+        let start = self
+            .media_layout
+            .rows
+            .last()
+            .map_or(0, |(range, _)| range.end);
+        let mut new_rows = layout::justified_rows(&aspects[start..], width, target);
+        if !complete {
+            new_rows.pop();
+        }
+        self.media_layout.rows.extend(
+            new_rows
+                .into_iter()
+                .map(|(range, height)| (range.start + start..range.end + start, height)),
+        );
+        let count = self
+            .media_layout
+            .rows
+            .last()
+            .map_or(0, |(range, _)| range.end);
+        let mut entries: Vec<_> = self.media_layout.paths[..count]
+            .iter()
+            .map(|path| available[path])
+            .collect();
+        let published: HashSet<_> = self.media_layout.paths[..count].iter().collect();
+        entries.extend(source.iter().filter(|entry| {
+            available.contains_key(&entry.path) && !published.contains(&entry.path)
+        }));
+        aspects.truncate(count);
+        aspects.resize(entries.len(), 1.0);
+        let mut rows = self.media_layout.rows.clone();
+        rows.extend(
+            layout::justified_rows(&aspects[count..], width, target)
+                .into_iter()
+                .map(|(range, height)| (range.start + count..range.end + count, height)),
+        );
         let total_height: f32 = rows.iter().map(|(_, height)| height).sum();
         let mut items = Vec::with_capacity(entries.len());
         let mut y = 0.0;
@@ -3576,7 +3664,9 @@ impl FileManager {
                             let highlighted =
                                 !self.sidebar_focused && self.selection.contains(&entry.path);
                             ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
-                            if !self.paint_thumbnail(ui, rect, entry, &response) {
+                            if index >= count && !entry.directory {
+                                paint_thumbnail_placeholder(ui, rect);
+                            } else if !self.paint_thumbnail(ui, rect, entry, &response) {
                                 let edge = (64.0 * self.settings.zoom)
                                     .min(rect.width().min(rect.height()) * 0.5);
                                 self.paint_entry_icon(
