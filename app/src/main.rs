@@ -1744,13 +1744,13 @@ impl FileManager {
         self.pane_shortcuts(context);
         if self.new_folder.is_none() {
             if !self.text_input_focused(context)
-                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::M))
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::M))
             {
                 self.settings.toggle_media();
                 self.save();
             }
             if !self.text_input_focused(context)
-                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::R))
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::R))
             {
                 self.settings.recursive_media = !self.settings.recursive_media;
                 self.refresh(context);
@@ -1762,17 +1762,6 @@ impl FileManager {
                 self.settings.sequences = !self.settings.sequences;
                 self.refresh(context);
                 self.save();
-            }
-            for (modifiers, key, view) in [
-                (egui::Modifiers::ALT, Key::T, View::Tree),
-                (egui::Modifiers::ALT, Key::G, View::Grid),
-            ] {
-                if context.input_mut(|input| input.consume_key(modifiers, key))
-                    && self.settings.view != view
-                {
-                    self.settings.set_view(view);
-                    self.save();
-                }
             }
         }
         if self.new_folder.is_none() && !self.sidebar_focused {
@@ -1802,6 +1791,19 @@ impl FileManager {
             }
         }
         self.vim_shortcuts(context);
+        if self.new_folder.is_none() && !self.text_input_focused(context) {
+            for (modifiers, key, view) in [
+                (egui::Modifiers::NONE, Key::T, View::Tree),
+                (egui::Modifiers::CTRL, Key::G, View::Grid),
+            ] {
+                if context.input_mut(|input| input.consume_key(modifiers, key))
+                    && self.settings.view != view
+                {
+                    self.settings.set_view(view);
+                    self.save();
+                }
+            }
+        }
         let visual_line_shortcut = self.visual_line_shortcut(context);
         let scroll = context.input_mut(|input| {
             if input.modifiers.ctrl {
@@ -5474,7 +5476,7 @@ fn recursive_media_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
         ui.visuals().text_color(),
         Stroke::NONE,
     ));
-    response.on_hover_text("Recursive media · Alt+R")
+    response.on_hover_text("Recursive media · R")
 }
 
 fn search_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
