@@ -1282,19 +1282,33 @@ impl FileManager {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, Key::O))
             && self.settings.view == View::Tree
         {
-            if let Some(path) = self.selected.clone() {
-                if path.is_dir() && !path.is_symlink() {
-                    self.toggle_recursive_expansion(path);
-                }
+            let paths: Vec<_> = self
+                .selection
+                .iter()
+                .filter(|path| {
+                    path.is_dir()
+                        && !path.is_symlink()
+                        && !path
+                            .ancestors()
+                            .skip(1)
+                            .any(|parent| self.selection.contains(parent))
+                })
+                .cloned()
+                .collect();
+            for path in paths {
+                self.toggle_recursive_expansion(path);
             }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::O)) {
-            if let Some(path) = self.selected.clone() {
-                if self.settings.view == View::Tree && path.is_dir() && !path.is_symlink() {
-                    if !self.expanded.remove(&path) {
+            if self.settings.view == View::Tree {
+                for path in self.selection.clone() {
+                    if path.is_dir() && !path.is_symlink() && !self.expanded.remove(&path) {
                         self.expand_directory(&path);
                     }
-                } else {
+                }
+            }
+            if let Some(path) = self.selected.clone() {
+                if self.settings.view != View::Tree || !path.is_dir() || path.is_symlink() {
                     self.open(path, context);
                 }
             }
