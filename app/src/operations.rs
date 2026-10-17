@@ -14,6 +14,7 @@ pub struct History {
 #[derive(Default)]
 pub struct Outcome {
     pub changed: bool,
+    pub pending_delete: Vec<PathBuf>,
     pub renames: Vec<(PathBuf, PathBuf)>,
     pub copied: Vec<(PathBuf, PathBuf)>,
     pub selected: Option<PathBuf>,
@@ -85,7 +86,12 @@ impl History {
         progress: &mut impl FnMut(usize, usize, &Path),
     ) -> Outcome {
         let mut actions = paths.into_iter().rev().map(Action::Trash).collect();
-        let (inverse, outcome) = execute(&mut actions, progress);
+        let (inverse, mut outcome) = execute(&mut actions, progress);
+        outcome.pending_delete = actions
+            .into_iter()
+            .rev()
+            .map(|action| action.path().to_path_buf())
+            .collect();
         if !inverse.is_empty() {
             self.undo.push(inverse);
             self.redo.clear();
@@ -128,6 +134,36 @@ impl History {
         if !inverse.is_empty() {
             self.undo.push(inverse);
             self.redo.clear();
+        }
+        outcome
+    }
+
+    pub fn delete(
+        &mut self,
+        paths: Vec<PathBuf>,
+        progress: &mut impl FnMut(usize, usize, &Path),
+    ) -> Outcome {
+        let mut outcome = Outcome::default();
+        let total = paths.len();
+        for (index, path) in paths.into_iter().enumerate() {
+            progress(index, total, &path);
+            let result = std::fs::symlink_metadata(&path).and_then(|metadata| {
+                if metadata.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                }
+            });
+            if let Err(error) = result {
+                outcome.error = Some(format!(
+                    "Cannot permanently delete {}: {error}",
+                    path.display()
+                ));
+                break;
+            }
+            outcome.changed = true;
+            self.redo.clear();
+            progress(index + 1, total, &path);
         }
         outcome
     }

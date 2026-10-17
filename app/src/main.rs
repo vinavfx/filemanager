@@ -269,6 +269,7 @@ enum FileOperation {
     Move(Vec<(PathBuf, PathBuf)>),
     Copy(Vec<PathBuf>, PathBuf),
     Trash(Vec<PathBuf>),
+    Delete(Vec<PathBuf>),
     EmptyTrash,
     Undo,
     Redo,
@@ -281,6 +282,7 @@ enum OperationUpdate {
 
 struct OperationJob {
     receiver: mpsc::Receiver<OperationUpdate>,
+    previous_selection: Option<(PathBuf, DirectorySelection)>,
     trash_paths: HashSet<PathBuf>,
     pending_trash: Vec<PathBuf>,
     completed_offset: usize,
@@ -393,6 +395,8 @@ struct FileManager {
     bookmarks: bookmarks::Bookmarks,
     new_folder: Option<NameDialog>,
     confirm_empty_trash: bool,
+    pending_delete: Vec<PathBuf>,
+    trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -510,6 +514,8 @@ impl FileManager {
             bookmarks,
             new_folder: None,
             confirm_empty_trash: false,
+            pending_delete: Vec::new(),
+            trash_focus: Some(false),
             compression_job: None,
             message: config_error.or(bookmark_error),
         };
@@ -1304,6 +1310,7 @@ impl FileManager {
                 }
                 Ok(OperationUpdate::Finished(history, outcome)) => {
                     job.outcome.changed |= outcome.changed;
+                    job.outcome.pending_delete.extend(outcome.pending_delete);
                     job.outcome.renames.extend(outcome.renames);
                     job.outcome.copied.extend(outcome.copied);
                     job.outcome.selected = outcome.selected;
@@ -1326,23 +1333,35 @@ impl FileManager {
                         );
                         continue;
                     }
-                    let outcome = std::mem::take(&mut job.outcome);
+                    let mut outcome = std::mem::take(&mut job.outcome);
+                    self.pending_delete.append(&mut outcome.pending_delete);
+                    let previous_selection = job.previous_selection.take();
                     let preserve_selection = job.preserve_selection;
                     let trashed = !job.trash_paths.is_empty();
                     let restore = trashed && !outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
-                    if trashed
-                        && outcome.error.is_none()
-                        && (files::is_trash(&self.current) || self.current.is_dir())
-                    {
-                        self.message = None;
-                        self.refresh_disk(context);
-                    } else {
-                        if restore {
-                            self.refresh(context);
+                    if restore {
+                        self.refresh(context);
+                    }
+                    self.complete_operation(outcome, preserve_selection, context);
+                    if let Some((directory, mut state)) = previous_selection {
+                        if directory == self.current && !self.pending_delete.is_empty() {
+                            state
+                                .paths
+                                .retain(|path| self.pending_delete.contains(path));
+                            let selected = state
+                                .selected
+                                .filter(|path| state.paths.contains(path))
+                                .or_else(|| state.paths.iter().min().cloned());
+                            if selected.is_some() {
+                                self.select(selected, context);
+                                self.selection = state.paths;
+                                self.selection_anchor = state.anchor;
+                                self.last_selected = state.last_selected;
+                                self.visual_line = state.visual_line;
+                            }
                         }
-                        self.complete_operation(outcome, preserve_selection, context);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -2104,6 +2123,8 @@ impl FileManager {
         }
         if self.search.is_some()
             || self.new_folder.is_some()
+            || self.confirm_empty_trash
+            || !self.pending_delete.is_empty()
             || self.text_input_focused(context)
             || items.is_empty()
         {
@@ -3000,6 +3021,7 @@ impl FileManager {
         if self.sidebar_focused
             && self.new_folder.is_none()
             && !self.confirm_empty_trash
+            && self.pending_delete.is_empty()
             && !self.text_input_focused(context)
         {
             let mut cursor = self
@@ -4646,61 +4668,6 @@ impl FileManager {
         }
     }
 
-    fn hide_pending_trash(&mut self, context: &egui::Context) {
-        let Some(job) = &self.operation_job else {
-            return;
-        };
-        if job.trash_paths.is_empty() {
-            return;
-        }
-        let hidden = |path: &Path| path.ancestors().any(|root| job.trash_paths.contains(root));
-        let nearby = self
-            .selected
-            .as_ref()
-            .filter(|path| hidden(path))
-            .and_then(|selected| {
-                let index = self
-                    .visible_paths
-                    .iter()
-                    .position(|path| path == selected)?;
-                self.visible_paths
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, path)| !hidden(path))
-                    .min_by_key(|(position, _)| (position.abs_diff(index), *position < index))
-                    .map(|(_, path)| path.clone())
-            });
-        let mut changed = false;
-        if self.entries.iter().any(|entry| hidden(&entry.path)) {
-            Arc::make_mut(&mut self.entries).retain(|entry| !hidden(&entry.path));
-            changed = true;
-        }
-        self.tree_cache.retain(|path, entries| {
-            if hidden(path) {
-                changed = true;
-                return false;
-            }
-            let count = entries.len();
-            entries.retain(|entry| !hidden(&entry.path));
-            changed |= entries.len() != count;
-            true
-        });
-        self.visible_paths.retain(|path| !hidden(path));
-        if let Some(search) = &mut self.search {
-            if let Some(update) = &mut search.update {
-                update.hits.retain(|hit| !hidden(&hit.path));
-                search.cursor = search.cursor.min(update.hits.len().saturating_sub(1));
-            }
-        }
-        if changed {
-            self.tree_layout = None;
-            self.retain_visible_selection(context);
-            if self.selection.is_empty() {
-                self.select(nearby, context);
-            }
-        }
-    }
-
     fn move_paths(&mut self, paths: &[PathBuf], directory: &Path, context: &egui::Context) {
         if self.operation_job.is_some() || files::is_trash(directory) {
             return;
@@ -4738,7 +4705,6 @@ impl FileManager {
             if self.visual_line {
                 self.select(self.selected.clone(), context);
             }
-            self.hide_pending_trash(context);
             return;
         }
         let label = match &operation {
@@ -4755,6 +4721,8 @@ impl FileManager {
                 }
                 "Moving to trash"
             }
+            FileOperation::Delete(paths) if paths.is_empty() => return,
+            FileOperation::Delete(_) => "Permanently deleting",
             FileOperation::EmptyTrash => "Emptying trash",
             FileOperation::Undo => "Undoing",
             FileOperation::Redo => "Redoing",
@@ -4765,14 +4733,27 @@ impl FileManager {
         };
         let total = match &operation {
             FileOperation::Rename(paths) | FileOperation::Move(paths) => paths.len(),
-            FileOperation::Copy(paths, _) => paths.len(),
+            FileOperation::Copy(paths, _) | FileOperation::Delete(paths) => paths.len(),
             _ => trash_paths.len(),
         };
         let preserve_selection = matches!(operation, FileOperation::Undo | FileOperation::Redo);
+        let previous_selection = matches!(operation, FileOperation::Trash(_)).then(|| {
+            (
+                self.current.clone(),
+                DirectorySelection {
+                    selected: self.selected.clone(),
+                    last_selected: self.last_selected.clone(),
+                    paths: self.selection.clone(),
+                    anchor: self.selection_anchor.clone(),
+                    visual_line: self.visual_line,
+                },
+            )
+        });
         let history = std::mem::take(&mut self.operations);
         let receiver = Self::run_operation(history, operation, context);
         self.operation_job = Some(OperationJob {
             receiver,
+            previous_selection,
             trash_paths,
             pending_trash: Vec::new(),
             completed_offset: 0,
@@ -4783,7 +4764,6 @@ impl FileManager {
             total,
             path: PathBuf::new(),
         });
-        self.hide_pending_trash(context);
     }
 
     fn run_operation(
@@ -4810,6 +4790,7 @@ impl FileManager {
                     history.copy(paths, &directory, &mut progress)
                 }
                 FileOperation::Trash(paths) => history.trash(paths, &mut progress),
+                FileOperation::Delete(paths) => history.delete(paths, &mut progress),
                 FileOperation::EmptyTrash => history.empty_trash(&mut progress),
                 FileOperation::Undo => history.undo(&mut progress),
                 FileOperation::Redo => history.redo(&mut progress),
@@ -5237,33 +5218,133 @@ impl FileManager {
     }
 
     fn empty_trash_window(&mut self, context: &egui::Context) {
-        if !self.confirm_empty_trash {
+        let deleting = !self.pending_delete.is_empty();
+        if !self.confirm_empty_trash && !deleting {
+            self.trash_focus = Some(false);
             return;
         }
-        let response =
-            egui::Modal::new(egui::Id::new("empty-trash-confirmation")).show(context, |ui| {
-                ui.heading("Empty Trash?");
+        let ready = self.operation_job.is_none();
+        let mut focus = self.trash_focus.take();
+        let activate = context.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::CTRL, Key::H)
+                || input.consume_key(egui::Modifiers::NONE, Key::H)
+            {
+                focus = Some(false);
+            }
+            if input.consume_key(egui::Modifiers::CTRL, Key::L)
+                || input.consume_key(egui::Modifiers::NONE, Key::L)
+            {
+                focus = Some(true);
+            }
+            input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                || input.consume_key(egui::Modifiers::CTRL, Key::M)
+        });
+        let mut confirm =
+            ready && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y));
+        let mut cancel = false;
+        let frame = egui::Frame::window(&context.style())
+            .inner_margin(20)
+            .corner_radius(12)
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 4],
+                blur: 16,
+                spread: 0,
+                color: Color32::from_black_alpha(32),
+            });
+        let response = egui::Modal::new(egui::Id::new("empty-trash-confirmation"))
+            .frame(frame)
+            .backdrop_color(Color32::from_black_alpha(64))
+            .show(context, |ui| {
+                ui.set_width((context.screen_rect().width() - 64.0).clamp(160.0, 400.0));
                 ui.label(
-                    "All items in the trash will be permanently deleted. This cannot be undone.",
+                    RichText::new(if deleting { "Delete Permanently?" } else { "Empty Trash?" })
+                        .size(18.0)
+                        .strong(),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        self.confirm_empty_trash = false;
+                ui.add_space(12.0);
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .corner_radius(8)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if deleting {
+                            if self.pending_delete.len() > 1 {
+                                ui.label(
+                                    RichText::new(format!("{} selected items", self.pending_delete.len()))
+                                        .small()
+                                        .color(MUTED),
+                                );
+                                ui.add_space(4.0);
+                            }
+                            for path in self.pending_delete.iter().take(3) {
+                                let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+                                ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
+                                    .on_hover_text(path.display().to_string());
+                            }
+                            if self.pending_delete.len() > 3 {
+                                ui.label(
+                                    RichText::new(format!("and {} more", self.pending_delete.len() - 3))
+                                        .small()
+                                        .color(MUTED),
+                                );
+                            }
+                        } else {
+                            ui.label(RichText::new("All items in the trash").strong());
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(if deleting {
+                        "These items could not be moved to the trash. Folders include their contents. This cannot be undone."
+                    } else {
+                        "All items will be permanently deleted. This cannot be undone."
+                    })
+                    .size(12.0)
+                    .color(MUTED),
+                );
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let active = &mut ui.visuals_mut().widgets.active;
+                    active.weak_bg_fill = Color32::from_rgb(165, 69, 60);
+                    active.fg_stroke.color = Color32::WHITE;
+                    let confirm_button = ui
+                        .add_enabled_ui(ready, |ui| {
+                            ui.add_sized(
+                                [178.0, 34.0],
+                                egui::Button::new(if deleting { "Delete Permanently · Y" } else { "Empty Trash · Y" })
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(6),
+                            )
+                        })
+                        .inner;
+                    let cancel_button = ui.add_sized(
+                        [112.0, 34.0],
+                        egui::Button::new("Cancel · Esc")
+                            .stroke(Stroke::NONE)
+                            .corner_radius(6),
+                    );
+                    if focus == Some(false) {
+                        cancel_button.request_focus();
+                    } else if focus == Some(true) && ready {
+                        confirm_button.request_focus();
                     }
-                    if ui
-                        .add_enabled(
-                            self.operation_job.is_none(),
-                            egui::Button::new("Empty Trash"),
-                        )
-                        .clicked()
-                    {
-                        self.confirm_empty_trash = false;
-                        self.start_operation(FileOperation::EmptyTrash, context);
-                    }
+                    confirm |= confirm_button.clicked()
+                        || (ready && activate && confirm_button.has_focus());
+                    cancel = cancel_button.clicked() || (activate && cancel_button.has_focus());
                 });
             });
-        if response.should_close() {
+        if cancel || response.should_close() {
             self.confirm_empty_trash = false;
+            self.pending_delete.clear();
+        } else if confirm {
+            self.confirm_empty_trash = false;
+            let operation = if deleting {
+                FileOperation::Delete(std::mem::take(&mut self.pending_delete))
+            } else {
+                FileOperation::EmptyTrash
+            };
+            self.start_operation(operation, context);
         }
     }
 
@@ -5330,6 +5411,7 @@ impl FileManager {
                         self.complete_operation(
                             operations::Outcome {
                                 changed: true,
+                                pending_delete: Vec::new(),
                                 renames,
                                 copied: Vec::new(),
                                 selected: Some(path),
@@ -5390,10 +5472,9 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        if !self.confirm_empty_trash {
+        if !self.confirm_empty_trash && self.pending_delete.is_empty() {
             self.shortcuts(context);
         }
-        self.hide_pending_trash(context);
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
