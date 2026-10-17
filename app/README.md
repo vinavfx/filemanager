@@ -72,13 +72,15 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   `!texto` excluye y `|` separa alternativas. Los términos separados por espacios se combinan. No se cargan `FZF_DEFAULT_OPTS` ni
   `FZF_DEFAULT_OPTS_FILE`, para evitar opciones de terminal incompatibles con la integración. El recorrido y la búsqueda se ejecutan en
   segundo plano; los resultados aparecen progresivamente y las consultas anteriores se cancelan. Se muestran los mejores 1000 resultados y
-  el número total de coincidencias. `↑`/`↓` seleccionan; con el buscador activo, `Ctrl+H`/`Ctrl+K`/`Ctrl+P` seleccionan el resultado
-  anterior y `Ctrl+J`/`Ctrl+L`/`Ctrl+N` el siguiente, sin modificar la consulta. Las letras sin `Ctrl` sirven para escribir. En este
-  contexto, `Ctrl+H` no alterna los ocultos y `Ctrl+L` no edita la dirección. `Enter` o doble clic abre; `Esc` o la lupa restaura la
-  dirección. Se respeta `Hidden`, no se recorren enlaces simbólicos y se indican los elementos inaccesibles. La búsqueda muestra archivos
-  individuales, aunque esté activado `Sequences`. `F5` vuelve a recorrer las carpetas. Se reutiliza el índice mientras la búsqueda está
-  abierta; el tiempo total incluye el recorrido del disco, el proceso de fzf y la interfaz, por lo que no se garantiza la misma latencia que
-  fzf sobre una lista ya cargada.
+  el número total de coincidencias. `Location` muestra la ruta absoluta de la carpeta que contiene cada resultado. `↑`/`↓` seleccionan; con
+  el buscador activo, `Ctrl+H`/`Ctrl+K`/`Ctrl+P` seleccionan el resultado anterior y `Ctrl+J`/`Ctrl+L`/`Ctrl+N` el siguiente, sin modificar
+  la consulta. Las letras sin `Ctrl` sirven para escribir. En este contexto, `Ctrl+H` no alterna los ocultos y `Ctrl+L` no edita la
+  dirección. `Enter` sale de la búsqueda y selecciona el resultado centrado en su carpeta, desactivando `Recursive media`; si pertenece a
+  una secuencia, selecciona el grupo. En `Media`, los archivos no multimedia se revelan en `Grid`. El doble clic abre; `Esc` o la lupa
+  restaura la dirección. Se respeta `Hidden`, no se recorren enlaces simbólicos y se indican los elementos inaccesibles. La búsqueda muestra
+  archivos individuales, aunque esté activado `Sequences`. `F5` vuelve a recorrer las carpetas. Se reutiliza el índice mientras la búsqueda
+  está abierta; el tiempo total incluye el recorrido del disco, el proceso de fzf y la interfaz, por lo que no se garantiza la misma
+  latencia que fzf sobre una lista ya cargada.
 - `Ctrl+L` o `Edit` alterna entre la dirección editable y los botones de ruta. Admite rutas relativas y `~`. Mientras escribes, muestra en
   gris la continuación de una carpeta coincidente. `Tab` completa y recorre las coincidencias; `Mayús+Tab` retrocede. Solo sugiere carpetas,
   incluidos enlaces a carpetas; los nombres que empiezan por punto requieren escribir el punto o activar `Hidden`. `Enter` abre la ruta. Al

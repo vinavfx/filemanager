@@ -2188,6 +2188,52 @@ impl FileManager {
         }
     }
 
+    fn reveal_search_result(&mut self, path: PathBuf, context: &egui::Context) {
+        let Some(parent) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let entries = match files::entries(&parent, self.settings.hidden, self.settings.sequences) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.message = Some(format!("Cannot open directory: {error}"));
+                return;
+            }
+        };
+        let selected = entries
+            .iter()
+            .find(|entry| {
+                entry.path == path
+                    || entry
+                        .sequence
+                        .as_ref()
+                        .is_some_and(|frames| frames.contains(&path))
+            })
+            .map(|entry| entry.path.clone());
+        self.search = None;
+        self.sidebar_focused = false;
+        self.settings.recursive_media = false;
+        if self.settings.view == View::Media
+            && !path.is_dir()
+            && !files::image_file(&path)
+            && !files::video_file(&path)
+        {
+            self.settings.view = View::Grid;
+        }
+        self.thumbnails.cancel();
+        if parent != self.current {
+            self.history.truncate(self.position + 1);
+            self.history.push(parent.clone());
+            self.position = self.history.len() - 1;
+        }
+        self.breadcrumb_path = parent.clone();
+        self.load_directory(parent, entries, context);
+        self.select(selected, context);
+        self.scroll_to_selection = true;
+        self.center_selection = true;
+        self.refresh_disk(context);
+        self.save();
+    }
+
     fn address_bar(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         if let Some(query) = &mut self.find_query {
             let response = ui.add_sized(
@@ -2259,7 +2305,7 @@ impl FileManager {
                 }
             }
             if let Some(path) = open {
-                self.open(path, context);
+                self.reveal_search_result(path, context);
             }
         } else if self.editing_path {
             let id = egui::Id::new("path-input");
@@ -3246,13 +3292,8 @@ impl FileManager {
                                     }
                                     let name =
                                         hit.path.file_name().unwrap_or_default().to_string_lossy();
-                                    let parent = Path::new(&hit.label)
-                                        .parent()
-                                        .filter(|path| !path.as_os_str().is_empty());
-                                    let location = parent.map_or_else(
-                                        || "This folder".into(),
-                                        |path| path.to_string_lossy(),
-                                    );
+                                    let location =
+                                        hit.path.parent().unwrap_or(&hit.path).to_string_lossy();
                                     for (text, left, right, color) in [
                                         (name, 40.0, name_width - 16.0, ui.visuals().text_color()),
                                         (location, name_width, rect.width() - 12.0, MUTED),
