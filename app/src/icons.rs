@@ -342,12 +342,24 @@ impl Icons {
         }
     }
 
-    pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {
-        let key = if let Some(extension) = path.extension() {
+    pub fn textures(&self) -> impl Iterator<Item = &egui::TextureHandle> {
+        self.cache.values().filter_map(Option::as_ref)
+    }
+
+    pub fn ready(&self, path: &Path) -> bool {
+        Self::key(path).is_none_or(|key| self.cache.contains_key(&key))
+    }
+
+    fn key(path: &Path) -> Option<String> {
+        Some(if let Some(extension) = path.extension() {
             format!("extension:{}", extension.to_string_lossy().to_lowercase())
         } else {
             format!("name:{}", path.file_name()?.to_string_lossy())
-        };
+        })
+    }
+
+    pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {
+        let key = Self::key(path)?;
         if !self.cache.contains_key(&key)
             && !self.pending.contains(&key)
             && self

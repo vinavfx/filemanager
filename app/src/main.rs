@@ -183,7 +183,16 @@ struct TreeLayout {
     items: Arc<Vec<(Entry, egui::Pos2)>>,
 }
 
+struct DirectoryFrame {
+    graphics: egui::layers::GraphicLayers,
+    _textures: Vec<egui::TextureHandle>,
+}
+
 struct FileManager {
+    directory_frame: Option<DirectoryFrame>,
+    preparing_directory: bool,
+    directory_ready: bool,
+    prepared_view: Vec<(PathBuf, egui::Rect)>,
     settings: Settings,
     config: PathBuf,
     current: PathBuf,
@@ -284,6 +293,10 @@ impl FileManager {
         let current = requested.canonicalize().unwrap_or(requested);
         let current = if current.is_dir() { current } else { desktop };
         let mut app = Self {
+            directory_frame: None,
+            preparing_directory: false,
+            directory_ready: true,
+            prepared_view: Vec::new(),
             address: current.to_string_lossy().into_owned(),
             history: vec![current.clone()],
             operations: operations::History::default(),
@@ -456,6 +469,7 @@ impl FileManager {
     }
 
     fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>) {
+        self.preparing_directory = self.directory_frame.is_some();
         self.find_query = None;
         self.directory_expansions
             .insert(self.current.clone(), std::mem::take(&mut self.expanded));
@@ -475,11 +489,22 @@ impl FileManager {
     }
 
     fn navigate(&mut self, path: PathBuf, context: &egui::Context) {
-        match path.canonicalize().and_then(|path| {
-            files::entries(&path, self.settings.hidden, self.settings.sequences)
-                .map(|entries| (path, entries))
-        }) {
-            Ok((path, entries)) => {
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                self.message = Some(format!("Cannot open directory: {error}"));
+                return;
+            }
+        };
+        if path == self.current {
+            self.address = path.to_string_lossy().into_owned();
+            if self.search.take().is_some() {
+                self.select(None, context);
+            }
+            return;
+        }
+        match files::entries(&path, self.settings.hidden, self.settings.sequences) {
+            Ok(entries) => {
                 self.search = None;
                 self.thumbnails.cancel();
                 self.new_folder = None;
@@ -1103,6 +1128,15 @@ impl FileManager {
             }
         }
         if self.new_folder.is_none() && !self.text_input_focused(context) {
+            for (key, delta) in [(Key::Equals, 0.1), (Key::Minus, -0.1)] {
+                if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key)) {
+                    let zoom = (self.settings.zoom + delta).clamp(0.65, 3.6);
+                    if self.settings.zoom != zoom {
+                        self.settings.zoom = zoom;
+                        self.save();
+                    }
+                }
+            }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::U)) {
                 let outcome = self.operations.undo();
                 self.complete_operation(outcome, context);
@@ -2439,6 +2473,10 @@ impl FileManager {
         if !ui.is_rect_visible(rect) {
             return;
         }
+        self.prepared_view.push((entry.path.clone(), rect));
+        if !entry.directory {
+            self.directory_ready &= self.icons.ready(&entry.path);
+        }
         let texture = if entry.directory {
             None
         } else {
@@ -2479,7 +2517,8 @@ impl FileManager {
         {
             return false;
         }
-        let progress = if video && response.hovered() {
+        self.prepared_view.push((entry.path.clone(), rect));
+        let progress = if video && response.hovered() && !self.preparing_directory {
             response.hover_pos().map(|pointer| {
                 ((pointer.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0)
             })
@@ -2491,7 +2530,9 @@ impl FileManager {
             ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
         });
         let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
-            return false;
+            let ready = self.thumbnails.ready(entry);
+            self.directory_ready &= ready;
+            return self.preparing_directory && !ready;
         };
         let dimensions = texture.size_vec2();
         let image_bounds = if self.settings.view == View::Media {
@@ -2688,6 +2729,10 @@ impl FileManager {
                                     egui::pos2(rect.left() + 20.0, rect.center().y),
                                     Vec2::splat(22.0),
                                 );
+                                self.prepared_view.push((hit.path.clone(), icon_rect));
+                                if !hit.directory {
+                                    self.directory_ready &= self.icons.ready(&hit.path);
+                                }
                                 if hit.directory {
                                     paint_folder(ui, icon_rect);
                                 } else if let Some(texture) = self.icons.get(&hit.path) {
@@ -3615,6 +3660,17 @@ impl FileManager {
 
 impl eframe::App for FileManager {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        let frame_directory = self.current.clone();
+        let previous_view = std::mem::take(&mut self.prepared_view);
+        self.directory_ready = true;
+        if self.preparing_directory {
+            context.input_mut(|input| {
+                input.events.clear();
+                input.pointer = Default::default();
+                input.raw_scroll_delta = Vec2::ZERO;
+                input.smooth_scroll_delta = Vec2::ZERO;
+            });
+        }
         context.input_mut(|input| {
             for event in &mut input.events {
                 if let egui::Event::Key {
@@ -3644,10 +3700,18 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        self.shortcuts(context);
+        if !self.preparing_directory {
+            self.shortcuts(context);
+        }
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
+        if self.directory_frame.is_none() {
+            self.directory_frame = Some(DirectoryFrame {
+                graphics: context.graphics(Clone::clone),
+                _textures: Vec::new(),
+            });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
             .show(context, |ui| {
@@ -3738,6 +3802,27 @@ impl eframe::App for FileManager {
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
         self.new_folder_window(context);
+        if !self.directory_ready
+            || self.current != frame_directory
+            || (self.preparing_directory && self.prepared_view != previous_view)
+        {
+            self.preparing_directory = true;
+            if let Some(frame) = &self.directory_frame {
+                context.graphics_mut(|graphics| graphics.clone_from(&frame.graphics));
+            }
+            context.request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        }
+        self.preparing_directory = false;
+        self.directory_frame = Some(DirectoryFrame {
+            graphics: context.graphics(Clone::clone),
+            _textures: self
+                .icons
+                .textures()
+                .chain(self.thumbnails.textures())
+                .cloned()
+                .collect(),
+        });
         if let Some(path) = egui::DragAndDrop::payload::<PathBuf>(context) {
             context.set_cursor_icon(egui::CursorIcon::Grabbing);
             if let Some(pointer) = context.pointer_hover_pos() {
