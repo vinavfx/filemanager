@@ -1761,7 +1761,7 @@ impl FileManager {
                 self.save();
             }
             if !self.text_input_focused(context)
-                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::S))
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::S))
             {
                 self.settings.sequences = !self.settings.sequences;
                 self.refresh(context);
@@ -5562,7 +5562,7 @@ fn sequences_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
             egui::StrokeKind::Inside,
         );
     }
-    response.on_hover_text("Sequences · Alt+S")
+    response.on_hover_text("Sequences · S")
 }
 
 fn recursive_media_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {

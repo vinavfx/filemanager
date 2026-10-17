@@ -39,7 +39,7 @@ El lanzador descarga dependencias y compila si es necesario; después reutiliza 
 | `t`          | Mostrar árbol                      | Activa `Tree`, con carpetas desplegables y columnas.                                                    |
 | `Ctrl+G`     | Mostrar cuadrícula                 | Activa `Grid`, con iconos de todos los archivos.                                                        |
 | `r`          | Alternar multimedia recursiva      | Muestra imágenes, vídeos y secuencias de la carpeta actual y sus subcarpetas.                           |
-| `Alt+S`      | Agrupar o separar secuencias       | Alterna entre grupos de imágenes numeradas y archivos individuales.                                     |
+| `s`          | Agrupar o separar secuencias       | Alterna entre grupos de imágenes numeradas y archivos individuales.                                     |
 | `Ctrl+H`     | Mostrar u ocultar archivos ocultos | Durante una búsqueda tiene otra función; consulta su tabla.                                             |
 | `F5`         | Actualizar                         | Recarga el contenido, los recuentos y el espacio del disco; en búsqueda vuelve a recorrer las carpetas. |
 | `=` / `-`    | Aumentar / reducir tamaño          | Cambia el tamaño de iconos y miniaturas, no el de la letra.                                             |
