@@ -143,6 +143,7 @@ struct Disk {
 
 struct NameDialog {
     source: Option<PathBuf>,
+    sources: Vec<PathBuf>,
     submit: bool,
     parent: PathBuf,
     name: String,
@@ -1201,6 +1202,7 @@ impl FileManager {
         {
             self.new_folder = Some(NameDialog {
                 source: None,
+                sources: Vec::new(),
                 submit: false,
                 parent: self.current.clone(),
                 name: String::new(),
@@ -3287,11 +3289,9 @@ impl FileManager {
     }
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
-        if self
-            .new_folder
-            .as_ref()
-            .is_some_and(|dialog| dialog.source.as_ref() == Some(&entry.path))
-        {
+        if self.new_folder.as_ref().is_some_and(|dialog| {
+            dialog.source.as_ref() == Some(&entry.path) || dialog.sources.contains(&entry.path)
+        }) {
             return;
         }
         if response.drag_started() && !files::is_trash(&self.current) {
@@ -4866,10 +4866,33 @@ impl FileManager {
         let Some(source) = self.selected.clone() else {
             return;
         };
-        if self.selection.len() > 1 {
-            self.message = Some("Select a single item to rename.".into());
-            return;
-        }
+        let sources = if self.selection.len() > 1 {
+            self.visible_paths
+                .iter()
+                .filter(|path| self.selection.contains(*path))
+                .filter(|path| {
+                    !path
+                        .ancestors()
+                        .skip(1)
+                        .any(|parent| self.selection.contains(parent))
+                })
+                .flat_map(|path| {
+                    self.entries
+                        .iter()
+                        .chain(self.tree_cache.values().flatten())
+                        .find(|entry| &entry.path == path)
+                        .and_then(|entry| entry.sequence.as_ref())
+                        .map_or_else(|| vec![path.clone()], |frames| frames.as_ref().clone())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let source = if sources.is_empty() || sources.contains(&source) {
+            source
+        } else {
+            sources[0].clone()
+        };
         let (Some(parent), Some(name)) = (source.parent(), source.file_name()) else {
             return;
         };
@@ -4877,17 +4900,21 @@ impl FileManager {
             self.message = Some("Cannot edit a name that is not valid UTF-8.".into());
             return;
         };
-        let name = self
-            .entries
-            .iter()
-            .chain(self.tree_cache.values().flatten())
-            .find(|entry| entry.path == source && entry.sequence.is_some())
-            .and_then(|_| files::sequence_rename_name(&source))
-            .unwrap_or_else(|| name.to_owned());
+        let name = if !sources.is_empty() {
+            name.to_owned()
+        } else {
+            self.entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .find(|entry| entry.path == source && entry.sequence.is_some())
+                .and_then(|_| files::sequence_rename_name(&source))
+                .unwrap_or_else(|| name.to_owned())
+        };
         self.new_folder = Some(NameDialog {
             parent: parent.to_path_buf(),
             name,
             source: Some(source),
+            sources,
             submit: false,
             focus: true,
             error: None,
@@ -4901,14 +4928,28 @@ impl FileManager {
         entry: &Entry,
         context: &egui::Context,
     ) -> bool {
-        let Some(dialog) = self
-            .new_folder
-            .as_mut()
-            .filter(|dialog| dialog.source.as_ref() == Some(&entry.path))
-        else {
+        let Some(dialog) = self.new_folder.as_mut() else {
             return false;
         };
+        let active = dialog.source.as_ref() == Some(&entry.path);
+        if !active && !dialog.sources.contains(&entry.path) {
+            return false;
+        }
         let id = ui.make_persistent_id(("rename-entry", &entry.path));
+        if !active {
+            let mut preview = dialog.name.clone();
+            ui.put(
+                rect,
+                egui::TextEdit::singleline(&mut preview)
+                    .id(id)
+                    .interactive(false)
+                    .font(egui::FontId::proportional(14.0))
+                    .vertical_align(egui::Align::Center)
+                    .min_size(rect.size())
+                    .margin(egui::Margin::symmetric(8, 0)),
+            );
+            return true;
+        }
         let response = ui.put(
             rect,
             egui::TextEdit::singleline(&mut dialog.name)
@@ -4938,6 +4979,9 @@ impl FileManager {
                 state.store(context, id);
             }
             dialog.focus = false;
+        }
+        if response.changed() {
+            context.request_repaint();
         }
         dialog.submit = (response.has_focus() || response.lost_focus())
             && ui.input(|input| input.key_pressed(Key::Enter));
@@ -5029,8 +5073,13 @@ impl FileManager {
                         .find(|entry| &entry.path == source)
                         .and_then(|entry| entry.sequence.clone())
                 });
-                if let Some(frames) = sequence {
-                    match files::sequence_rename_paths(&frames, &folder.name) {
+                let rename_paths = if !folder.sources.is_empty() {
+                    Some(files::batch_rename_paths(&folder.sources, &folder.name))
+                } else {
+                    sequence.map(|frames| files::sequence_rename_paths(&frames, &folder.name))
+                };
+                if let Some(result) = rename_paths {
+                    match result {
                         Ok(paths) => {
                             if self.message == folder.error {
                                 self.message = None;

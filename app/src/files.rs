@@ -665,6 +665,51 @@ pub fn create_directory(parent: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+fn batch_rename_name(name: &str, index: usize, directory: bool) -> std::ffi::OsString {
+    let path = Path::new(name);
+    let stem = if directory {
+        OsStr::new(name)
+    } else {
+        path.file_stem().unwrap_or_else(|| OsStr::new(name))
+    };
+    let mut target = stem.to_os_string();
+    target.push(format!("_{}", index + 1));
+    if !directory {
+        if let Some(extension) = path.extension() {
+            target.push(".");
+            target.push(extension);
+        }
+    }
+    target
+}
+
+pub fn batch_rename_paths(sources: &[PathBuf], name: &str) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut renames = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let parent = source
+            .parent()
+            .ok_or_else(|| io::Error::other("Invalid source directory."))?;
+        entry_path(parent, name)?;
+        let target_name = batch_rename_name(name, index, fs::symlink_metadata(source)?.is_dir());
+        let target = parent.join(target_name);
+        if source == &target {
+            continue;
+        }
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("An item named {} already exists.", target.display()),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        renames.push((source.clone(), target));
+    }
+    Ok(renames)
+}
+
 pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
     let parent = source.parent().ok_or_else(|| {
         io::Error::new(
