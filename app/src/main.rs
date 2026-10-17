@@ -2625,12 +2625,6 @@ impl FileManager {
         let frame = progress.map_or(poster, |progress| {
             ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
         });
-        let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
-            let ready = self.thumbnails.ready(entry);
-            self.directory_ready &= ready;
-            return self.preparing_directory && !ready;
-        };
-        let dimensions = texture.size_vec2();
         let image_bounds = if self.settings.view == View::Media {
             rect.shrink(
                 (self.settings.media_margin as f32).min(rect.width().min(rect.height()) / 4.0),
@@ -2638,6 +2632,11 @@ impl FileManager {
         } else {
             rect
         };
+        let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
+            paint_thumbnail_placeholder(ui, image_bounds);
+            return true;
+        };
+        let dimensions = texture.size_vec2();
         let scale = (image_bounds.width() / dimensions.x).min(image_bounds.height() / dimensions.y);
         let image_rect = egui::Rect::from_center_size(image_bounds.center(), dimensions * scale);
         let uv_size = image_rect.size() / (dimensions * scale);
@@ -4067,6 +4066,47 @@ fn paint_name(ui: &egui::Ui, name: &str, center: egui::Pos2, width: f32, size: f
     let position = egui::pos2(center.x, center.y - galley.size().y / 2.0);
     ui.painter()
         .galley(position, galley, ui.visuals().text_color());
+}
+
+fn paint_thumbnail_placeholder(ui: &egui::Ui, rect: egui::Rect) {
+    let (background, border, foreground) = if ui.visuals().dark_mode {
+        (
+            Color32::from_gray(44),
+            Color32::from_gray(54),
+            Color32::from_gray(116),
+        )
+    } else {
+        (
+            Color32::from_gray(232),
+            Color32::from_gray(220),
+            Color32::from_gray(156),
+        )
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, background);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    let shortest = rect.width().min(rect.height());
+    let edge = (shortest * 0.28).clamp(12.0, 44.0).min(shortest * 0.7);
+    let icon = egui::Rect::from_center_size(rect.center(), Vec2::new(edge, edge * 0.8));
+    let stroke = Stroke::new((edge / 24.0).clamp(1.0, 1.8), foreground);
+    let point = |x, y| icon.min + icon.size() * Vec2::new(x, y);
+    painter.rect_stroke(icon, 3.0, stroke, egui::StrokeKind::Inside);
+    painter.circle_filled(point(0.7, 0.3), edge * 0.065, foreground);
+    painter.add(egui::Shape::line(
+        vec![
+            point(0.12, 0.78),
+            point(0.36, 0.44),
+            point(0.55, 0.68),
+            point(0.68, 0.53),
+            point(0.88, 0.78),
+        ],
+        stroke,
+    ));
 }
 
 fn paint_folder(ui: &egui::Ui, rect: egui::Rect) {

@@ -469,12 +469,6 @@ impl Thumbnails {
             .filter_map(|texture| texture.as_ref().ok())
     }
 
-    pub fn ready(&self, entry: &crate::files::Entry) -> bool {
-        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
-        let (path, frame) = entry.thumbnail(poster);
-        self.cache.contains_key(&(path.to_path_buf(), frame))
-    }
-
     pub fn displayed_frame(&self, entry: &crate::files::Entry, frame: usize) -> Option<usize> {
         let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
         [frame, poster].into_iter().find(|frame| {
