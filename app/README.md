@@ -26,10 +26,10 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
 - `Ctrl+A` selecciona todos los elementos de la vista actual; en `Tree` incluye las carpetas desplegadas, no el contenido de las cerradas.
   En los campos de texto conserva la selección de texto habitual.
 - `Ctrl+V` activa Visual Line desde el icono actual. `h/j/k/l` o las flechas amplían o reducen el rango seleccionado, también en `Tree`;
-  `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera. `Esc` o `Ctrl+V` salen
-  del modo y dejan seleccionado solo el primer icono del rango, de arriba hacia abajo. La barra de estado indica `VISUAL LINE`; fuera de
-  este modo, `d` conserva su función de añadir marcadores. Fuera de Visual Line, `gg` y `Mayús+G` solo mueven el cursor al principio o al
-  final, sin ampliar la selección.
+  `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera sin confirmación. `Esc`
+  o `Ctrl+V` salen del modo y dejan seleccionado solo el primer icono del rango, de arriba hacia abajo. La barra de estado indica
+  `VISUAL LINE`. Fuera de Visual Line, `dd` pide confirmación antes de enviar la selección a la papelera; una sola `d` no hace nada. `gg` y
+  `Mayús+G` solo mueven el cursor al principio o al final, sin ampliar la selección.
 - `yy` copia la selección a un registro interno. En Visual Line basta `y`: copia, sale del modo y deja seleccionado el primer icono del
   rango. Una sola `y` fuera de Visual no copia; otra tecla, un clic o perder el foco cancela la secuencia pendiente. `p` pega después del
   icono seleccionado; en `Tree`, una carpeta cerrada recibe las copias debajo, como elementos hermanos, y una abierta las recibe dentro,
@@ -49,7 +49,7 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
 - Las carpetas con contenido muestran dos hojas dentro del icono; las vacías mantienen su aspecto anterior. El indicador utiliza el recuento
   existente, incluidos los archivos ocultos, y se actualiza con `F5`.
 - `Light`/`Dark`, en la barra superior, alterna entre los temas claro y oscuro; la elección se conserva al reiniciar.
-- Arrastra una carpeta desde `Grid` o `Tree` a la barra de marcadores, o selecciónala y pulsa `D` o `Ctrl+D`.
+- Añade marcadores con el botón `+`, desde el menú contextual o arrastrando una carpeta desde `Grid` o `Tree` a la barra de marcadores.
 - Los accesos a la carpeta personal y sus carpetas principales aparecen arriba, con iconos propios y rutas XDG. Clic derecho permite
   quitarlos sin borrar carpetas; el menú `...` restaura los accesos predeterminados.
 - `Tree` muestra carpetas expandibles, filas con fondos alternos y las columnas `Name`, `Size` y `Date Modified`. En carpetas, `Size` indica

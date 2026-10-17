@@ -316,6 +316,7 @@ struct FileManager {
     pending_g: bool,
     pending_z: bool,
     pending_y: bool,
+    pending_d: bool,
     sidebar_focused: bool,
     pending_window_command: bool,
     sidebar_cursor: Option<usize>,
@@ -339,6 +340,7 @@ struct FileManager {
     bookmarks: bookmarks::Bookmarks,
     new_folder: Option<NameDialog>,
     confirm_empty_trash: bool,
+    confirm_trash: Option<Vec<PathBuf>>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -434,6 +436,7 @@ impl FileManager {
             pending_g: false,
             pending_z: false,
             pending_y: false,
+            pending_d: false,
             sidebar_focused: false,
             pending_window_command: false,
             sidebar_cursor: None,
@@ -456,6 +459,7 @@ impl FileManager {
             bookmarks,
             new_folder: None,
             confirm_empty_trash: false,
+            confirm_trash: None,
             compression_job: None,
             message: config_error.or(bookmark_error),
         };
@@ -868,6 +872,7 @@ impl FileManager {
         self.pending_g = false;
         self.pending_z = false;
         self.pending_y = false;
+        self.pending_d = false;
         self.center_selection = false;
         self.size_job = None;
         self.selection_size = None;
@@ -1526,6 +1531,7 @@ impl FileManager {
             self.pending_g = false;
             self.pending_z = false;
             self.pending_y = false;
+            self.pending_d = false;
             self.editing_path = false;
             if sidebar {
                 self.scroll_to_bookmark = true;
@@ -1551,6 +1557,7 @@ impl FileManager {
             self.pending_g = false;
             self.pending_z = false;
             self.pending_y = false;
+            self.pending_d = false;
             return;
         }
         let mut directory_steps = Vec::new();
@@ -1564,6 +1571,7 @@ impl FileManager {
                     self.pending_g = false;
                     self.pending_z = false;
                     self.pending_y = false;
+                    self.pending_d = false;
                 }
                 let egui::Event::Key {
                     key,
@@ -1577,10 +1585,23 @@ impl FileManager {
                     return true;
                 };
                 if *repeat {
-                    return !matches!(key, Key::G | Key::Z | Key::Y);
+                    return !(matches!(key, Key::G | Key::Z | Key::Y)
+                        || *key == Key::D && modifiers.matches_exact(egui::Modifiers::NONE));
                 }
                 let pending_y = std::mem::take(&mut self.pending_y);
                 let pending_z = std::mem::take(&mut self.pending_z);
+                let pending_d = std::mem::take(&mut self.pending_d);
+                if *key == Key::D
+                    && modifiers.matches_exact(egui::Modifiers::NONE)
+                    && !self.sidebar_focused
+                {
+                    self.pending_g = false;
+                    if self.visual_line || pending_d {
+                        return true;
+                    }
+                    self.pending_d = true;
+                    return false;
+                }
                 if *key == Key::Y
                     && modifiers.matches_exact(egui::Modifiers::NONE)
                     && !self.sidebar_focused
@@ -1878,14 +1899,28 @@ impl FileManager {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y)) {
             self.yank(context);
         }
+        if self.settings.view == View::Tree
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::P))
+        {
+            self.motion_count = 0;
+            self.pending_g = false;
+            if let Some(parent) = self.selected.as_ref().and_then(|path| path.parent()) {
+                if self.visible_paths.iter().any(|path| path == parent) {
+                    self.select_entry(parent.to_path_buf(), context);
+                    self.scroll_to_selection = true;
+                }
+            }
+            return;
+        }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::P)) {
             self.paste(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
             if self.visual_line {
                 self.trash_selection(context);
-            } else {
-                self.bookmark();
+            } else if !files::is_trash(&self.current) && !self.selection.is_empty() {
+                self.confirm_trash = Some(self.selected_trash_paths());
+                return;
             }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Delete)) {
@@ -2011,6 +2046,7 @@ impl FileManager {
         }
         if self.search.is_some()
             || self.new_folder.is_some()
+            || self.confirm_trash.is_some()
             || self.text_input_focused(context)
             || items.is_empty()
         {
@@ -2056,20 +2092,6 @@ impl FileManager {
                 self.select(Some(path), context);
             }
             self.scroll_to_selection = true;
-            return;
-        }
-        if self.settings.view == View::Tree
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::P))
-        {
-            self.motion_count = 0;
-            self.pending_g = false;
-            if let Some(parent) = self.selected.as_ref().and_then(|path| path.parent()) {
-                if let Some((entry, _, _)) = items.iter().find(|(entry, _, _)| entry.path == parent)
-                {
-                    self.select_entry(entry.path.clone(), context);
-                    self.scroll_to_selection = true;
-                }
-            }
             return;
         }
         let page_direction = context.input_mut(|input| {
@@ -2920,6 +2942,7 @@ impl FileManager {
         if self.sidebar_focused
             && self.new_folder.is_none()
             && !self.confirm_empty_trash
+            && self.confirm_trash.is_none()
             && !self.text_input_focused(context)
         {
             let mut cursor = self
@@ -3026,7 +3049,7 @@ impl FileManager {
                                 self.bookmark_row(ui, bookmark, *kind, index, context);
                             }
                             ui.label(
-                                RichText::new("Drag folders here\nor press D to bookmark")
+                                RichText::new("Drag folders here\nto bookmark")
                                     .size(12.0)
                                     .color(MUTED),
                             );
@@ -3279,7 +3302,7 @@ impl FileManager {
                     self.open_terminal(&entry.path);
                     ui.close_menu();
                 }
-                if ui.button("Add bookmark · D").clicked() {
+                if ui.button("Add bookmark").clicked() {
                     self.add_bookmark(entry.path.clone());
                     ui.close_menu();
                 }
@@ -4586,9 +4609,12 @@ impl FileManager {
     }
 
     fn trash_selection(&mut self, context: &egui::Context) {
-        if files::is_trash(&self.current) {
-            return;
+        if !files::is_trash(&self.current) {
+            self.start_operation(FileOperation::Trash(self.selected_trash_paths()), context);
         }
+    }
+
+    fn selected_trash_paths(&self) -> Vec<PathBuf> {
         let sequences: HashMap<_, _> = self
             .entries
             .iter()
@@ -4611,7 +4637,7 @@ impl FileManager {
         paths.sort();
         paths.dedup();
         let selected: HashSet<_> = paths.iter().map(PathBuf::as_path).collect();
-        let roots = paths
+        paths
             .iter()
             .filter(|path| {
                 !path
@@ -4620,8 +4646,7 @@ impl FileManager {
                     .any(|parent| selected.contains(parent))
             })
             .cloned()
-            .collect();
-        self.start_operation(FileOperation::Trash(roots), context);
+            .collect()
     }
 
     fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
@@ -4804,6 +4829,41 @@ impl FileManager {
         true
     }
 
+    fn trash_confirmation_window(&mut self, context: &egui::Context) {
+        let Some(paths) = &self.confirm_trash else {
+            return;
+        };
+        let message = if let [path] = paths.as_slice() {
+            format!("Move {} to the trash?", path.display())
+        } else {
+            format!("Move {} selected items to the trash?", paths.len())
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        let response = egui::Modal::new(egui::Id::new("trash-confirmation")).show(context, |ui| {
+            ui.set_max_width(440.0);
+            ui.heading("Move to Trash?");
+            ui.label(message);
+            ui.label("Folders include all their contents. You can undo this with u.");
+            ui.horizontal(|ui| {
+                cancel = ui.button("Cancel").clicked();
+                confirm = ui
+                    .add_enabled(
+                        self.operation_job.is_none(),
+                        egui::Button::new("Move to Trash"),
+                    )
+                    .clicked();
+            });
+        });
+        if confirm {
+            if let Some(paths) = self.confirm_trash.take() {
+                self.start_operation(FileOperation::Trash(paths), context);
+            }
+        } else if cancel || response.should_close() {
+            self.confirm_trash = None;
+        }
+    }
+
     fn empty_trash_window(&mut self, context: &egui::Context) {
         if !self.confirm_empty_trash {
             return;
@@ -4969,7 +5029,7 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        if !self.preparing_directory && !self.confirm_empty_trash {
+        if !self.preparing_directory && !self.confirm_empty_trash && self.confirm_trash.is_none() {
             self.shortcuts(context);
         }
         self.hide_pending_trash(context);
@@ -5095,6 +5155,7 @@ impl eframe::App for FileManager {
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
         self.new_folder_window(context);
+        self.trash_confirmation_window(context);
         self.empty_trash_window(context);
         if self.current != frame_directory
             || ((self.settings.view != View::Media || self.search.is_some())
