@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const THUMBNAIL_EDGE: u32 = 192;
-const THUMBNAIL_VERSION: u32 = 2;
+const THUMBNAIL_VERSION: u32 = 3;
 const MEMORY_CAPACITY: usize = 512;
 pub const VIDEO_FRAMES: usize = 8;
 pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
@@ -141,15 +141,20 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
         limits.max_alloc = Some(256 * 1024 * 1024);
         reader.limits(limits);
         let image = reader.decode()?;
+        let floating_point = matches!(
+            image.color(),
+            image::ColorType::Rgb32F | image::ColorType::Rgba32F
+        );
         let image = if image.width() > edge || image.height() > edge {
-            image.thumbnail(edge, edge)
+            if floating_point {
+                image.resize(edge, edge, image::imageops::FilterType::Triangle)
+            } else {
+                image.thumbnail(edge, edge)
+            }
         } else {
             image
         };
-        let image = if matches!(
-            image.color(),
-            image::ColorType::Rgb32F | image::ColorType::Rgba32F
-        ) {
+        let image = if floating_point {
             let float = image.to_rgba32f();
             image::RgbaImage::from_fn(float.width(), float.height(), |x, y| {
                 let pixel = float.get_pixel(x, y);
