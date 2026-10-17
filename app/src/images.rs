@@ -484,6 +484,12 @@ impl Thumbnails {
         })
     }
 
+    pub fn entry_ready(&self, entry: &crate::files::Entry) -> bool {
+        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
+        let (path, frame) = entry.thumbnail(poster);
+        self.cache.contains_key(&(path.to_path_buf(), frame))
+    }
+
     pub fn entry_aspect_ratio(&self, entry: &crate::files::Entry) -> f32 {
         let (path, _) = entry.thumbnail(VIDEO_POSTER);
         self.aspect_ratio(path)

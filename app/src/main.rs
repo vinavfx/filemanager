@@ -455,6 +455,7 @@ impl FileManager {
     }
 
     fn refresh(&mut self, context: &egui::Context) {
+        self.preparing_directory = self.directory_frame.is_some();
         self.media_scan = None;
         self.directory_refresh = None;
         if self.settings.recursive_media && !files::is_trash(&self.current) {
@@ -1033,13 +1034,22 @@ impl FileManager {
                         continue;
                     }
                     let outcome = std::mem::take(&mut job.outcome);
-                    let restore = !job.trash_paths.is_empty() && !outcome.changed;
+                    let trashed = !job.trash_paths.is_empty();
+                    let restore = trashed && !outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
-                    if restore {
-                        self.refresh(context);
+                    if trashed
+                        && outcome.error.is_none()
+                        && (files::is_trash(&self.current) || self.current.is_dir())
+                    {
+                        self.message = None;
+                        self.refresh_disk(context);
+                    } else {
+                        if restore {
+                            self.refresh(context);
+                        }
+                        self.complete_operation(outcome, context);
                     }
-                    self.complete_operation(outcome, context);
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -2987,6 +2997,9 @@ impl FileManager {
             rect
         };
         let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
+            if self.preparing_directory {
+                self.directory_ready &= self.thumbnails.entry_ready(entry);
+            }
             paint_thumbnail_placeholder(ui, image_bounds);
             return true;
         };
@@ -3867,6 +3880,22 @@ impl FileManager {
             return;
         }
         let hidden = |path: &Path| path.ancestors().any(|root| job.trash_paths.contains(root));
+        let nearby = self
+            .selected
+            .as_ref()
+            .filter(|path| hidden(path))
+            .and_then(|selected| {
+                let index = self
+                    .visible_paths
+                    .iter()
+                    .position(|path| path == selected)?;
+                self.visible_paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, path)| !hidden(path))
+                    .min_by_key(|(position, _)| (position.abs_diff(index), *position < index))
+                    .map(|(_, path)| path.clone())
+            });
         let mut changed = false;
         if self.entries.iter().any(|entry| hidden(&entry.path)) {
             Arc::make_mut(&mut self.entries).retain(|entry| !hidden(&entry.path));
@@ -3892,6 +3921,9 @@ impl FileManager {
         if changed {
             self.tree_layout = None;
             self.retain_visible_selection(context);
+            if self.selection.is_empty() {
+                self.select(nearby, context);
+            }
         }
     }
 
@@ -4453,7 +4485,10 @@ impl eframe::App for FileManager {
         self.empty_trash_window(context);
         if !self.directory_ready
             || self.current != frame_directory
-            || (self.preparing_directory && self.prepared_view != previous_view)
+            || (self.preparing_directory
+                && (self.directory_refresh.is_some()
+                    || self.media_scan.is_some()
+                    || self.prepared_view != previous_view))
         {
             self.preparing_directory = true;
             if let Some(frame) = &self.directory_frame {
