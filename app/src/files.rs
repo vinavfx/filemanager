@@ -119,6 +119,7 @@ impl Drop for FolderCounts {
 pub struct MediaEntries {
     pub entries: Vec<Entry>,
     pub unreadable: usize,
+    pub complete: bool,
 }
 
 pub struct MediaScan {
@@ -136,7 +137,9 @@ impl MediaScan {
                 let mut result = MediaEntries {
                     entries: Vec::new(),
                     unreadable: 0,
+                    complete: false,
                 };
+                let mut published = Instant::now();
                 let mut pending = vec![root.clone()];
                 while let Some(path) = pending.pop() {
                     if active.load(Ordering::Relaxed) {
@@ -151,6 +154,9 @@ impl MediaScan {
                         }
                     };
                     for entry in children {
+                        if active.load(Ordering::Relaxed) {
+                            return Ok(result);
+                        }
                         if entry.directory {
                             if !entry.symlink {
                                 pending.push(entry.path);
@@ -162,10 +168,22 @@ impl MediaScan {
                             result.entries.push(entry);
                         }
                     }
+                    if !result.entries.is_empty()
+                        && published.elapsed() >= std::time::Duration::from_millis(100)
+                    {
+                        let update = MediaEntries {
+                            entries: std::mem::take(&mut result.entries),
+                            unreadable: result.unreadable,
+                            complete: false,
+                        };
+                        if sender.send(Ok(update)).is_err() {
+                            return Ok(result);
+                        }
+                        context.request_repaint();
+                        published = Instant::now();
+                    }
                 }
-                result
-                    .entries
-                    .sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.path.clone()));
+                result.complete = true;
                 Ok(result)
             })();
             if !active.load(Ordering::Relaxed) {

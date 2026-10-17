@@ -674,7 +674,12 @@ impl FileManager {
             }
             return;
         }
-        match files::entries(&path, self.settings.hidden, self.settings.sequences) {
+        let entries = if self.settings.recursive_media {
+            std::fs::read_dir(&path).map(|_| Vec::new())
+        } else {
+            files::entries(&path, self.settings.hidden, self.settings.sequences)
+        };
+        match entries {
             Ok(entries) => {
                 self.search = None;
                 self.thumbnails.cancel();
@@ -717,7 +722,12 @@ impl FileManager {
                 self.load_directory(path, Vec::new(), context);
                 return;
             }
-            match files::entries(&path, self.settings.hidden, self.settings.sequences) {
+            let entries = if self.settings.recursive_media {
+                std::fs::read_dir(&path).map(|_| Vec::new())
+            } else {
+                files::entries(&path, self.settings.hidden, self.settings.sequences)
+            };
+            match entries {
                 Ok(entries) => {
                     self.search = None;
                     self.thumbnails.cancel();
@@ -1121,24 +1131,33 @@ impl FileManager {
             .as_ref()
             .and_then(|scan| scan.receiver.try_recv().ok())
         {
-            self.media_scan = None;
             match result {
                 Ok(result) => {
-                    self.entries = Arc::new(result.entries);
+                    let entries = Arc::make_mut(&mut self.entries);
+                    entries.extend(result.entries);
+                    entries.sort_by_cached_key(|entry| {
+                        (entry.name.to_lowercase(), entry.path.clone())
+                    });
                     self.tree_layout = None;
-                    if self.directory_selections.contains_key(&self.current) {
-                        self.restore_directory_selection(context);
-                    } else {
-                        self.retain_visible_selection(context);
+                    if result.complete {
+                        self.media_scan = None;
+                        if self.directory_selections.contains_key(&self.current) {
+                            self.restore_directory_selection(context);
+                        } else {
+                            self.retain_visible_selection(context);
+                        }
                     }
-                    if result.unreadable > 0 {
+                    if result.complete && result.unreadable > 0 {
                         self.message = Some(format!(
                             "Recursive media: {} unreadable directories skipped.",
                             result.unreadable
                         ));
                     }
                 }
-                Err(error) => self.message = Some(format!("Cannot scan media: {error}")),
+                Err(error) => {
+                    self.media_scan = None;
+                    self.message = Some(format!("Cannot scan media: {error}"));
+                }
             }
         }
         if let Some(search) = &mut self.search {
@@ -4491,9 +4510,7 @@ impl eframe::App for FileManager {
         if !self.directory_ready
             || self.current != frame_directory
             || (self.preparing_directory
-                && (self.directory_refresh.is_some()
-                    || self.media_scan.is_some()
-                    || self.prepared_view != previous_view))
+                && (self.directory_refresh.is_some() || self.prepared_view != previous_view))
         {
             self.preparing_directory = true;
             if let Some(frame) = &self.directory_frame {
