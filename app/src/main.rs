@@ -3548,7 +3548,7 @@ impl FileManager {
             self.media_layout.aspects.insert(entry.path.clone(), aspect);
             self.media_layout.paths.push(entry.path.clone());
         }
-        let mut aspects: Vec<_> = self
+        let aspects: Vec<_> = self
             .media_layout
             .paths
             .iter()
@@ -3574,22 +3574,17 @@ impl FileManager {
             .rows
             .last()
             .map_or(0, |(range, _)| range.end);
-        let mut entries: Vec<_> = self.media_layout.paths[..count]
+        let entries: Vec<_> = self.media_layout.paths[..count]
             .iter()
             .map(|path| available[path])
             .collect();
-        let published: HashSet<_> = self.media_layout.paths[..count].iter().collect();
-        entries.extend(source.iter().filter(|entry| {
-            available.contains_key(&entry.path) && !published.contains(&entry.path)
-        }));
-        aspects.truncate(count);
-        aspects.resize(entries.len(), 1.0);
-        let mut rows = self.media_layout.rows.clone();
-        rows.extend(
-            layout::justified_rows(&aspects[count..], width, target)
-                .into_iter()
-                .map(|(range, height)| (range.start + count..range.end + count, height)),
-        );
+        if entries.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.spinner();
+            });
+            return;
+        }
+        let rows = self.media_layout.rows.clone();
         let total_height: f32 = rows.iter().map(|(_, height)| height).sum();
         let mut items = Vec::with_capacity(entries.len());
         let mut y = 0.0;
@@ -3664,9 +3659,7 @@ impl FileManager {
                             let highlighted =
                                 !self.sidebar_focused && self.selection.contains(&entry.path);
                             ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
-                            if index >= count && !entry.directory {
-                                paint_thumbnail_placeholder(ui, rect);
-                            } else if !self.paint_thumbnail(ui, rect, entry, &response) {
+                            if !self.paint_thumbnail(ui, rect, entry, &response) {
                                 let edge = (64.0 * self.settings.zoom)
                                     .min(rect.width().min(rect.height()) * 0.5);
                                 self.paint_entry_icon(
@@ -3715,6 +3708,19 @@ impl FileManager {
                             );
                             self.rename_field(ui, name_rect, entry, context);
                             self.entry_response(response, entry, context);
+                            if !complete && index + 1 == count {
+                                let size = 24.0_f32.min(rect.width().min(rect.height()) * 0.5);
+                                let center = rect.right_bottom() - Vec2::splat(size * 0.75);
+                                ui.painter().circle_filled(
+                                    center,
+                                    size * 0.65,
+                                    ui.visuals().panel_fill,
+                                );
+                                ui.put(
+                                    egui::Rect::from_center_size(center, Vec2::splat(size)),
+                                    egui::Spinner::new().size(size),
+                                );
+                            }
                         }
                         y += height;
                     }
