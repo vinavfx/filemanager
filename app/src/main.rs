@@ -893,7 +893,7 @@ impl FileManager {
     }
 
     fn pane_shortcuts(&mut self, context: &egui::Context) {
-        if self.new_folder.is_some() {
+        if self.new_folder.is_some() || self.editing_path {
             self.pending_window_command = false;
             return;
         }
@@ -1096,7 +1096,8 @@ impl FileManager {
                 (Key::G, View::Grid),
                 (Key::E, View::Media),
             ] {
-                if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key))
+                if !(self.editing_path && key == Key::E)
+                    && context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key))
                     && self.settings.view != view
                 {
                     self.settings.view = view;
@@ -1915,6 +1916,45 @@ impl FileManager {
             }
             let mut completed = false;
             if context.memory(|memory| memory.has_focus(id)) {
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::W)) {
+                    let trimmed = self.address.trim_end_matches('/');
+                    let end = trimmed
+                        .rfind('/')
+                        .map_or(0, |index| if index == 0 { 1 } else { index });
+                    let end = if trimmed.is_empty() && self.address.starts_with('/') {
+                        1
+                    } else {
+                        end
+                    };
+                    self.address.truncate(end);
+                    self.path_completion =
+                        PathCompletion::new(&self.address, &self.current, self.settings.hidden);
+                    completed = true;
+                }
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::E)) {
+                    let at_end = egui::TextEdit::load_state(context, id)
+                        .and_then(|state| state.cursor.char_range())
+                        .is_some_and(|range| {
+                            range.primary.index == range.secondary.index
+                                && range.primary.index == self.address.chars().count()
+                        });
+                    if at_end {
+                        if let Some(candidate) = self
+                            .path_completion
+                            .candidates
+                            .first()
+                            .filter(|candidate| candidate.starts_with(&self.address))
+                        {
+                            self.address = candidate.clone();
+                            self.path_completion = PathCompletion::new(
+                                &self.address,
+                                &self.current,
+                                self.settings.hidden,
+                            );
+                            completed = true;
+                        }
+                    }
+                }
                 let backward =
                     ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, Key::Tab));
                 let forward =
