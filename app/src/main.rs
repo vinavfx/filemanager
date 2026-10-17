@@ -3555,13 +3555,24 @@ impl FileManager {
             .map(|path| self.media_layout.aspects[path])
             .collect();
         let complete = self.media_scan.is_none() && aspects.len() == available.len();
+        if !complete {
+            context.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         let start = self
             .media_layout
             .rows
             .last()
             .map_or(0, |(range, _)| range.end);
         let mut new_rows = layout::justified_rows(&aspects[start..], width, target);
-        if !complete {
+        if !complete
+            && new_rows.last().is_some_and(|(range, _)| {
+                aspects[start + range.start..start + range.end]
+                    .iter()
+                    .sum::<f32>()
+                    * target
+                    < width
+            })
+        {
             new_rows.pop();
         }
         self.media_layout.rows.extend(
@@ -4488,6 +4499,10 @@ impl eframe::App for FileManager {
         let frame_directory = self.current.clone();
         let previous_view = std::mem::take(&mut self.prepared_view);
         self.directory_ready = true;
+        if self.settings.view == View::Media && self.search.is_none() {
+            self.preparing_directory = false;
+            self.wait_for_thumbnails = false;
+        }
         if self.preparing_directory {
             context.input_mut(|input| {
                 input.events.clear();
@@ -4648,10 +4663,12 @@ impl eframe::App for FileManager {
             });
         self.new_folder_window(context);
         self.empty_trash_window(context);
-        if !self.directory_ready
-            || self.current != frame_directory
-            || (self.preparing_directory
-                && (self.directory_refresh.is_some() || self.prepared_view != previous_view))
+        if self.current != frame_directory
+            || ((self.settings.view != View::Media || self.search.is_some())
+                && (!self.directory_ready
+                    || (self.preparing_directory
+                        && (self.directory_refresh.is_some()
+                            || self.prepared_view != previous_view))))
         {
             self.preparing_directory = true;
             if let Some(frame) = &self.directory_frame {
