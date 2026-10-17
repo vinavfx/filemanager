@@ -3876,12 +3876,54 @@ impl FileManager {
                                     .with_clip_rect(ui.clip_rect().intersect(label))
                                     .galley(position, galley, ui.visuals().text_color());
                             }
+                            if response.hovered() {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    0.0,
+                                    ui.visuals().panel_fill.gamma_multiply(0.18),
+                                );
+                            }
                             if highlighted {
                                 ui.painter().rect_filled(
                                     rect,
                                     0.0,
                                     ui.visuals().selection.stroke.color.gamma_multiply(0.35),
                                 );
+                                let depth = (rect.width().min(rect.height()) * 0.25).min(28.0);
+                                let mut shadow = egui::Mesh::default();
+                                for ring in 0..=24_u8 {
+                                    let progress = f32::from(ring) / 24.0;
+                                    let fade = 1.0 - progress * progress * (3.0 - 2.0 * progress);
+                                    let color =
+                                        Color32::from_black_alpha((20.0 * fade).round() as u8);
+                                    let inner = rect.shrink(depth * progress);
+                                    for corner in [
+                                        inner.left_top(),
+                                        inner.right_top(),
+                                        inner.right_bottom(),
+                                        inner.left_bottom(),
+                                    ] {
+                                        shadow.colored_vertex(corner, color);
+                                    }
+                                    if ring > 0 {
+                                        let outer = u32::from(ring - 1) * 4;
+                                        let inner = outer + 4;
+                                        for corner in 0..4 {
+                                            let next = (corner + 1) % 4;
+                                            shadow.add_triangle(
+                                                outer + corner,
+                                                outer + next,
+                                                inner + corner,
+                                            );
+                                            shadow.add_triangle(
+                                                outer + next,
+                                                inner + next,
+                                                inner + corner,
+                                            );
+                                        }
+                                    }
+                                }
+                                ui.painter().add(egui::Shape::mesh(shadow));
                             }
                             paint_media_badge(ui, rect, entry);
                             let name_rect = egui::Rect::from_min_max(
