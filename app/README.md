@@ -28,20 +28,19 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
 - `Ctrl+V` activa Visual Line desde el icono actual. `h/j/k/l` o las flechas amplían o reducen el rango seleccionado, también en `Tree`;
   `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera sin confirmación. `Esc`
   o `Ctrl+V` salen del modo y dejan seleccionado solo el primer icono del rango, de arriba hacia abajo. La barra de estado indica
-  `VISUAL LINE`. Fuera de Visual Line, `dd` pide confirmación antes de enviar la selección a la papelera: `Y` confirma y `Esc` cancela. En
-  el diálogo, `h` o `Ctrl+H` seleccionan cancelar y `l` o `Ctrl+L` confirmar; `Enter` o `Ctrl+M` activan el botón seleccionado. Cancelar se
-  selecciona por defecto; el botón seleccionado se marca en rojo, sin bordes. Una sola `d` no hace nada. `gg` y `Mayús+G` solo mueven el
-  cursor al principio o al final, sin ampliar la selección.
+  `VISUAL LINE`. Fuera de Visual Line, `dd` envía la selección a la papelera sin confirmación; una sola `d` no hace nada. En ambos modos,
+  `u` permite deshacer el borrado. Si no se puede usar la papelera, se muestra un error sin borrar permanentemente. Vaciar la papelera sí
+  pide confirmación porque es irreversible. `gg` y `Mayús+G` solo mueven el cursor al principio o al final, sin ampliar la selección.
 - `yy` copia la selección a un registro interno. En Visual Line basta `y`: copia, sale del modo y deja seleccionado el primer icono del
   rango. Una sola `y` fuera de Visual no copia; otra tecla, un clic o perder el foco cancela la secuencia pendiente. `p` pega después del
   icono seleccionado; en `Tree`, una carpeta cerrada recibe las copias debajo, como elementos hermanos, y una abierta las recibe dentro,
   antes de sus hijos. Con un hijo seleccionado, pega después de ese hijo. Sin selección, pega al principio de la carpeta actual. Copia
   archivos, carpetas, enlaces simbólicos y todos los fotogramas de las secuencias, sin sobrescribir: añade ` (copy)` y un número si el
-  nombre ya existe. `u` deshace y `Ctrl+R` rehace: conservan la selección y, si desaparece, eligen el icono superior más cercano que siga
-  existiendo; si no hay ninguno arriba, eligen el siguiente. El orden de pegado se conserva al reiniciar; pulsar un encabezado de `Tree`
-  restaura la ordenación de esa carpeta y sus subcarpetas. Las copias reutilizan las miniaturas del original en memoria y disco, sin
-  decodificarlas de nuevo; al modificar un archivo, su miniatura se actualiza independientemente. Estos atajos no interfieren con los campos
-  de texto.
+  nombre ya existe. Al terminar, quedan seleccionadas todas las copias pegadas. `u` deshace y `Ctrl+R` rehace: conservan la selección y, si
+  desaparece, eligen el icono superior más cercano que siga existiendo; si no hay ninguno arriba, eligen el siguiente. El orden de pegado se
+  conserva al reiniciar; pulsar un encabezado de `Tree` restaura la ordenación de esa carpeta y sus subcarpetas. Las copias reutilizan las
+  miniaturas del original en memoria y disco, sin decodificarlas de nuevo; al modificar un archivo, su miniatura se actualiza
+  independientemente. Estos atajos no interfieren con los campos de texto.
 - `n` edita el nombre del elemento seleccionado y `Enter` confirma. Renombrar vincula la caché existente al nuevo nombre y conserva la
   textura en memoria, también al deshacer y rehacer, sin volver a decodificar ni bloquear la interfaz esperando miniaturas.
 - En `Tree`, `Alt+P` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.

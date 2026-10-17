@@ -341,8 +341,6 @@ struct FileManager {
     bookmarks: bookmarks::Bookmarks,
     new_folder: Option<NameDialog>,
     confirm_empty_trash: bool,
-    confirm_trash: Option<Vec<PathBuf>>,
-    trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -461,8 +459,6 @@ impl FileManager {
             bookmarks,
             new_folder: None,
             confirm_empty_trash: false,
-            confirm_trash: None,
-            trash_focus: None,
             compression_job: None,
             message: config_error.or(bookmark_error),
         };
@@ -1920,13 +1916,7 @@ impl FileManager {
             self.paste(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
-            if self.visual_line {
-                self.trash_selection(context);
-            } else if !files::is_trash(&self.current) && !self.selection.is_empty() {
-                self.confirm_trash = Some(self.selected_trash_paths());
-                self.trash_focus = Some(false);
-                return;
-            }
+            self.trash_selection(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Delete)) {
             self.trash_selection(context);
@@ -2051,7 +2041,6 @@ impl FileManager {
         }
         if self.search.is_some()
             || self.new_folder.is_some()
-            || self.confirm_trash.is_some()
             || self.text_input_focused(context)
             || items.is_empty()
         {
@@ -2947,7 +2936,6 @@ impl FileManager {
         if self.sidebar_focused
             && self.new_folder.is_none()
             && !self.confirm_empty_trash
-            && self.confirm_trash.is_none()
             && !self.text_input_focused(context)
         {
             let mut cursor = self
@@ -4758,6 +4746,24 @@ impl FileManager {
                 }
             }
             self.select(selected, context);
+            if !preserve_selection && !outcome.copied.is_empty() {
+                self.selection = outcome
+                    .copied
+                    .iter()
+                    .map(|(_, destination)| destination)
+                    .filter(|path| {
+                        path.parent() == Some(self.current.as_path())
+                            || (self.settings.view == View::Tree
+                                && *path != &self.current
+                                && path.starts_with(&self.current))
+                    })
+                    .cloned()
+                    .collect();
+                if self.selection.len() > 1 {
+                    self.size_job = None;
+                    self.selection_size = None;
+                }
+            }
             self.scroll_to_selection = true;
         }
         if outcome.error.is_some() {
@@ -4854,121 +4860,6 @@ impl FileManager {
             self.new_folder = None;
         }
         true
-    }
-
-    fn trash_confirmation_window(&mut self, context: &egui::Context) {
-        let Some(paths) = &self.confirm_trash else {
-            return;
-        };
-        let ready = self.operation_job.is_none();
-        let mut focus = self.trash_focus.take();
-        let activate = context.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::CTRL, Key::H)
-                || input.consume_key(egui::Modifiers::NONE, Key::H)
-            {
-                focus = Some(false);
-            }
-            if input.consume_key(egui::Modifiers::CTRL, Key::L)
-                || input.consume_key(egui::Modifiers::NONE, Key::L)
-            {
-                focus = Some(true);
-            }
-            input.consume_key(egui::Modifiers::NONE, Key::Enter)
-                || input.consume_key(egui::Modifiers::CTRL, Key::M)
-        });
-        let mut confirm =
-            ready && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y));
-        let mut cancel = false;
-        let frame = egui::Frame::window(&context.style())
-            .inner_margin(20)
-            .corner_radius(12)
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 4],
-                blur: 16,
-                spread: 0,
-                color: Color32::from_black_alpha(32),
-            });
-        let response = egui::Modal::new(egui::Id::new("trash-confirmation"))
-            .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(64))
-            .show(context, |ui| {
-                ui.set_width((context.screen_rect().width() - 64.0).clamp(160.0, 400.0));
-                ui.label(RichText::new("Move to Trash?").size(18.0).strong());
-                ui.add_space(12.0);
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .corner_radius(8)
-                    .inner_margin(12)
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        if paths.len() > 1 {
-                            ui.label(
-                                RichText::new(format!("{} selected items", paths.len()))
-                                    .small()
-                                    .color(MUTED),
-                            );
-                            ui.add_space(4.0);
-                        }
-                        for path in paths.iter().take(3) {
-                            let name = path
-                                .file_name()
-                                .unwrap_or(path.as_os_str())
-                                .to_string_lossy();
-                            ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
-                                .on_hover_text(path.display().to_string());
-                        }
-                        if paths.len() > 3 {
-                            ui.label(
-                                RichText::new(format!("and {} more", paths.len() - 3))
-                                    .small()
-                                    .color(MUTED),
-                            );
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("Folders include their contents. Undo with u.")
-                        .size(12.0)
-                        .color(MUTED),
-                );
-                ui.add_space(16.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let active = &mut ui.visuals_mut().widgets.active;
-                    active.weak_bg_fill = Color32::from_rgb(165, 69, 60);
-                    active.fg_stroke.color = Color32::WHITE;
-                    let confirm_button = ui
-                        .add_enabled_ui(ready, |ui| {
-                            ui.add_sized(
-                                [158.0, 34.0],
-                                egui::Button::new("Move to Trash · Y")
-                                    .stroke(Stroke::NONE)
-                                    .corner_radius(6),
-                            )
-                        })
-                        .inner;
-                    let cancel_button = ui.add_sized(
-                        [112.0, 34.0],
-                        egui::Button::new("Cancel · Esc")
-                            .stroke(Stroke::NONE)
-                            .corner_radius(6),
-                    );
-                    if focus == Some(false) {
-                        cancel_button.request_focus();
-                    } else if focus == Some(true) && ready {
-                        confirm_button.request_focus();
-                    }
-                    confirm |= confirm_button.clicked()
-                        || (ready && activate && confirm_button.has_focus());
-                    cancel = cancel_button.clicked() || (activate && cancel_button.has_focus());
-                });
-            });
-        if cancel || response.should_close() {
-            self.confirm_trash = None;
-        } else if confirm {
-            if let Some(paths) = self.confirm_trash.take() {
-                self.start_operation(FileOperation::Trash(paths), context);
-            }
-        }
     }
 
     fn empty_trash_window(&mut self, context: &egui::Context) {
@@ -5137,7 +5028,7 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        if !self.preparing_directory && !self.confirm_empty_trash && self.confirm_trash.is_none() {
+        if !self.preparing_directory && !self.confirm_empty_trash {
             self.shortcuts(context);
         }
         self.hide_pending_trash(context);
@@ -5263,7 +5154,6 @@ impl eframe::App for FileManager {
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
         self.new_folder_window(context);
-        self.trash_confirmation_window(context);
         self.empty_trash_window(context);
         if self.current != frame_directory
             || ((self.settings.view != View::Media || self.search.is_some())
