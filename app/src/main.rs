@@ -3,6 +3,7 @@ mod files;
 mod icons;
 mod images;
 mod layout;
+mod mounts;
 mod operations;
 mod places;
 mod search;
@@ -343,6 +344,7 @@ struct FileManager {
     breadcrumb_path: PathBuf,
     thumbnails: images::Thumbnails,
     icons: icons::Icons,
+    mounts: mounts::Mounts,
     entries: Arc<Vec<Entry>>,
     folder_counts: files::FolderCounts,
     media_scan: Option<files::MediaScan>,
@@ -463,6 +465,7 @@ impl FileManager {
             breadcrumb_path: current.clone(),
             thumbnails: images::Thumbnails::new(context.egui_ctx.clone()),
             icons: icons::Icons::new(context.egui_ctx.clone()),
+            mounts: mounts::Mounts::new(),
             current,
             config,
             settings,
@@ -1491,6 +1494,7 @@ impl FileManager {
         }
         self.thumbnails.poll(context);
         self.icons.poll(context);
+        self.mounts.poll();
         let counts = self.folder_counts.poll();
         if !counts.is_empty() {
             self.tree_layout = None;
@@ -2908,6 +2912,16 @@ impl FileManager {
         } else {
             paint_folder(ui, icon);
         }
+        let location = bookmark.path.as_deref().map_or_else(
+            || {
+                url::Url::parse(&bookmark.uri)
+                    .ok()
+                    .filter(|uri| !matches!(uri.scheme(), "file" | "trash"))
+                    .map(|_| mounts::Kind::Network)
+            },
+            |path| self.mounts.kind(path),
+        );
+        paint_folder_location(ui, icon, location);
         paint_name(
             ui,
             &bookmark.label,
@@ -5999,6 +6013,48 @@ fn paint_folder(ui: &egui::Ui, rect: egui::Rect) {
         4.0,
         ACCENT,
     );
+}
+
+fn paint_folder_location(ui: &egui::Ui, rect: egui::Rect, location: Option<mounts::Kind>) {
+    let Some(location) = location else {
+        return;
+    };
+    let edge = (rect.width().min(rect.height()) * 0.45).clamp(11.0, 22.0);
+    let badge =
+        egui::Rect::from_min_size(rect.right_top() - Vec2::new(edge, 0.0), Vec2::splat(edge));
+    let painter = ui.painter();
+    let color = match location {
+        mounts::Kind::Network => Color32::from_rgb(57, 112, 176),
+        mounts::Kind::External => Color32::from_rgb(160, 108, 42),
+    };
+    painter.rect_filled(badge, edge * 0.18, color);
+    let point = |x, y| badge.min + badge.size() * Vec2::new(x, y);
+    let stroke = Stroke::new((edge * 0.08).max(1.0), Color32::WHITE);
+    match location {
+        mounts::Kind::Network => {
+            for (start, end) in [
+                ((0.5, 0.35), (0.5, 0.62)),
+                ((0.25, 0.62), (0.75, 0.62)),
+                ((0.25, 0.62), (0.25, 0.76)),
+                ((0.75, 0.62), (0.75, 0.76)),
+            ] {
+                painter.line_segment([point(start.0, start.1), point(end.0, end.1)], stroke);
+            }
+            for (x, y) in [(0.5, 0.28), (0.25, 0.78), (0.75, 0.78)] {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(point(x, y), Vec2::splat(edge * 0.23)),
+                    edge * 0.03,
+                    Color32::WHITE,
+                );
+            }
+        }
+        mounts::Kind::External => {
+            let drive = egui::Rect::from_min_max(point(0.18, 0.23), point(0.82, 0.78));
+            painter.rect_stroke(drive, edge * 0.08, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([point(0.25, 0.57), point(0.75, 0.57)], stroke);
+            painter.circle_filled(point(0.66, 0.68), edge * 0.045, Color32::WHITE);
+        }
+    }
 }
 
 fn paint_deletion_lock(ui: &egui::Ui, rect: egui::Rect, locked: bool) {
