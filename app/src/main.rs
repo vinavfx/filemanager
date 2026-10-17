@@ -244,6 +244,10 @@ struct DirectoryContents {
 
 #[derive(Default)]
 struct MediaLayout {
+    source: std::sync::Weak<Vec<Entry>>,
+    indices: HashMap<PathBuf, usize>,
+    items: Arc<Vec<(Entry, egui::Pos2, f32)>>,
+    complete: bool,
     aspects: HashMap<PathBuf, f32>,
     paths: Vec<PathBuf>,
     rows: Vec<(std::ops::Range<usize>, f32)>,
@@ -1712,10 +1716,16 @@ impl FileManager {
         content_height: f32,
         context: &egui::Context,
     ) {
-        self.visible_paths = items
+        if !self
+            .visible_paths
             .iter()
-            .map(|(entry, _, _)| entry.path.clone())
-            .collect();
+            .eq(items.iter().map(|(entry, _, _)| &entry.path))
+        {
+            self.visible_paths = items
+                .iter()
+                .map(|(entry, _, _)| entry.path.clone())
+                .collect();
+        }
         if self.sidebar_focused {
             return;
         }
@@ -3488,34 +3498,38 @@ impl FileManager {
         });
     }
 
-    fn media(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+    fn prepare_media_layout(&mut self, width: f32, target: f32, context: &egui::Context) {
         let source = Arc::clone(&self.entries);
-        let available: HashMap<_, _> = source
-            .iter()
-            .filter(|entry| {
-                entry.directory || files::image_file(&entry.path) || files::video_file(&entry.path)
-            })
-            .map(|entry| (entry.path.clone(), entry))
-            .collect();
-        if available.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("No folders, images or videos in this folder").color(MUTED));
-            });
+        let source_changed = self.media_layout.source.as_ptr() != Arc::as_ptr(&source);
+        let resized = self.media_layout.width != width || self.media_layout.target != target;
+        if !source_changed && !resized && self.media_layout.complete {
             return;
         }
-        let gutter = self.number_width();
-        let width =
-            (ui.available_width() - ui.spacing().scroll.allocated_width() - gutter).max(1.0);
-        let target = 192.0 * self.settings.zoom;
-        if self
-            .media_layout
-            .paths
-            .iter()
-            .any(|path| !available.contains_key(path))
-        {
-            self.media_layout = MediaLayout::default();
+        if source_changed {
+            let indices: HashMap<_, _> = source
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.directory
+                        || files::image_file(&entry.path)
+                        || files::video_file(&entry.path)
+                })
+                .map(|(index, entry)| (entry.path.clone(), index))
+                .collect();
+            if self
+                .media_layout
+                .paths
+                .iter()
+                .any(|path| !indices.contains_key(path))
+            {
+                self.media_layout = MediaLayout::default();
+            }
+            self.media_layout.indices = indices;
+            self.media_layout.source = Arc::downgrade(&source);
         }
-        if self.media_layout.width != width || self.media_layout.target != target {
+        let resized =
+            resized || self.media_layout.width != width || self.media_layout.target != target;
+        if resized {
             self.media_layout.rows.clear();
             self.media_layout.width = width;
             self.media_layout.target = target;
@@ -3523,7 +3537,7 @@ impl FileManager {
         let mut requested = 0;
         for entry in source
             .iter()
-            .filter(|entry| available.contains_key(&entry.path))
+            .filter(|entry| self.media_layout.indices.contains_key(&entry.path))
         {
             if self.media_layout.aspects.contains_key(&entry.path) {
                 continue;
@@ -3554,7 +3568,9 @@ impl FileManager {
             .iter()
             .map(|path| self.media_layout.aspects[path])
             .collect();
-        let complete = self.media_scan.is_none() && aspects.len() == available.len();
+        let complete =
+            self.media_scan.is_none() && aspects.len() == self.media_layout.indices.len();
+        self.media_layout.complete = complete;
         if !complete {
             context.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -3585,33 +3601,54 @@ impl FileManager {
             .rows
             .last()
             .map_or(0, |(range, _)| range.end);
-        let entries: Vec<_> = self.media_layout.paths[..count]
-            .iter()
-            .map(|path| available[path])
-            .collect();
-        if entries.is_empty() {
+        if source_changed || resized || self.media_layout.items.len() != count {
+            let mut items = Vec::with_capacity(count);
+            let mut y = 0.0;
+            for (range, height) in &self.media_layout.rows {
+                let mut x = 0.0;
+                for index in range.clone() {
+                    let path = &self.media_layout.paths[index];
+                    let entry = source[self.media_layout.indices[path]].clone();
+                    let item_width = aspects[index] * height;
+                    items.push((entry, egui::pos2(x + item_width / 2.0, y), *height));
+                    x += item_width;
+                }
+                y += height;
+            }
+            self.media_layout.items = Arc::new(items);
+        }
+    }
+
+    fn media(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let gutter = self.number_width();
+        let width =
+            (ui.available_width() - ui.spacing().scroll.allocated_width() - gutter).max(1.0);
+        self.prepare_media_layout(width, 192.0 * self.settings.zoom, context);
+        let items = Arc::clone(&self.media_layout.items);
+        if items.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.spinner();
+                if self.media_layout.complete {
+                    ui.label(
+                        RichText::new("No folders, images or videos in this folder").color(MUTED),
+                    );
+                } else {
+                    ui.spinner();
+                }
             });
             return;
         }
         let rows = self.media_layout.rows.clone();
+        let complete = self.media_layout.complete;
+        let count = items.len();
         let total_height: f32 = rows.iter().map(|(_, height)| height).sum();
-        let mut items = Vec::with_capacity(entries.len());
-        let mut y = 0.0;
-        for (range, height) in &rows {
-            let mut x = 0.0;
-            for index in range.clone() {
-                let item_width = aspects[index] * height;
-                items.push((entries[index], egui::pos2(x + item_width / 2.0, y), *height));
-                x += item_width;
-            }
-            y += height;
-        }
-        self.navigate_items(&items, ui, "media", total_height, context);
-        let current_index = entries
+        let navigation: Vec<_> = items
             .iter()
-            .position(|entry| self.selected.as_ref() == Some(&entry.path))
+            .map(|(entry, position, height)| (entry, *position, *height))
+            .collect();
+        self.navigate_items(&navigation, ui, "media", total_height, context);
+        let current_index = items
+            .iter()
+            .position(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path))
             .unwrap_or(0);
         let current_row = rows
             .iter()
@@ -3628,6 +3665,16 @@ impl FileManager {
                     let origin = ui.min_rect().min;
                     let mut y = origin.y;
                     for (row, (range, height)) in rows.into_iter().enumerate() {
+                        let row_rect = egui::Rect::from_min_size(
+                            egui::pos2(origin.x, y),
+                            Vec2::new(width + gutter, height),
+                        );
+                        if !(ui.is_rect_visible(row_rect)
+                            || self.scroll_to_selection && row == current_row)
+                        {
+                            y += height;
+                            continue;
+                        }
                         self.paint_relative_number(
                             ui,
                             egui::Rect::from_min_size(
@@ -3639,10 +3686,10 @@ impl FileManager {
                         );
                         let mut x = origin.x + gutter;
                         for index in range {
-                            let entry = &entries[index];
+                            let entry = &items[index].0;
                             let rect = egui::Rect::from_min_size(
                                 egui::pos2(x, y),
-                                Vec2::new(aspects[index] * height, height),
+                                Vec2::new(self.media_layout.aspects[&entry.path] * height, height),
                             );
                             x = rect.right();
                             if self.scroll_to_selection
