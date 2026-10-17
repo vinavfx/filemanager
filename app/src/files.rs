@@ -1,7 +1,9 @@
 use eframe::egui;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -304,6 +306,50 @@ fn group_sequences(entries: Vec<Entry>) -> Vec<Entry> {
         }
     }
     result
+}
+
+pub fn sequence_open_path(path: &Path, frames: &[PathBuf]) -> io::Result<PathBuf> {
+    let query = |arguments: &[&OsStr]| {
+        Command::new("xdg-mime")
+            .arg("query")
+            .args(arguments)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let mime = query(&[OsStr::new("filetype"), path.as_os_str()]);
+    let application = mime.and_then(|mime| query(&[OsStr::new("default"), OsStr::new(&mime)]));
+    if !application
+        .as_ref()
+        .is_some_and(|application| application.to_ascii_lowercase().contains("djv"))
+        || application != query(&[OsStr::new("default"), OsStr::new("image/x-ifl")])
+    {
+        return Ok(path.to_owned());
+    }
+    let mut playlist = Vec::new();
+    for frame in frames {
+        let frame = fs::canonicalize(frame)?;
+        let name = frame.to_str().filter(|name| !name.contains(['\n', '\r']));
+        let Some(name) = name else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Frame path cannot be represented in an IFL playlist.",
+            ));
+        };
+        writeln!(playlist, "{name}")?;
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Cannot locate cache directory."))?;
+    let directory = base.join("still-files/sequences");
+    fs::create_dir_all(&directory)?;
+    let mut hasher = DefaultHasher::new();
+    playlist.hash(&mut hasher);
+    let target = directory.join(format!("{:016x}.ifl", hasher.finish()));
+    fs::write(&target, playlist)?;
+    Ok(target)
 }
 
 pub fn image_file(path: &Path) -> bool {

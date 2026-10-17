@@ -710,15 +710,29 @@ impl FileManager {
     fn open(&mut self, path: PathBuf, context: &egui::Context) {
         if path.is_dir() {
             self.navigate(path, context);
-        } else if let Err(error) = std::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map(|mut child| {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            })
-        {
+            return;
+        }
+        let target = self
+            .entries
+            .iter()
+            .chain(self.tree_cache.values().flatten())
+            .find(|entry| entry.path == path)
+            .and_then(|entry| entry.sequence.as_ref())
+            .map_or_else(
+                || Ok(path.clone()),
+                |frames| files::sequence_open_path(&path, frames),
+            );
+        let result = target.and_then(|target| {
+            std::process::Command::new("xdg-open")
+                .arg(target)
+                .spawn()
+                .map(|mut child| {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                })
+        });
+        if let Err(error) = result {
             self.message = Some(format!("Cannot open file: {error}"));
         }
     }
