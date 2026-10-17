@@ -83,6 +83,7 @@ enum TreeSort {
 #[serde(default)]
 struct Settings {
     removed_places: Vec<PathBuf>,
+    entry_order: HashMap<PathBuf, Vec<PathBuf>>,
     view: View,
     tree_sort: TreeSort,
     tree_descending: bool,
@@ -98,6 +99,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             removed_places: Vec::new(),
+            entry_order: HashMap::new(),
             view: View::Grid,
             tree_sort: TreeSort::Name,
             tree_descending: false,
@@ -213,6 +215,7 @@ struct DirectoryFrame {
 }
 
 enum FileOperation {
+    Copy(Vec<PathBuf>, PathBuf),
     Trash(Vec<PathBuf>),
     EmptyTrash,
     Undo,
@@ -234,6 +237,12 @@ struct OperationJob {
     completed: usize,
     total: usize,
     path: PathBuf,
+}
+
+struct PastePlacement {
+    directory: PathBuf,
+    anchor: Option<PathBuf>,
+    order: Vec<PathBuf>,
 }
 
 struct DirectoryContents {
@@ -292,6 +301,8 @@ struct FileManager {
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
+    copied_files: Vec<PathBuf>,
+    paste_placement: Option<PastePlacement>,
     selection_anchor: Option<PathBuf>,
     directory_selections: HashMap<PathBuf, DirectorySelection>,
     visual_line: bool,
@@ -304,6 +315,7 @@ struct FileManager {
     page_scroll_delta: f32,
     pending_g: bool,
     pending_z: bool,
+    pending_y: bool,
     sidebar_focused: bool,
     pending_window_command: bool,
     sidebar_cursor: Option<usize>,
@@ -407,6 +419,8 @@ impl FileManager {
             selected: None,
             last_selected: None,
             selection: HashSet::new(),
+            copied_files: Vec::new(),
+            paste_placement: None,
             selection_anchor: None,
             directory_selections: HashMap::new(),
             visual_line: false,
@@ -419,6 +433,7 @@ impl FileManager {
             page_scroll_delta: 0.0,
             pending_g: false,
             pending_z: false,
+            pending_y: false,
             sidebar_focused: false,
             pending_window_command: false,
             sidebar_cursor: None,
@@ -632,7 +647,10 @@ impl FileManager {
         });
     }
 
-    fn load_directory(&mut self, path: PathBuf, entries: Vec<Entry>, context: &egui::Context) {
+    fn load_directory(&mut self, path: PathBuf, mut entries: Vec<Entry>, context: &egui::Context) {
+        if let Some(order) = self.settings.entry_order.get(&path) {
+            order_entries(&mut entries, order);
+        }
         if let Some(scan) = self.media_scan.take() {
             scan.pause();
             let layout = std::mem::take(&mut self.media_layout);
@@ -849,6 +867,7 @@ impl FileManager {
         self.motion_count = 0;
         self.pending_g = false;
         self.pending_z = false;
+        self.pending_y = false;
         self.center_selection = false;
         self.size_job = None;
         self.selection_size = None;
@@ -881,6 +900,109 @@ impl FileManager {
         self.selection = path.iter().cloned().collect();
         self.selection_anchor = path.clone();
         self.selected = path;
+    }
+
+    fn exit_visual(&mut self, context: &egui::Context) {
+        let first = self
+            .visible_paths
+            .iter()
+            .find(|path| self.selection.contains(*path))
+            .cloned()
+            .or_else(|| self.selected.clone());
+        self.select(first, context);
+    }
+
+    fn yank(&mut self, context: &egui::Context) {
+        let selected: Vec<_> = self
+            .visible_paths
+            .iter()
+            .filter(|path| self.selection.contains(*path))
+            .filter(|path| {
+                !path
+                    .ancestors()
+                    .skip(1)
+                    .any(|parent| self.selection.contains(parent))
+            })
+            .cloned()
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        self.copied_files = selected
+            .iter()
+            .flat_map(|path| {
+                self.entries
+                    .iter()
+                    .chain(self.tree_cache.values().flatten())
+                    .find(|entry| &entry.path == path)
+                    .and_then(|entry| entry.sequence.as_ref())
+                    .map_or_else(|| vec![path.clone()], |frames| frames.as_ref().clone())
+            })
+            .collect();
+        self.exit_visual(context);
+        self.message = Some(format!("Yanked {} items.", selected.len()));
+    }
+
+    fn paste(&mut self, context: &egui::Context) {
+        if self.operation_job.is_some()
+            || self.new_folder.is_some()
+            || files::is_trash(&self.current)
+        {
+            return;
+        }
+        if self.copied_files.is_empty() {
+            self.message =
+                Some("Nothing to paste. Select files and press yy, or y in Visual mode.".into());
+            return;
+        }
+        let into_folder = self.settings.view == View::Tree
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|path| path.is_dir() && self.expanded.contains(path));
+        let directory = if into_folder {
+            self.selected
+                .clone()
+                .unwrap_or_else(|| self.current.clone())
+        } else {
+            self.selected
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or(&self.current)
+                .to_path_buf()
+        };
+        let siblings = if self.settings.view == View::Tree {
+            let mut entries = if directory == self.current {
+                self.entries.as_ref().clone()
+            } else {
+                self.tree_cache.get(&directory).cloned().unwrap_or_default()
+            };
+            self.sort_tree_entries(&mut entries);
+            entries.into_iter().map(|entry| entry.path).collect()
+        } else {
+            self.entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let anchor = if into_folder {
+            None
+        } else {
+            self.selected.clone()
+        };
+        self.paste_placement = Some(PastePlacement {
+            directory: if self.settings.view == View::Tree {
+                directory.clone()
+            } else {
+                self.current.clone()
+            },
+            anchor,
+            order: siblings,
+        });
+        self.start_operation(
+            FileOperation::Copy(self.copied_files.clone(), directory),
+            context,
+        );
     }
 
     fn select_entry(&mut self, path: PathBuf, context: &egui::Context) {
@@ -1126,6 +1248,7 @@ impl FileManager {
                 Ok(OperationUpdate::Finished(history, outcome)) => {
                     job.outcome.changed |= outcome.changed;
                     job.outcome.renames.extend(outcome.renames);
+                    job.outcome.copied.extend(outcome.copied);
                     job.outcome.selected = outcome.selected;
                     if let Some(error) = outcome.error {
                         match &mut job.outcome.error {
@@ -1168,6 +1291,7 @@ impl FileManager {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let restore = !job.trash_paths.is_empty();
                     self.operation_job = None;
+                    self.paste_placement = None;
                     if restore {
                         self.refresh(context);
                     }
@@ -1185,7 +1309,10 @@ impl FileManager {
         {
             self.directory_refresh = None;
             match result {
-                Ok(contents) => {
+                Ok(mut contents) => {
+                    if let Some(order) = self.settings.entry_order.get(&self.current) {
+                        order_entries(&mut contents.entries, order);
+                    }
                     let counts: HashMap<_, _> = self
                         .entries
                         .iter()
@@ -1239,6 +1366,9 @@ impl FileManager {
                     entries.sort_by_cached_key(|entry| {
                         (entry.name.to_lowercase(), entry.path.clone())
                     });
+                    if let Some(order) = self.settings.entry_order.get(&self.current) {
+                        order_entries(entries, order);
+                    }
                     self.tree_layout = None;
                     if result.complete {
                         self.media_scan = None;
@@ -1395,6 +1525,7 @@ impl FileManager {
             self.sidebar_focused = sidebar;
             self.pending_g = false;
             self.pending_z = false;
+            self.pending_y = false;
             self.editing_path = false;
             if sidebar {
                 self.scroll_to_bookmark = true;
@@ -1419,6 +1550,7 @@ impl FileManager {
         if self.search.is_some() || self.new_folder.is_some() || self.text_input_focused(context) {
             self.pending_g = false;
             self.pending_z = false;
+            self.pending_y = false;
             return;
         }
         let mut directory_steps = Vec::new();
@@ -1431,6 +1563,7 @@ impl FileManager {
                 ) {
                     self.pending_g = false;
                     self.pending_z = false;
+                    self.pending_y = false;
                 }
                 let egui::Event::Key {
                     key,
@@ -1444,9 +1577,21 @@ impl FileManager {
                     return true;
                 };
                 if *repeat {
-                    return !matches!(key, Key::G | Key::Z);
+                    return !matches!(key, Key::G | Key::Z | Key::Y);
                 }
+                let pending_y = std::mem::take(&mut self.pending_y);
                 let pending_z = std::mem::take(&mut self.pending_z);
+                if *key == Key::Y
+                    && modifiers.matches_exact(egui::Modifiers::NONE)
+                    && !self.sidebar_focused
+                {
+                    self.pending_g = false;
+                    if self.visual_line || pending_y {
+                        return true;
+                    }
+                    self.pending_y = true;
+                    return false;
+                }
                 if *key == Key::Z
                     && modifiers.matches_exact(egui::Modifiers::NONE)
                     && !self.sidebar_focused
@@ -1656,7 +1801,7 @@ impl FileManager {
             } else if self.editing_path {
                 self.editing_path = false;
             } else if self.visual_line {
-                self.select(self.selected.clone(), context);
+                self.exit_visual(context);
             } else {
                 self.select(None, context);
             }
@@ -1719,13 +1864,22 @@ impl FileManager {
             return;
         }
         if visual_line_shortcut {
-            let enable = !self.visual_line;
-            let path = self
-                .selected
-                .clone()
-                .or_else(|| self.visible_paths.first().cloned());
-            self.select(path, context);
-            self.visual_line = enable && self.selected.is_some();
+            if self.visual_line {
+                self.exit_visual(context);
+            } else {
+                let path = self
+                    .selected
+                    .clone()
+                    .or_else(|| self.visible_paths.first().cloned());
+                self.select(path, context);
+                self.visual_line = self.selected.is_some();
+            }
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y)) {
+            self.yank(context);
+        }
+        if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::P)) {
+            self.paste(context);
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
             if self.visual_line {
@@ -1905,7 +2059,7 @@ impl FileManager {
             return;
         }
         if self.settings.view == View::Tree
-            && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::P))
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::P))
         {
             self.motion_count = 0;
             self.pending_g = false;
@@ -3688,6 +3842,15 @@ impl FileManager {
             self.media_layout.aspects.insert(entry.path.clone(), aspect);
             self.media_layout.paths.push(entry.path.clone());
         }
+        if self.settings.entry_order.contains_key(&self.current) {
+            let previous = self.media_layout.paths.clone();
+            self.media_layout
+                .paths
+                .sort_by_key(|path| self.media_layout.indices[path]);
+            if previous != self.media_layout.paths {
+                self.media_layout.rows.clear();
+            }
+        }
         let aspects: Vec<_> = self
             .media_layout
             .paths
@@ -4006,6 +4169,10 @@ impl FileManager {
                     self.settings.tree_sort = column;
                     self.settings.tree_descending = false;
                 }
+                self.settings
+                    .entry_order
+                    .retain(|directory, _| !directory.starts_with(&self.current));
+                self.tree_layout = None;
                 self.save();
             }
             let active = self.settings.tree_sort == column;
@@ -4084,6 +4251,13 @@ impl FileManager {
                     order
                 })
         });
+        if let Some(order) = entries
+            .first()
+            .and_then(|entry| entry.path.parent())
+            .and_then(|directory| self.settings.entry_order.get(directory))
+        {
+            order_entries(entries, order);
+        }
     }
 
     fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
@@ -4343,6 +4517,8 @@ impl FileManager {
             return;
         }
         let label = match &operation {
+            FileOperation::Copy(paths, _) if paths.is_empty() => return,
+            FileOperation::Copy(_, _) => "Copying",
             FileOperation::Trash(paths) if paths.is_empty() => return,
             FileOperation::Trash(_) => {
                 if self.visual_line {
@@ -4358,7 +4534,10 @@ impl FileManager {
             FileOperation::Trash(paths) => paths.iter().cloned().collect(),
             _ => HashSet::new(),
         };
-        let total = trash_paths.len();
+        let total = match &operation {
+            FileOperation::Copy(paths, _) => paths.len(),
+            _ => trash_paths.len(),
+        };
         let history = std::mem::take(&mut self.operations);
         let receiver = Self::run_operation(history, operation, context);
         self.operation_job = Some(OperationJob {
@@ -4392,6 +4571,9 @@ impl FileManager {
                 context.request_repaint();
             };
             let outcome = match operation {
+                FileOperation::Copy(paths, directory) => {
+                    history.copy(paths, &directory, &mut progress)
+                }
                 FileOperation::Trash(paths) => history.trash(paths, &mut progress),
                 FileOperation::EmptyTrash => history.empty_trash(&mut progress),
                 FileOperation::Undo => history.undo(&mut progress),
@@ -4443,6 +4625,33 @@ impl FileManager {
     }
 
     fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
+        self.thumbnails.reuse_copies(&outcome.copied);
+        if let Some(mut placement) = self.paste_placement.take() {
+            if !outcome.copied.is_empty() {
+                placement.order.retain(|path| {
+                    !outcome
+                        .copied
+                        .iter()
+                        .any(|(_, destination)| destination == path)
+                });
+                let index = placement
+                    .anchor
+                    .as_ref()
+                    .and_then(|anchor| placement.order.iter().position(|path| path == anchor))
+                    .map_or(0, |index| index + 1);
+                placement.order.splice(
+                    index..index,
+                    outcome
+                        .copied
+                        .iter()
+                        .map(|(_, destination)| destination.clone()),
+                );
+                self.settings
+                    .entry_order
+                    .insert(placement.directory, placement.order);
+                self.save();
+            }
+        }
         self.media_cache.clear();
         if outcome.changed {
             let nearby = self.selected.as_ref().and_then(|selected| {
@@ -4477,7 +4686,8 @@ impl FileManager {
             } else {
                 self.address = self.current.to_string_lossy().into_owned();
                 self.refresh(context);
-                self.preparing_directory = self.directory_frame.is_some();
+                self.preparing_directory =
+                    outcome.copied.is_empty() && self.directory_frame.is_some();
                 self.wait_for_thumbnails = self.preparing_directory;
             }
             let selected = outcome
@@ -4691,6 +4901,7 @@ impl FileManager {
                             operations::Outcome {
                                 changed: true,
                                 renames,
+                                copied: Vec::new(),
                                 selected: Some(path),
                                 error: None,
                             },
@@ -4765,6 +4976,11 @@ impl eframe::App for FileManager {
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
+        if self.message.is_some() {
+            egui::TopBottomPanel::bottom("messages")
+                .frame(egui::Frame::NONE.fill(context.style().visuals.panel_fill))
+                .show(context, |ui| self.message_banner(ui));
+        }
         if self.directory_frame.is_none() {
             self.directory_frame = Some(DirectoryFrame {
                 graphics: context.graphics(Clone::clone),
@@ -4788,7 +5004,6 @@ impl eframe::App for FileManager {
                     ui.id().with("directory-background"),
                     egui::Sense::click(),
                 );
-                self.message_banner(ui);
                 if self.search.is_some() {
                     self.search_results(ui, context);
                 } else if self.entries.is_empty() {
@@ -5092,6 +5307,20 @@ fn paint_arrow(ui: &egui::Ui, rect: egui::Rect, color: Color32, direction: Vec2)
     ] {
         ui.painter().line_segment(segment, stroke);
     }
+}
+
+fn order_entries(entries: &mut [Entry], order: &[PathBuf]) {
+    let positions: HashMap<_, _> = order
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (path.as_path(), index))
+        .collect();
+    entries.sort_by_key(|entry| {
+        positions
+            .get(entry.path.as_path())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 }
 
 fn paint_selection(ui: &egui::Ui, rect: egui::Rect, selected: bool, hovered: bool) {

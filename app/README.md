@@ -27,9 +27,18 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   En los campos de texto conserva la selección de texto habitual.
 - `Ctrl+V` activa Visual Line desde el icono actual. `h/j/k/l` o las flechas amplían o reducen el rango seleccionado, también en `Tree`;
   `gg`, `G`, `Ctrl+D` y `Ctrl+U` permiten seleccionar hasta otros puntos. `d` envía los seleccionados a la papelera. `Esc` o `Ctrl+V` salen
-  del modo y dejan seleccionado solo el icono actual. La barra de estado indica `VISUAL LINE`; fuera de este modo, `d` conserva su función
-  de añadir marcadores. Fuera de Visual Line, `gg` y `Mayús+G` solo mueven el cursor al principio o al final, sin ampliar la selección.
-- En `Tree`, `p` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.
+  del modo y dejan seleccionado solo el primer icono del rango, de arriba hacia abajo. La barra de estado indica `VISUAL LINE`; fuera de
+  este modo, `d` conserva su función de añadir marcadores. Fuera de Visual Line, `gg` y `Mayús+G` solo mueven el cursor al principio o al
+  final, sin ampliar la selección.
+- `yy` copia la selección a un registro interno. En Visual Line basta `y`: copia, sale del modo y deja seleccionado el primer icono del
+  rango. Una sola `y` fuera de Visual no copia; otra tecla, un clic o perder el foco cancela la secuencia pendiente. `p` pega después del
+  icono seleccionado; en `Tree`, una carpeta cerrada recibe las copias debajo, como elementos hermanos, y una abierta las recibe dentro,
+  antes de sus hijos. Con un hijo seleccionado, pega después de ese hijo. Sin selección, pega al principio de la carpeta actual. Copia
+  archivos, carpetas, enlaces simbólicos y todos los fotogramas de las secuencias, sin sobrescribir: añade ` (copy)` y un número si el
+  nombre ya existe. `u` deshace y `Ctrl+R` rehace. El orden de pegado se conserva al reiniciar; pulsar un encabezado de `Tree` restaura la
+  ordenación de esa carpeta y sus subcarpetas. Las copias reutilizan las miniaturas del original en memoria y disco, sin decodificarlas de
+  nuevo; al modificar un archivo, su miniatura se actualiza independientemente. Estos atajos no interfieren con los campos de texto.
+- En `Tree`, `Alt+P` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.
 - En `Tree`, `o` abre o cierra la carpeta seleccionada. `Mayús+O` alterna entre expandir recursivamente sus subcarpetas y cerrarlas todas,
   manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión
   recursiva se limita a 5 niveles, 64 carpetas y 2000 entradas examinadas, incluidos los recuentos de contenido de las carpetas, con un

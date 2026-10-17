@@ -15,6 +15,7 @@ pub struct History {
 pub struct Outcome {
     pub changed: bool,
     pub renames: Vec<(PathBuf, PathBuf)>,
+    pub copied: Vec<(PathBuf, PathBuf)>,
     pub selected: Option<PathBuf>,
     pub error: Option<String>,
 }
@@ -31,6 +32,15 @@ enum Action {
     Rename {
         from: PathBuf,
         to: PathBuf,
+    },
+    Copy {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    RemoveCopy {
+        from: PathBuf,
+        path: PathBuf,
+        identity: FileIdentity,
     },
     Trash(PathBuf),
     Restore {
@@ -58,6 +68,45 @@ impl History {
     ) -> Outcome {
         let mut actions = paths.into_iter().rev().map(Action::Trash).collect();
         let (inverse, outcome) = execute(&mut actions, progress);
+        if !inverse.is_empty() {
+            self.undo.push(inverse);
+            self.redo.clear();
+        }
+        outcome
+    }
+
+    pub fn copy(
+        &mut self,
+        paths: Vec<PathBuf>,
+        directory: &Path,
+        progress: &mut impl FnMut(usize, usize, &Path),
+    ) -> Outcome {
+        let mut outcome = Outcome::default();
+        let mut inverse = Vec::new();
+        let total = paths.len();
+        for (index, from) in paths.into_iter().enumerate() {
+            progress(index, total, &from);
+            let result = copy_destination(&from, directory).and_then(|to| {
+                let action = Action::Copy {
+                    from: from.clone(),
+                    to: to.clone(),
+                };
+                action.apply(&mut None).map(|reverse| (from, to, reverse))
+            });
+            match result {
+                Ok((from, to, reverse)) => {
+                    progress(index + 1, total, &to);
+                    outcome.selected.get_or_insert_with(|| to.clone());
+                    outcome.copied.push((from, to));
+                    outcome.changed = true;
+                    inverse.push(reverse);
+                }
+                Err(error) => {
+                    outcome.error = Some(format!("Cannot copy files: {error}"));
+                    break;
+                }
+            }
+        }
         if !inverse.is_empty() {
             self.undo.push(inverse);
             self.redo.clear();
@@ -136,7 +185,11 @@ fn execute(
                         outcome.selected = Some(to.clone());
                     }
                     Action::Restore { path, .. } => outcome.selected = Some(path.clone()),
-                    Action::Trash(_) => outcome.selected = None,
+                    Action::Copy { from, to } => {
+                        outcome.selected.get_or_insert_with(|| to.clone());
+                        outcome.copied.push((from.clone(), to.clone()));
+                    }
+                    Action::Trash(_) | Action::RemoveCopy { .. } => outcome.selected = None,
                 }
                 outcome.changed = true;
                 inverse.push(reverse);
@@ -158,8 +211,8 @@ fn execute(
 impl Action {
     fn path(&self) -> &Path {
         match self {
-            Self::Rename { from, .. } => from,
-            Self::Trash(path) | Self::Restore { path, .. } => path,
+            Self::Rename { from, .. } | Self::Copy { from, .. } => from,
+            Self::Trash(path) | Self::Restore { path, .. } | Self::RemoveCopy { path, .. } => path,
         }
     }
 
@@ -173,6 +226,44 @@ impl Action {
                 Ok(Self::Rename {
                     from: to.clone(),
                     to: from.clone(),
+                })
+            }
+            Self::Copy { from, to } => {
+                let metadata = std::fs::symlink_metadata(from)?;
+                let parent = to
+                    .parent()
+                    .ok_or_else(|| io::Error::other("Invalid copy destination."))?;
+                if metadata.is_dir() && parent.canonicalize()?.starts_with(from.canonicalize()?) {
+                    return Err(io::Error::other("Cannot copy a folder into itself."));
+                }
+                copy_entry(from, to)?;
+                let metadata = std::fs::symlink_metadata(to)?;
+                Ok(Self::RemoveCopy {
+                    from: from.clone(),
+                    path: to.clone(),
+                    identity: FileIdentity {
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                    },
+                })
+            }
+            Self::RemoveCopy {
+                from,
+                path,
+                identity,
+            } => {
+                let metadata = std::fs::symlink_metadata(path)?;
+                if metadata.dev() != identity.device || metadata.ino() != identity.inode {
+                    return Err(io::Error::other("The copied item has been replaced."));
+                }
+                if metadata.is_dir() {
+                    std::fs::remove_dir_all(path)?;
+                } else {
+                    std::fs::remove_file(path)?;
+                }
+                Ok(Self::Copy {
+                    from: from.clone(),
+                    to: path.clone(),
                 })
             }
             Self::Trash(path) => {
@@ -208,6 +299,92 @@ impl Action {
             }
         }
     }
+}
+
+fn copy_destination(from: &Path, directory: &Path) -> io::Result<PathBuf> {
+    let directory = directory.canonicalize()?;
+    if !directory.is_dir() {
+        return Err(io::Error::other(
+            "The paste destination is not a directory.",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(from)?;
+    if metadata.is_dir() && directory.starts_with(from.canonicalize()?) {
+        return Err(io::Error::other("Cannot copy a folder into itself."));
+    }
+    let name = from
+        .file_name()
+        .ok_or_else(|| io::Error::other("Invalid file name."))?;
+    let mut destination = directory.join(name);
+    let mut number = 1;
+    while destination.try_exists()? || std::fs::symlink_metadata(&destination).is_ok() {
+        let stem = if metadata.is_dir() {
+            Some(name)
+        } else {
+            from.file_stem()
+        };
+        let mut name = stem.unwrap_or(name).to_os_string();
+        if number == 1 {
+            name.push(" (copy)");
+        } else {
+            name.push(format!(" (copy {number})"));
+        }
+        if !metadata.is_dir() {
+            if let Some(extension) = from.extension() {
+                name.push(".");
+                name.push(extension);
+            }
+        }
+        destination = directory.join(name);
+        number += 1;
+    }
+    Ok(destination)
+}
+
+fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(from)?;
+    if metadata.is_symlink() {
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)?;
+        crate::images::copy_cached_thumbnails(from, to);
+        return Ok(());
+    }
+    if !metadata.is_dir() && !metadata.is_file() {
+        return Err(io::Error::other(
+            "Only files, folders and symbolic links can be copied.",
+        ));
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(to)?;
+    } else {
+        let mut source = std::fs::File::open(from)?;
+        let mut target = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to)?;
+        if let Err(error) = io::copy(&mut source, &mut target) {
+            std::fs::remove_file(to)?;
+            return Err(error);
+        }
+    }
+    let result = (|| {
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                copy_entry(&entry.path(), &to.join(entry.file_name()))?;
+            }
+        }
+        std::fs::set_permissions(to, metadata.permissions())
+    })();
+    if result.is_err() {
+        if metadata.is_dir() {
+            std::fs::remove_dir_all(to)?;
+        } else {
+            std::fs::remove_file(to)?;
+        }
+    } else if metadata.is_file() {
+        crate::images::copy_cached_thumbnails(from, to);
+    }
+    result
 }
 
 fn trash_entries() -> io::Result<TrashEntries> {

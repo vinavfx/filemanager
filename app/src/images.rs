@@ -212,6 +212,33 @@ pub fn fingerprint(path: &Path) -> Result<u64, String> {
     Ok(hasher.finish())
 }
 
+fn thumbnail_path(directory: &Path, key: u64, video: bool, frame: usize) -> PathBuf {
+    let suffix = if video {
+        format!("-video-v3-{VIDEO_FRAMES}-{frame}")
+    } else {
+        String::new()
+    };
+    directory.join(format!(
+        "{key:016x}-{THUMBNAIL_EDGE}-v{THUMBNAIL_VERSION}{suffix}.webp"
+    ))
+}
+
+pub fn copy_cached_thumbnails(from: &Path, to: &Path) {
+    let video = crate::files::video_file(from);
+    if !video && !crate::files::image_file(from) {
+        return;
+    }
+    let (Ok(source), Ok(destination)) = (fingerprint(from), fingerprint(to)) else {
+        return;
+    };
+    let directory = cache_directory();
+    for frame in 0..if video { VIDEO_FRAMES } else { 1 } {
+        let source = thumbnail_path(&directory, source, video, frame);
+        let destination = thumbnail_path(&directory, destination, video, frame);
+        let _ = std::fs::hard_link(source, destination);
+    }
+}
+
 fn cached_thumbnail(
     path: &Path,
     directory: &Path,
@@ -225,14 +252,7 @@ fn cached_thumbnail(
     }
     let key = fingerprint(path)?;
     let video = crate::files::video_file(path);
-    let suffix = if video {
-        format!("-video-v3-{VIDEO_FRAMES}-{frame}")
-    } else {
-        String::new()
-    };
-    let cached = directory.join(format!(
-        "{key:016x}-{THUMBNAIL_EDGE}-v{THUMBNAIL_VERSION}{suffix}.webp"
-    ));
+    let cached = thumbnail_path(directory, key, video, frame);
     if let Ok(image) = load(&cached, THUMBNAIL_EDGE) {
         return Ok(active().then_some(CachedImage {
             key,
@@ -407,6 +427,45 @@ impl Thumbnails {
         self.last_used.remove(key);
         if let Some(Ok(texture)) = self.cache.remove(key) {
             self.cache_bytes -= texture.byte_size();
+        }
+    }
+
+    pub fn reuse_copies(&mut self, copies: &[(PathBuf, PathBuf)]) {
+        if copies.is_empty() {
+            return;
+        }
+        let reused: Vec<_> = self
+            .cache
+            .iter()
+            .filter_map(|((path, frame), image)| {
+                let destination = copies.iter().find_map(|(from, to)| {
+                    let suffix = path.strip_prefix(from).ok()?;
+                    Some(if suffix.as_os_str().is_empty() {
+                        to.clone()
+                    } else {
+                        to.join(suffix)
+                    })
+                })?;
+                let texture = image.as_ref().ok()?;
+                let stored = self.fingerprints.get(&(path.clone(), *frame))?.0?;
+                if fingerprint(path).ok() != Some(stored) {
+                    return None;
+                }
+                let key = fingerprint(&destination).ok()?;
+                Some(((destination, *frame), key, texture.clone()))
+            })
+            .collect();
+        for (path, key, texture) in reused {
+            self.remove_cached_texture(&path);
+            let bytes = texture.byte_size();
+            if self.cache_bytes + bytes > MEMORY_BUDGET_BYTES {
+                continue;
+            }
+            self.cache_bytes += bytes;
+            self.fingerprints
+                .insert(path.clone(), (Some(key), Instant::now()));
+            self.last_used.insert(path.clone(), Instant::now());
+            self.cache.insert(path, Ok(texture));
         }
     }
 
