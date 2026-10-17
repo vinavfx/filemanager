@@ -636,6 +636,7 @@ pub fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
         &["-T", "-C"],
         &[source.as_os_str(), target.as_os_str()],
     )?;
+    crate::images::rename_cached_thumbnails(source, &target);
     Ok(target)
 }
 

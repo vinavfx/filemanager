@@ -42,6 +42,8 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   restaura la ordenación de esa carpeta y sus subcarpetas. Las copias reutilizan las miniaturas del original en memoria y disco, sin
   decodificarlas de nuevo; al modificar un archivo, su miniatura se actualiza independientemente. Estos atajos no interfieren con los campos
   de texto.
+- `n` edita el nombre del elemento seleccionado y `Enter` confirma. Renombrar vincula la caché existente al nuevo nombre y conserva la
+  textura en memoria, también al deshacer y rehacer, sin volver a decodificar ni bloquear la interfaz esperando miniaturas.
 - En `Tree`, `Alt+P` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.
 - En `Tree`, `o` abre o cierra la carpeta seleccionada. `Mayús+O` alterna entre expandir recursivamente sus subcarpetas y cerrarlas todas,
   manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión

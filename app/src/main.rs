@@ -4673,6 +4673,7 @@ impl FileManager {
         context: &egui::Context,
     ) {
         self.thumbnails.reuse_copies(&outcome.copied);
+        self.thumbnails.reuse_renames(&outcome.renames);
         if let Some(mut placement) = self.paste_placement.take() {
             if !outcome.copied.is_empty() {
                 placement.order.retain(|path| {
@@ -4725,8 +4726,9 @@ impl FileManager {
             } else {
                 self.address = self.current.to_string_lossy().into_owned();
                 self.refresh(context);
-                self.preparing_directory =
-                    outcome.copied.is_empty() && self.directory_frame.is_some();
+                self.preparing_directory = outcome.copied.is_empty()
+                    && outcome.renames.is_empty()
+                    && self.directory_frame.is_some();
                 self.wait_for_thumbnails = self.preparing_directory;
             }
             let selected = if preserve_selection && outcome.renames.is_empty() {
@@ -4815,7 +4817,15 @@ impl FileManager {
             return false;
         };
         let id = ui.make_persistent_id(("rename-entry", &entry.path));
-        let response = ui.put(rect, egui::TextEdit::singleline(&mut dialog.name).id(id));
+        let response = ui.put(
+            rect,
+            egui::TextEdit::singleline(&mut dialog.name)
+                .id(id)
+                .font(egui::FontId::proportional(14.0))
+                .vertical_align(egui::Align::Center)
+                .min_size(rect.size())
+                .margin(egui::Margin::symmetric(8, 0)),
+        );
         if dialog.focus {
             response.request_focus();
             if let Some(mut state) = egui::TextEdit::load_state(context, id) {

@@ -202,6 +202,10 @@ fn cache_directory() -> PathBuf {
 
 pub fn fingerprint(path: &Path) -> Result<u64, String> {
     let metadata = path.metadata().map_err(|error| error.to_string())?;
+    Ok(metadata_fingerprint(path, &metadata))
+}
+
+fn metadata_fingerprint(path: &Path, metadata: &std::fs::Metadata) -> u64 {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     metadata.len().hash(&mut hasher);
@@ -209,7 +213,7 @@ pub fn fingerprint(path: &Path) -> Result<u64, String> {
         .modified()
         .unwrap_or(SystemTime::UNIX_EPOCH)
         .hash(&mut hasher);
-    Ok(hasher.finish())
+    hasher.finish()
 }
 
 fn thumbnail_path(directory: &Path, key: u64, video: bool, frame: usize) -> PathBuf {
@@ -236,6 +240,28 @@ pub fn copy_cached_thumbnails(from: &Path, to: &Path) {
         let source = thumbnail_path(&directory, source, video, frame);
         let destination = thumbnail_path(&directory, destination, video, frame);
         let _ = std::fs::hard_link(source, destination);
+    }
+}
+
+pub fn rename_cached_thumbnails(from: &Path, to: &Path) {
+    let video = crate::files::video_file(from);
+    if from == to
+        || video != crate::files::video_file(to)
+        || crate::files::image_file(from) != crate::files::image_file(to)
+        || (!video && !crate::files::image_file(from))
+    {
+        return;
+    }
+    let Ok(metadata) = to.metadata() else {
+        return;
+    };
+    let source = metadata_fingerprint(from, &metadata);
+    let destination = metadata_fingerprint(to, &metadata);
+    let directory = cache_directory();
+    for frame in 0..if video { VIDEO_FRAMES } else { 1 } {
+        let source = thumbnail_path(&directory, source, video, frame);
+        let destination = thumbnail_path(&directory, destination, video, frame);
+        let _ = std::fs::rename(source, destination);
     }
 }
 
@@ -431,14 +457,22 @@ impl Thumbnails {
     }
 
     pub fn reuse_copies(&mut self, copies: &[(PathBuf, PathBuf)]) {
-        if copies.is_empty() {
+        self.reuse_paths(copies, false);
+    }
+
+    pub fn reuse_renames(&mut self, renames: &[(PathBuf, PathBuf)]) {
+        self.reuse_paths(renames, true);
+    }
+
+    fn reuse_paths(&mut self, paths: &[(PathBuf, PathBuf)], renamed: bool) {
+        if paths.is_empty() {
             return;
         }
         let reused: Vec<_> = self
             .cache
             .iter()
             .filter_map(|((path, frame), image)| {
-                let destination = copies.iter().find_map(|(from, to)| {
+                let destination = paths.iter().find_map(|(from, to)| {
                     let suffix = path.strip_prefix(from).ok()?;
                     Some(if suffix.as_os_str().is_empty() {
                         to.clone()
@@ -446,16 +480,44 @@ impl Thumbnails {
                         to.join(suffix)
                     })
                 })?;
-                let texture = image.as_ref().ok()?;
-                let stored = self.fingerprints.get(&(path.clone(), *frame))?.0?;
-                if fingerprint(path).ok() != Some(stored) {
+                if path == &destination
+                    || crate::files::video_file(path) != crate::files::video_file(&destination)
+                    || crate::files::image_file(path) != crate::files::image_file(&destination)
+                {
                     return None;
                 }
-                let key = fingerprint(&destination).ok()?;
-                Some(((destination, *frame), key, texture.clone()))
+                let texture = image.as_ref().ok()?;
+                let stored = self.fingerprints.get(&(path.clone(), *frame))?.0?;
+                let metadata = destination.metadata().ok()?;
+                let source = if renamed {
+                    Some(metadata_fingerprint(path, &metadata))
+                } else {
+                    fingerprint(path).ok()
+                };
+                if source != Some(stored) {
+                    return None;
+                }
+                let key = metadata_fingerprint(&destination, &metadata);
+                Some((
+                    (path.clone(), *frame),
+                    (destination, *frame),
+                    stored,
+                    key,
+                    texture.clone(),
+                ))
             })
             .collect();
-        for (path, key, texture) in reused {
+        for (source, path, stored, key, texture) in reused {
+            if renamed {
+                let directory = cache_directory();
+                let video = crate::files::video_file(&source.0);
+                let _ = std::fs::rename(
+                    thumbnail_path(&directory, stored, video, source.1),
+                    thumbnail_path(&directory, key, video, path.1),
+                );
+                self.remove_cached_texture(&source);
+                self.fingerprints.remove(&source);
+            }
             self.remove_cached_texture(&path);
             let bytes = texture.byte_size();
             if self.cache_bytes + bytes > MEMORY_BUDGET_BYTES {
