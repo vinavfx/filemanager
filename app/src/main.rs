@@ -110,6 +110,71 @@ struct NameDialog {
     error: Option<String>,
 }
 
+#[derive(Default)]
+struct PathCompletion {
+    candidates: Vec<String>,
+    index: Option<usize>,
+}
+
+impl PathCompletion {
+    fn new(address: &str, current: &Path, hidden: bool) -> Self {
+        if address == "~" {
+            return Self {
+                candidates: vec!["~/".to_owned()],
+                index: None,
+            };
+        }
+        let (base, prefix) = address
+            .rfind('/')
+            .map_or(("", address), |index| address.split_at(index + 1));
+        let directory = if let Some(tail) = base.strip_prefix("~/") {
+            let Some(home) = std::env::var_os("HOME") else {
+                return Self::default();
+            };
+            PathBuf::from(home).join(tail)
+        } else {
+            current.join(base)
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Self::default();
+        };
+        let mut candidates: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let name = name.to_str()?;
+                if !name.starts_with(prefix)
+                    || (!hidden && !prefix.starts_with('.') && name.starts_with('.'))
+                    || !entry.path().is_dir()
+                {
+                    return None;
+                }
+                Some(format!("{base}{name}/"))
+            })
+            .collect();
+        candidates.sort();
+        Self {
+            candidates,
+            index: None,
+        }
+    }
+
+    fn cycle(&mut self, backward: bool) -> Option<&str> {
+        let count = self.candidates.len();
+        if count == 0 {
+            return None;
+        }
+        let index = match self.index {
+            None if backward => count - 1,
+            None => 0,
+            Some(index) if backward => (index + count - 1) % count,
+            Some(index) => (index + 1) % count,
+        };
+        self.index = Some(index);
+        Some(&self.candidates[index])
+    }
+}
+
 struct TreeLayout {
     sort: TreeSort,
     descending: bool,
@@ -153,6 +218,7 @@ struct FileManager {
     find_query: Option<String>,
     focus_find: bool,
     address: String,
+    path_completion: PathCompletion,
     expanded: HashSet<PathBuf>,
     directory_expansions: HashMap<PathBuf, HashSet<PathBuf>>,
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
@@ -252,6 +318,7 @@ impl FileManager {
             search: None,
             find_query: None,
             focus_find: false,
+            path_completion: PathCompletion::default(),
             expanded: HashSet::new(),
             directory_expansions: HashMap::new(),
             tree_cache: HashMap::new(),
@@ -963,6 +1030,8 @@ impl FileManager {
                     (Key::J, true),
                     (Key::K, false),
                     (Key::L, true),
+                    (Key::P, false),
+                    (Key::N, true),
                 ] {
                     if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, key)) {
                         if let Some(update) = &search.update {
@@ -1749,12 +1818,65 @@ impl FileManager {
                 self.open(path, context);
             }
         } else if self.editing_path {
-            let response = ui.add_sized(
-                [ui.available_width(), 32.0],
-                egui::TextEdit::singleline(&mut self.address)
-                    .vertical_align(egui::Align::Center)
-                    .hint_text("Directory path"),
-            );
+            let id = egui::Id::new("path-input");
+            if self.focus_path {
+                self.path_completion =
+                    PathCompletion::new(&self.address, &self.current, self.settings.hidden);
+            }
+            let mut completed = false;
+            if context.memory(|memory| memory.has_focus(id)) {
+                let backward =
+                    ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, Key::Tab));
+                let forward =
+                    ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Tab));
+                if backward || forward {
+                    if let Some(candidate) = self.path_completion.cycle(backward) {
+                        self.address = candidate.to_owned();
+                        completed = true;
+                    }
+                }
+            }
+            let output = egui::TextEdit::singleline(&mut self.address)
+                .id(id)
+                .lock_focus(true)
+                .desired_width(ui.available_width())
+                .min_size(Vec2::new(0.0, 32.0))
+                .vertical_align(egui::Align::Center)
+                .show(ui);
+            let response = &output.response;
+            if response.changed() {
+                self.path_completion =
+                    PathCompletion::new(&self.address, &self.current, self.settings.hidden);
+            }
+            if response.has_focus()
+                && output.cursor_range.is_some_and(|range| {
+                    range.is_empty() && range.primary.ccursor.index == self.address.chars().count()
+                })
+            {
+                if let Some(suffix) = self
+                    .path_completion
+                    .candidates
+                    .first()
+                    .and_then(|candidate| candidate.strip_prefix(&self.address))
+                {
+                    ui.painter().with_clip_rect(output.text_clip_rect).text(
+                        output.galley_pos + Vec2::new(output.galley.size().x, 0.0),
+                        egui::Align2::LEFT_TOP,
+                        suffix,
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+            }
+            if completed {
+                let mut state = output.state;
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(self.address.chars().count()),
+                    )));
+                state.store(context, id);
+            }
             if self.focus_path {
                 response.request_focus();
                 if let Some(mut state) = egui::TextEdit::load_state(context, response.id) {
