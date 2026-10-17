@@ -41,8 +41,11 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   conserva al reiniciar; pulsar un encabezado de `Tree` restaura la ordenación de esa carpeta y sus subcarpetas. Las copias reutilizan las
   miniaturas del original en memoria y disco, sin decodificarlas de nuevo; al modificar un archivo, su miniatura se actualiza
   independientemente. Estos atajos no interfieren con los campos de texto.
-- `n` edita el nombre del elemento seleccionado y `Enter` confirma. Renombrar vincula la caché existente al nuevo nombre y conserva la
-  textura en memoria, también al deshacer y rehacer, sin volver a decodificar ni bloquear la interfaz esperando miniaturas.
+- `n` edita el nombre del elemento seleccionado y `Enter` confirma. En una secuencia, el campo muestra un nombre normal sin numeración, como
+  `testhoas.jpg`: el cambio se aplica a todas las imágenes conservando internamente el número, los ceros iniciales y el separador de cada
+  una. Se comprueban los destinos antes de empezar, sin sobrescribir; `u` y `Ctrl+R` deshacen y rehacen el lote. Renombrar vincula la caché
+  existente al nuevo nombre y conserva la textura en memoria, también al deshacer y rehacer, sin volver a decodificar ni bloquear la
+  interfaz esperando miniaturas.
 - En `Tree`, `Alt+P` selecciona el padre visible del elemento actual sin plegar carpetas ni cambiar de directorio.
 - En `Tree`, `o` abre o cierra la carpeta seleccionada. `Mayús+O` alterna entre expandir recursivamente sus subcarpetas y cerrarlas todas,
   manteniendo abierta la carpeta seleccionada. No sigue enlaces simbólicos y respeta los archivos ocultos configurados. Cada expansión
@@ -105,8 +108,9 @@ inglés. Los iconos de `Hidden`, `Sequences` y `Recursive media` muestran su nom
   existentes; los enlaces simbólicos se conservan como enlaces.
 - `Ctrl+O`/`Alt+←` y `Ctrl+I`/`Alt+→` recorren el historial. `gT` o `Alt+↑` sube al directorio padre; `gt` baja por la ruta conservada.
   Funcionan desde el panel de archivos y el lateral, sin interferir con la edición de texto.
-- `Alt+T` activa `Tree`, `Alt+G` activa `Grid` y `Alt+M` activa `Media` junto con `Recursive media`, incluso si ya estás en `Media`. Las
-  tres vistas siguen disponibles en la barra superior.
+- `Alt+T` activa `Tree` y `Alt+G` activa `Grid`. `Alt+M` alterna entre `Media` y la vista anterior (`Tree` o `Grid`) sin cambiar
+  `Recursive media`; no actúa durante la edición de texto. Las tres vistas siguen disponibles en la barra superior. `Ctrl+M` equivale a
+  `Enter`.
 - `F5` actualiza el contenido y el espacio del disco. `Ctrl+H` o `Hidden` alterna los archivos ocultos en ambos paneles.
 - El doble clic o `Enter` abre las imágenes con el visualizador externo asociado mediante `xdg-open`; no hay visor integrado. `Esc` cancela
   la creación de carpetas, la edición de la dirección o la selección.

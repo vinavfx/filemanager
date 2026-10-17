@@ -85,6 +85,7 @@ struct Settings {
     removed_places: Vec<PathBuf>,
     entry_order: HashMap<PathBuf, Vec<PathBuf>>,
     view: View,
+    media_return_view: View,
     tree_sort: TreeSort,
     tree_descending: bool,
     zoom: f32,
@@ -101,6 +102,7 @@ impl Default for Settings {
             removed_places: Vec::new(),
             entry_order: HashMap::new(),
             view: View::Grid,
+            media_return_view: View::Grid,
             tree_sort: TreeSort::Name,
             tree_descending: false,
             zoom: 1.0,
@@ -109,6 +111,27 @@ impl Default for Settings {
             recursive_media: false,
             dark_mode: true,
         }
+    }
+}
+
+impl Settings {
+    fn set_view(&mut self, view: View) {
+        if view == View::Media && self.view != View::Media {
+            self.media_return_view = self.view;
+        }
+        self.view = view;
+    }
+
+    fn toggle_media(&mut self) {
+        let view = if self.view == View::Media {
+            match self.media_return_view {
+                View::Tree => View::Tree,
+                _ => View::Grid,
+            }
+        } else {
+            View::Media
+        };
+        self.set_view(view);
     }
 }
 
@@ -215,6 +238,7 @@ struct DirectoryFrame {
 }
 
 enum FileOperation {
+    Rename(Vec<(PathBuf, PathBuf)>),
     Copy(Vec<PathBuf>, PathBuf),
     Trash(Vec<PathBuf>),
     EmptyTrash,
@@ -1717,6 +1741,12 @@ impl FileManager {
         self.pane_shortcuts(context);
         if self.new_folder.is_none() {
             if !self.text_input_focused(context)
+                && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::M))
+            {
+                self.settings.toggle_media();
+                self.save();
+            }
+            if !self.text_input_focused(context)
                 && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::R))
             {
                 self.settings.recursive_media = !self.settings.recursive_media;
@@ -1733,17 +1763,11 @@ impl FileManager {
             for (modifiers, key, view) in [
                 (egui::Modifiers::ALT, Key::T, View::Tree),
                 (egui::Modifiers::ALT, Key::G, View::Grid),
-                (egui::Modifiers::ALT, Key::M, View::Media),
             ] {
                 if context.input_mut(|input| input.consume_key(modifiers, key))
-                    && (self.settings.view != view
-                        || (view == View::Media && !self.settings.recursive_media))
+                    && self.settings.view != view
                 {
-                    self.settings.view = view;
-                    if view == View::Media && !self.settings.recursive_media {
-                        self.settings.recursive_media = true;
-                        self.refresh(context);
-                    }
+                    self.settings.set_view(view);
                     self.save();
                 }
             }
@@ -2462,7 +2486,7 @@ impl FileManager {
                         ui.add_space(8.0);
                         for view in [View::Media, View::Grid, View::Tree] {
                             if view_button(ui, view, self.settings.view == view).clicked() {
-                                self.settings.view = view;
+                                self.settings.set_view(view);
                                 self.save();
                             }
                         }
@@ -2537,7 +2561,7 @@ impl FileManager {
             && !files::image_file(&path)
             && !files::video_file(&path)
         {
-            self.settings.view = View::Grid;
+            self.settings.set_view(View::Grid);
         }
         self.thumbnails.cancel();
         if parent != self.current {
@@ -4533,6 +4557,8 @@ impl FileManager {
             return;
         }
         let label = match &operation {
+            FileOperation::Rename(paths) if paths.is_empty() => return,
+            FileOperation::Rename(_) => "Renaming",
             FileOperation::Copy(paths, _) if paths.is_empty() => return,
             FileOperation::Copy(_, _) => "Copying",
             FileOperation::Trash(paths) if paths.is_empty() => return,
@@ -4551,6 +4577,7 @@ impl FileManager {
             _ => HashSet::new(),
         };
         let total = match &operation {
+            FileOperation::Rename(paths) => paths.len(),
             FileOperation::Copy(paths, _) => paths.len(),
             _ => trash_paths.len(),
         };
@@ -4589,6 +4616,7 @@ impl FileManager {
                 context.request_repaint();
             };
             let outcome = match operation {
+                FileOperation::Rename(paths) => history.rename(paths, &mut progress),
                 FileOperation::Copy(paths, directory) => {
                     history.copy(paths, &directory, &mut progress)
                 }
@@ -4695,6 +4723,13 @@ impl FileManager {
                 .as_ref()
                 .and_then(|selected| Self::nearby_selection(&self.visible_paths, selected));
             self.message = None;
+            let renamed_selection = self.selected.as_ref().and_then(|selected| {
+                outcome
+                    .renames
+                    .iter()
+                    .find(|(from, _)| from == selected)
+                    .map(|(_, to)| to.clone())
+            });
             for (from, to) in &outcome.renames {
                 let relocate = |path: &Path| {
                     path.strip_prefix(from)
@@ -4722,7 +4757,7 @@ impl FileManager {
             let selected = if preserve_selection && outcome.renames.is_empty() {
                 nearby.or(outcome.selected)
             } else {
-                outcome.selected.or(nearby)
+                renamed_selection.or(outcome.selected).or(nearby)
             };
             let selected = selected
                 .filter(|path| {
@@ -4782,15 +4817,6 @@ impl FileManager {
             self.message = Some("Select a single item to rename.".into());
             return;
         }
-        if self
-            .entries
-            .iter()
-            .chain(self.tree_cache.values().flatten())
-            .any(|entry| entry.path == source && entry.sequence.is_some())
-        {
-            self.message = Some("Disable sequence grouping before renaming a frame.".into());
-            return;
-        }
         let (Some(parent), Some(name)) = (source.parent(), source.file_name()) else {
             return;
         };
@@ -4798,9 +4824,16 @@ impl FileManager {
             self.message = Some("Cannot edit a name that is not valid UTF-8.".into());
             return;
         };
+        let name = self
+            .entries
+            .iter()
+            .chain(self.tree_cache.values().flatten())
+            .find(|entry| entry.path == source && entry.sequence.is_some())
+            .and_then(|_| files::sequence_rename_name(&source))
+            .unwrap_or_else(|| name.to_owned());
         self.new_folder = Some(NameDialog {
             parent: parent.to_path_buf(),
-            name: name.to_owned(),
+            name,
             source: Some(source),
             submit: false,
             focus: true,
@@ -4838,8 +4871,7 @@ impl FileManager {
                 let length = if entry.directory {
                     dialog.name.chars().count()
                 } else {
-                    entry
-                        .path
+                    Path::new(&dialog.name)
                         .file_stem()
                         .and_then(|stem| stem.to_str())
                         .map_or(dialog.name.chars().count(), |stem| stem.chars().count())
@@ -4937,6 +4969,32 @@ impl FileManager {
         } else if create && self.operation_job.is_none() {
             if let Some(folder) = &mut self.new_folder {
                 let source = folder.source.clone();
+                let sequence = source.as_ref().and_then(|source| {
+                    self.entries
+                        .iter()
+                        .chain(self.tree_cache.values().flatten())
+                        .find(|entry| &entry.path == source)
+                        .and_then(|entry| entry.sequence.clone())
+                });
+                if let Some(frames) = sequence {
+                    match files::sequence_rename_paths(&frames, &folder.name) {
+                        Ok(paths) => {
+                            if self.message == folder.error {
+                                self.message = None;
+                            }
+                            self.new_folder = None;
+                            self.start_operation(FileOperation::Rename(paths), context);
+                        }
+                        Err(error) => {
+                            let error = format!("Cannot save name: {error}");
+                            self.message = Some(error.clone());
+                            folder.error = Some(error);
+                            folder.focus = true;
+                            folder.submit = false;
+                        }
+                    }
+                    return;
+                }
                 let result = if let Some(source) = &source {
                     files::rename_entry(source, &folder.name)
                 } else {

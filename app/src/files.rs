@@ -440,19 +440,74 @@ fn sequence_number(entry: &Entry) -> Option<(String, String, u64)> {
     if entry.directory || !image_file(&entry.path) {
         return None;
     }
-    let stem = entry.path.file_stem()?.to_str()?;
+    let (prefix, digits, suffix) = sequence_parts(&entry.path)?;
+    Some((prefix.to_owned(), suffix.to_owned(), digits.parse().ok()?))
+}
+
+fn sequence_parts(path: &Path) -> Option<(&str, &str, &str)> {
+    let name = path.file_name()?.to_str()?;
+    let stem = path.file_stem()?.to_str()?;
     let end = stem.rfind(|character: char| character.is_ascii_digit())? + 1;
     let start = stem[..end]
         .rfind(|character: char| !character.is_ascii_digit())
         .map_or(0, |index| {
             index + stem[index..].chars().next().map_or(0, char::len_utf8)
         });
-    let digits = &stem[start..end];
-    Some((
-        stem[..start].to_owned(),
-        format!("{}.{}", &stem[end..], entry.path.extension()?.to_str()?),
-        digits.parse().ok()?,
+    Some((&name[..start], &name[start..end], &name[end..]))
+}
+
+pub fn sequence_rename_name(path: &Path) -> Option<String> {
+    let (prefix, _, suffix) = sequence_parts(path)?;
+    Some(format!(
+        "{}{suffix}",
+        prefix.trim_end_matches(['.', '_', '-', ' '])
     ))
+}
+
+pub fn sequence_rename_paths(
+    frames: &[PathBuf],
+    name: &str,
+) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid sequence name."))?;
+    let extension = path.extension().and_then(OsStr::to_str);
+    let suffix = extension.map_or_else(String::new, |extension| format!(".{extension}"));
+    let mut renames = Vec::new();
+    for source in frames {
+        let parent = source
+            .parent()
+            .ok_or_else(|| io::Error::other("Invalid frame directory."))?;
+        entry_path(parent, name)?;
+        let (prefix, digits, original_suffix) =
+            sequence_parts(source).ok_or_else(|| io::Error::other("Invalid frame name."))?;
+        let base = prefix.trim_end_matches(['.', '_', '-', ' ']);
+        let separator = &prefix[base.len()..];
+        let tail = original_suffix
+            .rsplit_once('.')
+            .map_or("", |(tail, _)| tail);
+        let (stem, tail) = stem
+            .strip_suffix(tail)
+            .map_or((stem, ""), |stem| (stem, tail));
+        let target = entry_path(parent, &format!("{stem}{separator}{digits}{tail}{suffix}"))?;
+        if source == &target {
+            continue;
+        }
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("An item named {} already exists.", target.display()),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        renames.push((source.clone(), target));
+    }
+    Ok(renames)
 }
 
 fn group_sequences(entries: Vec<Entry>) -> Vec<Entry> {

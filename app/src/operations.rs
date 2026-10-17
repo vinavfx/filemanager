@@ -61,6 +61,24 @@ impl History {
         self.redo.clear();
     }
 
+    pub fn rename(
+        &mut self,
+        paths: Vec<(PathBuf, PathBuf)>,
+        progress: &mut impl FnMut(usize, usize, &Path),
+    ) -> Outcome {
+        let mut actions = paths
+            .into_iter()
+            .rev()
+            .map(|(from, to)| Action::Rename { from, to })
+            .collect();
+        let (inverse, outcome) = execute(&mut actions, progress);
+        if !inverse.is_empty() {
+            self.undo.push(inverse);
+            self.redo.clear();
+        }
+        outcome
+    }
+
     pub fn trash(
         &mut self,
         paths: Vec<PathBuf>,
