@@ -204,8 +204,59 @@ impl ReadBudget {
     }
 }
 
+pub fn is_trash(path: &Path) -> bool {
+    path == Path::new("trash:///")
+}
+
 pub fn entries(path: &Path, hidden: bool, sequences: bool) -> io::Result<Vec<Entry>> {
+    if is_trash(path) {
+        return trash_entries();
+    }
     read_entries(path, hidden, sequences, None)
+}
+
+fn trash_entries() -> io::Result<Vec<Entry>> {
+    let output = gio(
+        "list",
+        &["-u", "-h", "-n", "-a", "standard::target-uri"],
+        &[OsStr::new("trash:///")],
+    )?;
+    let output = String::from_utf8(output)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        let Some(attributes) = line.splitn(4, '\t').nth(3) else {
+            continue;
+        };
+        let Some(target) = attributes.strip_prefix("standard::target-uri=") else {
+            continue;
+        };
+        let Some(path) = url::Url::parse(target)
+            .ok()
+            .and_then(|uri| uri.to_file_path().ok())
+        else {
+            continue;
+        };
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        entries.push(Entry {
+            name: path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            directory: metadata.is_dir(),
+            symlink: metadata.is_symlink(),
+            size: metadata.len(),
+            item_count: None,
+            modified: metadata.modified().ok(),
+            modified_label: "—".to_owned(),
+            sequence: None,
+            path,
+        });
+    }
+    format_modified(&mut entries);
+    entries.sort_by_cached_key(|entry| (!entry.directory, entry.name.to_lowercase()));
+    Ok(entries)
 }
 
 pub fn entries_with_budget(

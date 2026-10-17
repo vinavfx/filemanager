@@ -1,4 +1,5 @@
 use crate::files::{self, gio};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
@@ -18,6 +19,9 @@ pub struct Outcome {
     pub error: Option<String>,
 }
 
+type TrashEntries = HashMap<FileIdentity, Vec<String>>;
+
+#[derive(Eq, Hash, PartialEq)]
 struct FileIdentity {
     device: u64,
     inode: u64,
@@ -121,9 +125,10 @@ fn execute(
     let mut inverse = Vec::new();
     let mut outcome = Outcome::default();
     let total = actions.len();
+    let mut trash = None;
     while let Some(action) = actions.last() {
         progress(inverse.len(), total, action.path());
-        match action.apply() {
+        match action.apply(&mut trash) {
             Ok(reverse) => {
                 match action {
                     Action::Rename { from, to } => {
@@ -158,7 +163,7 @@ impl Action {
         }
     }
 
-    fn apply(&self) -> io::Result<Self> {
+    fn apply(&self, trash: &mut Option<TrashEntries>) -> io::Result<Self> {
         match self {
             Self::Rename { from, to } => {
                 let name = to.file_name().and_then(OsStr::to_str).ok_or_else(|| {
@@ -193,7 +198,11 @@ impl Action {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                let uri = find_trashed(path, identity)?;
+                let entries = match trash {
+                    Some(entries) => entries,
+                    None => trash.insert(trash_entries()?),
+                };
+                let uri = find_trashed(path, identity, entries)?;
                 gio("move", &["-T"], &[OsStr::new(&uri), path.as_os_str()])?;
                 Ok(Self::Trash(path.clone()))
             }
@@ -201,26 +210,37 @@ impl Action {
     }
 }
 
-impl FileIdentity {
-    fn matches(&self, uri: &str) -> io::Result<bool> {
-        let info = gio(
-            "info",
-            &["-n", "-a", "unix::device,unix::inode"],
-            &[OsStr::new(uri)],
-        )?;
-        let info = String::from_utf8(info)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let device = format!("  unix::device: {}", self.device);
-        let inode = format!("  unix::inode: {}", self.inode);
-        Ok(info.lines().any(|line| line == device) && info.lines().any(|line| line == inode))
-    }
-}
-
-fn trash_entries() -> io::Result<Vec<String>> {
-    let output = gio("list", &["-u", "-h"], &[OsStr::new("trash:///")])?;
+fn trash_entries() -> io::Result<TrashEntries> {
+    let output = gio(
+        "list",
+        &["-u", "-h", "-n", "-a", "unix::device,unix::inode"],
+        &[OsStr::new("trash:///")],
+    )?;
     let output = String::from_utf8(output)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(output.lines().map(str::to_owned).collect())
+    let mut entries = TrashEntries::new();
+    for line in output.lines() {
+        let mut columns = line.splitn(4, '\t');
+        let Some(uri) = columns.next() else {
+            continue;
+        };
+        let Some(attributes) = columns.nth(2) else {
+            continue;
+        };
+        let attribute = |name: &str| {
+            attributes
+                .split_ascii_whitespace()
+                .find_map(|value| value.strip_prefix(name)?.parse::<u64>().ok())
+        };
+        if let (Some(device), Some(inode)) = (attribute("unix::device="), attribute("unix::inode="))
+        {
+            entries
+                .entry(FileIdentity { device, inode })
+                .or_default()
+                .push(uri.to_owned());
+        }
+    }
+    Ok(entries)
 }
 
 fn is_original(uri: &str, path: &Path) -> io::Result<bool> {
@@ -241,16 +261,20 @@ fn is_original(uri: &str, path: &Path) -> io::Result<bool> {
     Ok(info.ends_with(&attribute))
 }
 
-fn find_trashed(path: &Path, identity: &FileIdentity) -> io::Result<String> {
+fn find_trashed(
+    path: &Path,
+    identity: &FileIdentity,
+    entries: &TrashEntries,
+) -> io::Result<String> {
     let mut found = None;
-    for uri in trash_entries()? {
-        if is_original(&uri, path)? && identity.matches(&uri)? {
+    for uri in entries.get(identity).into_iter().flatten() {
+        if is_original(uri, path)? {
             if found.is_some() {
                 return Err(io::Error::other(
                     "Multiple trashed copies match this path. Restore it from the system trash.",
                 ));
             }
-            found = Some(uri);
+            found = Some(uri.clone());
         }
     }
     found.ok_or_else(|| {
