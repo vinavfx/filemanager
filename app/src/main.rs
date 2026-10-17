@@ -233,6 +233,7 @@ struct OperationJob {
     pending_trash: Vec<PathBuf>,
     completed_offset: usize,
     outcome: operations::Outcome,
+    preserve_selection: bool,
     label: &'static str,
     completed: usize,
     total: usize,
@@ -341,6 +342,7 @@ struct FileManager {
     new_folder: Option<NameDialog>,
     confirm_empty_trash: bool,
     confirm_trash: Option<Vec<PathBuf>>,
+    trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -460,6 +462,7 @@ impl FileManager {
             new_folder: None,
             confirm_empty_trash: false,
             confirm_trash: None,
+            trash_focus: None,
             compression_job: None,
             message: config_error.or(bookmark_error),
         };
@@ -1275,6 +1278,7 @@ impl FileManager {
                         continue;
                     }
                     let outcome = std::mem::take(&mut job.outcome);
+                    let preserve_selection = job.preserve_selection;
                     let trashed = !job.trash_paths.is_empty();
                     let restore = trashed && !outcome.changed;
                     self.operations = history;
@@ -1289,7 +1293,7 @@ impl FileManager {
                         if restore {
                             self.refresh(context);
                         }
-                        self.complete_operation(outcome, context);
+                        self.complete_operation(outcome, preserve_selection, context);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -1920,6 +1924,7 @@ impl FileManager {
                 self.trash_selection(context);
             } else if !files::is_trash(&self.current) && !self.selection.is_empty() {
                 self.confirm_trash = Some(self.selected_trash_paths());
+                self.trash_focus = Some(false);
                 return;
             }
         }
@@ -4561,6 +4566,7 @@ impl FileManager {
             FileOperation::Copy(paths, _) => paths.len(),
             _ => trash_paths.len(),
         };
+        let preserve_selection = matches!(operation, FileOperation::Undo | FileOperation::Redo);
         let history = std::mem::take(&mut self.operations);
         let receiver = Self::run_operation(history, operation, context);
         self.operation_job = Some(OperationJob {
@@ -4569,6 +4575,7 @@ impl FileManager {
             pending_trash: Vec::new(),
             completed_offset: 0,
             outcome: operations::Outcome::default(),
+            preserve_selection,
             label,
             completed: 0,
             total,
@@ -4649,7 +4656,22 @@ impl FileManager {
             .collect()
     }
 
-    fn complete_operation(&mut self, outcome: operations::Outcome, context: &egui::Context) {
+    fn nearby_selection(paths: &[PathBuf], selected: &Path) -> Option<PathBuf> {
+        let index = paths.iter().position(|path| path == selected)?;
+        paths[..=index]
+            .iter()
+            .rev()
+            .chain(&paths[index + 1..])
+            .find(|path| std::fs::symlink_metadata(path).is_ok())
+            .cloned()
+    }
+
+    fn complete_operation(
+        &mut self,
+        outcome: operations::Outcome,
+        preserve_selection: bool,
+        context: &egui::Context,
+    ) {
         self.thumbnails.reuse_copies(&outcome.copied);
         if let Some(mut placement) = self.paste_placement.take() {
             if !outcome.copied.is_empty() {
@@ -4679,18 +4701,10 @@ impl FileManager {
         }
         self.media_cache.clear();
         if outcome.changed {
-            let nearby = self.selected.as_ref().and_then(|selected| {
-                let index = self
-                    .visible_paths
-                    .iter()
-                    .position(|path| path == selected)?;
-                self.visible_paths
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(position, _)| position.abs_diff(index))
-                    .map(|(_, path)| path.clone())
-                    .filter(|path| std::fs::symlink_metadata(path).is_ok())
-            });
+            let nearby = self
+                .selected
+                .as_ref()
+                .and_then(|selected| Self::nearby_selection(&self.visible_paths, selected));
             self.message = None;
             for (from, to) in &outcome.renames {
                 let relocate = |path: &Path| {
@@ -4715,9 +4729,12 @@ impl FileManager {
                     outcome.copied.is_empty() && self.directory_frame.is_some();
                 self.wait_for_thumbnails = self.preparing_directory;
             }
-            let selected = outcome
-                .selected
-                .or(nearby)
+            let selected = if preserve_selection && outcome.renames.is_empty() {
+                nearby.or(outcome.selected)
+            } else {
+                outcome.selected.or(nearby)
+            };
+            let selected = selected
                 .filter(|path| {
                     path.parent() == Some(self.current.as_path())
                         || (self.settings.view == View::Tree
@@ -4833,34 +4850,114 @@ impl FileManager {
         let Some(paths) = &self.confirm_trash else {
             return;
         };
-        let message = if let [path] = paths.as_slice() {
-            format!("Move {} to the trash?", path.display())
-        } else {
-            format!("Move {} selected items to the trash?", paths.len())
-        };
-        let mut confirm = false;
-        let mut cancel = false;
-        let response = egui::Modal::new(egui::Id::new("trash-confirmation")).show(context, |ui| {
-            ui.set_max_width(440.0);
-            ui.heading("Move to Trash?");
-            ui.label(message);
-            ui.label("Folders include all their contents. You can undo this with u.");
-            ui.horizontal(|ui| {
-                cancel = ui.button("Cancel").clicked();
-                confirm = ui
-                    .add_enabled(
-                        self.operation_job.is_none(),
-                        egui::Button::new("Move to Trash"),
-                    )
-                    .clicked();
-            });
+        let ready = self.operation_job.is_none();
+        let mut focus = self.trash_focus.take();
+        let activate = context.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::CTRL, Key::H)
+                || input.consume_key(egui::Modifiers::NONE, Key::H)
+            {
+                focus = Some(false);
+            }
+            if input.consume_key(egui::Modifiers::CTRL, Key::L)
+                || input.consume_key(egui::Modifiers::NONE, Key::L)
+            {
+                focus = Some(true);
+            }
+            input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                || input.consume_key(egui::Modifiers::CTRL, Key::M)
         });
-        if confirm {
+        let mut confirm =
+            ready && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y));
+        let mut cancel = false;
+        let frame = egui::Frame::window(&context.style())
+            .inner_margin(20)
+            .corner_radius(12)
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 4],
+                blur: 16,
+                spread: 0,
+                color: Color32::from_black_alpha(32),
+            });
+        let response = egui::Modal::new(egui::Id::new("trash-confirmation"))
+            .frame(frame)
+            .backdrop_color(Color32::from_black_alpha(64))
+            .show(context, |ui| {
+                ui.set_width((context.screen_rect().width() - 64.0).clamp(160.0, 400.0));
+                ui.label(RichText::new("Move to Trash?").size(18.0).strong());
+                ui.add_space(12.0);
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .corner_radius(8)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if paths.len() > 1 {
+                            ui.label(
+                                RichText::new(format!("{} selected items", paths.len()))
+                                    .small()
+                                    .color(MUTED),
+                            );
+                            ui.add_space(4.0);
+                        }
+                        for path in paths.iter().take(3) {
+                            let name = path
+                                .file_name()
+                                .unwrap_or(path.as_os_str())
+                                .to_string_lossy();
+                            ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
+                                .on_hover_text(path.display().to_string());
+                        }
+                        if paths.len() > 3 {
+                            ui.label(
+                                RichText::new(format!("and {} more", paths.len() - 3))
+                                    .small()
+                                    .color(MUTED),
+                            );
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Folders include their contents. Undo with u.")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let active = &mut ui.visuals_mut().widgets.active;
+                    active.weak_bg_fill = Color32::from_rgb(165, 69, 60);
+                    active.fg_stroke.color = Color32::WHITE;
+                    let confirm_button = ui
+                        .add_enabled_ui(ready, |ui| {
+                            ui.add_sized(
+                                [158.0, 34.0],
+                                egui::Button::new("Move to Trash · Y")
+                                    .stroke(Stroke::NONE)
+                                    .corner_radius(6),
+                            )
+                        })
+                        .inner;
+                    let cancel_button = ui.add_sized(
+                        [112.0, 34.0],
+                        egui::Button::new("Cancel · Esc")
+                            .stroke(Stroke::NONE)
+                            .corner_radius(6),
+                    );
+                    if focus == Some(false) {
+                        cancel_button.request_focus();
+                    } else if focus == Some(true) && ready {
+                        confirm_button.request_focus();
+                    }
+                    confirm |= confirm_button.clicked()
+                        || (ready && activate && confirm_button.has_focus());
+                    cancel = cancel_button.clicked() || (activate && cancel_button.has_focus());
+                });
+            });
+        if cancel || response.should_close() {
+            self.confirm_trash = None;
+        } else if confirm {
             if let Some(paths) = self.confirm_trash.take() {
                 self.start_operation(FileOperation::Trash(paths), context);
             }
-        } else if cancel || response.should_close() {
-            self.confirm_trash = None;
         }
     }
 
@@ -4965,6 +5062,7 @@ impl FileManager {
                                 selected: Some(path),
                                 error: None,
                             },
+                            false,
                             context,
                         );
                     }
