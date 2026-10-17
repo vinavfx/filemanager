@@ -10,6 +10,7 @@ pub enum Kind {
     Music,
     Pictures,
     Videos,
+    Trash,
 }
 
 #[derive(Clone)]
@@ -64,6 +65,17 @@ pub fn paint_icon(ui: &egui::Ui, rect: egui::Rect, kind: Kind, color: Color32) {
             line(point(0.25, 0.9), point(0.75, 0.9));
             line(point(0.75, 0.9), point(0.75, 0.35));
             line(point(0.5, 0.9), point(0.5, 0.6));
+        }
+        Kind::Trash => {
+            line(point(0.15, 0.25), point(0.85, 0.25));
+            line(point(0.35, 0.25), point(0.35, 0.1));
+            line(point(0.35, 0.1), point(0.65, 0.1));
+            line(point(0.65, 0.1), point(0.65, 0.25));
+            line(point(0.25, 0.3), point(0.3, 0.9));
+            line(point(0.3, 0.9), point(0.7, 0.9));
+            line(point(0.7, 0.9), point(0.75, 0.3));
+            line(point(0.42, 0.4), point(0.42, 0.75));
+            line(point(0.58, 0.4), point(0.58, 0.75));
         }
         Kind::Downloads => {
             line(point(0.5, 0.1), point(0.5, 0.7));

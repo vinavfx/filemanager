@@ -216,6 +216,7 @@ struct DirectoryFrame {
 
 enum FileOperation {
     Trash(Vec<PathBuf>),
+    EmptyTrash,
     Undo,
     Redo,
 }
@@ -228,6 +229,9 @@ enum OperationUpdate {
 struct OperationJob {
     receiver: mpsc::Receiver<OperationUpdate>,
     trash_paths: Vec<PathBuf>,
+    pending_trash: Vec<PathBuf>,
+    completed_offset: usize,
+    outcome: operations::Outcome,
     label: &'static str,
     completed: usize,
     total: usize,
@@ -288,6 +292,7 @@ struct FileManager {
     home_places: Vec<places::Place>,
     bookmarks: bookmarks::Bookmarks,
     new_folder: Option<NameDialog>,
+    confirm_empty_trash: bool,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
 }
@@ -395,6 +400,7 @@ impl FileManager {
             home_places,
             bookmarks,
             new_folder: None,
+            confirm_empty_trash: false,
             compression_job: None,
             message: config_error.or(bookmark_error),
         };
@@ -937,11 +943,36 @@ impl FileManager {
         while let Some(job) = &mut self.operation_job {
             match job.receiver.try_recv() {
                 Ok(OperationUpdate::Progress(completed, total, path)) => {
-                    job.completed = completed;
-                    job.total = total;
+                    job.completed = job.completed_offset + completed;
+                    if job.trash_paths.is_empty() {
+                        job.total = total;
+                    }
                     job.path = path;
                 }
                 Ok(OperationUpdate::Finished(history, outcome)) => {
+                    job.outcome.changed |= outcome.changed;
+                    job.outcome.renames.extend(outcome.renames);
+                    job.outcome.selected = outcome.selected;
+                    if let Some(error) = outcome.error {
+                        match &mut job.outcome.error {
+                            Some(previous) => {
+                                previous.push('\n');
+                                previous.push_str(&error);
+                            }
+                            None => job.outcome.error = Some(error),
+                        }
+                    }
+                    if !job.pending_trash.is_empty() {
+                        job.completed_offset = job.total - job.pending_trash.len();
+                        job.completed = job.completed_offset;
+                        job.receiver = Self::run_operation(
+                            history,
+                            FileOperation::Trash(std::mem::take(&mut job.pending_trash)),
+                            context,
+                        );
+                        continue;
+                    }
+                    let outcome = std::mem::take(&mut job.outcome);
                     let restore = !job.trash_paths.is_empty() && !outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
@@ -2264,6 +2295,19 @@ impl FileManager {
             self.open_bookmark(bookmark, context);
         }
         response.context_menu(|ui| {
+            if matches!(kind, Some(places::Kind::Trash)) {
+                if ui
+                    .add_enabled(
+                        self.operation_job.is_none(),
+                        egui::Button::new("Empty Trash…"),
+                    )
+                    .clicked()
+                {
+                    self.confirm_empty_trash = true;
+                    ui.close_menu();
+                }
+                return;
+            }
             if ui.button("Remove bookmark").clicked() {
                 if let Some(path) = bookmark.path.as_ref().filter(|_| kind.is_some()) {
                     if !self
@@ -2311,6 +2355,15 @@ impl FileManager {
                 )
             })
             .collect();
+        entries.push((
+            bookmarks::Bookmark {
+                uri: "trash:///".into(),
+                path: None,
+                label: "Trash".into(),
+                exists: true,
+            },
+            Some(places::Kind::Trash),
+        ));
         let default_count = entries.len();
         entries.extend(
             self.bookmarks
@@ -2326,7 +2379,11 @@ impl FileManager {
                 .cloned()
                 .map(|bookmark| (bookmark, None)),
         );
-        if self.sidebar_focused && self.new_folder.is_none() && !self.text_input_focused(context) {
+        if self.sidebar_focused
+            && self.new_folder.is_none()
+            && !self.confirm_empty_trash
+            && !self.text_input_focused(context)
+        {
             let mut cursor = self
                 .sidebar_cursor
                 .unwrap_or_else(|| {
@@ -3712,7 +3769,27 @@ impl FileManager {
     }
 
     fn start_operation(&mut self, operation: FileOperation, context: &egui::Context) {
-        if self.operation_job.is_some() || self.new_folder.is_some() {
+        if self.new_folder.is_some() {
+            return;
+        }
+        if let Some(job) = &mut self.operation_job {
+            let FileOperation::Trash(mut paths) = operation else {
+                return;
+            };
+            if job.trash_paths.is_empty() {
+                return;
+            }
+            paths.retain(|path| !job.trash_paths.iter().any(|root| path.starts_with(root)));
+            if paths.is_empty() {
+                return;
+            }
+            job.total += paths.len();
+            job.trash_paths.extend(paths.iter().cloned());
+            job.pending_trash.extend(paths);
+            if self.visual_line {
+                self.select(self.selected.clone(), context);
+            }
+            self.hide_pending_trash(context);
             return;
         }
         let label = match &operation {
@@ -3723,6 +3800,7 @@ impl FileManager {
                 }
                 "Moving to trash"
             }
+            FileOperation::EmptyTrash => "Emptying trash",
             FileOperation::Undo => "Undoing",
             FileOperation::Redo => "Redoing",
         };
@@ -3730,17 +3808,29 @@ impl FileManager {
             FileOperation::Trash(paths) => paths.clone(),
             _ => Vec::new(),
         };
-        let mut history = std::mem::take(&mut self.operations);
-        let (sender, receiver) = mpsc::channel();
+        let total = trash_paths.len();
+        let history = std::mem::take(&mut self.operations);
+        let receiver = Self::run_operation(history, operation, context);
         self.operation_job = Some(OperationJob {
             receiver,
             trash_paths,
+            pending_trash: Vec::new(),
+            completed_offset: 0,
+            outcome: operations::Outcome::default(),
             label,
             completed: 0,
-            total: 0,
+            total,
             path: PathBuf::new(),
         });
         self.hide_pending_trash(context);
+    }
+
+    fn run_operation(
+        mut history: operations::History,
+        operation: FileOperation,
+        context: &egui::Context,
+    ) -> mpsc::Receiver<OperationUpdate> {
+        let (sender, receiver) = mpsc::channel();
         let context = context.clone();
         std::thread::spawn(move || {
             let mut progress = |completed, total, path: &Path| {
@@ -3753,18 +3843,17 @@ impl FileManager {
             };
             let outcome = match operation {
                 FileOperation::Trash(paths) => history.trash(paths, &mut progress),
+                FileOperation::EmptyTrash => history.empty_trash(&mut progress),
                 FileOperation::Undo => history.undo(&mut progress),
                 FileOperation::Redo => history.redo(&mut progress),
             };
             let _ = sender.send(OperationUpdate::Finished(history, outcome));
             context.request_repaint();
         });
+        receiver
     }
 
     fn trash_selection(&mut self, context: &egui::Context) {
-        if self.operation_job.is_some() {
-            return;
-        }
         let sequences: HashMap<_, _> = self
             .entries
             .iter()
@@ -3949,6 +4038,37 @@ impl FileManager {
         true
     }
 
+    fn empty_trash_window(&mut self, context: &egui::Context) {
+        if !self.confirm_empty_trash {
+            return;
+        }
+        let response =
+            egui::Modal::new(egui::Id::new("empty-trash-confirmation")).show(context, |ui| {
+                ui.heading("Empty Trash?");
+                ui.label(
+                    "All items in the trash will be permanently deleted. This cannot be undone.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_empty_trash = false;
+                    }
+                    if ui
+                        .add_enabled(
+                            self.operation_job.is_none(),
+                            egui::Button::new("Empty Trash"),
+                        )
+                        .clicked()
+                    {
+                        self.confirm_empty_trash = false;
+                        self.start_operation(FileOperation::EmptyTrash, context);
+                    }
+                });
+            });
+        if response.should_close() {
+            self.confirm_empty_trash = false;
+        }
+    }
+
     fn new_folder_window(&mut self, context: &egui::Context) {
         let mut open = true;
         let mut create = false;
@@ -4078,7 +4198,7 @@ impl eframe::App for FileManager {
             self.message = Some(format!("Cannot read shared bookmarks: {error}"));
         }
         self.poll(context);
-        if !self.preparing_directory {
+        if !self.preparing_directory && !self.confirm_empty_trash {
             self.shortcuts(context);
         }
         self.hide_pending_trash(context);
@@ -4196,6 +4316,7 @@ impl eframe::App for FileManager {
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
         self.new_folder_window(context);
+        self.empty_trash_window(context);
         if !self.directory_ready
             || self.current != frame_directory
             || (self.preparing_directory && self.prepared_view != previous_view)

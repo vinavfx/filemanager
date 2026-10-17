@@ -61,6 +61,28 @@ impl History {
         outcome
     }
 
+    pub fn empty_trash(&mut self, progress: &mut impl FnMut(usize, usize, &Path)) -> Outcome {
+        let path = Path::new("trash:///");
+        progress(0, 1, path);
+        if let Err(error) = gio("trash", &["--empty"], &[]) {
+            return Outcome {
+                error: Some(format!("Cannot empty trash: {error}")),
+                ..Outcome::default()
+            };
+        }
+        for stack in [&mut self.undo, &mut self.redo] {
+            for actions in stack.iter_mut() {
+                actions.retain(|action| !matches!(action, Action::Restore { .. }));
+            }
+            stack.retain(|actions| !actions.is_empty());
+        }
+        progress(1, 1, path);
+        Outcome {
+            changed: true,
+            ..Outcome::default()
+        }
+    }
+
     pub fn undo(&mut self, progress: &mut impl FnMut(usize, usize, &Path)) -> Outcome {
         replay(&mut self.undo, &mut self.redo, "Nothing to undo.", progress)
     }
