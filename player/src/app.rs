@@ -786,6 +786,7 @@ impl Player {
         if self.fullscreen {
             self.fullscreen_previous_ui = self.show_ui;
             self.show_ui = false;
+            self.fit_view();
         } else {
             self.show_ui = self.fullscreen_previous_ui;
         }
