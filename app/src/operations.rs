@@ -17,13 +17,38 @@ pub struct Outcome {
     pub pending_delete: Vec<PathBuf>,
     pub renames: Vec<(PathBuf, PathBuf)>,
     pub copied: Vec<(PathBuf, PathBuf)>,
+    pub trashed: Vec<YankedFile>,
     pub selected: Option<PathBuf>,
     pub error: Option<String>,
 }
 
 type TrashEntries = HashMap<FileIdentity, Vec<String>>;
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Clone)]
+pub struct YankedFile {
+    pub path: PathBuf,
+    trashed: Option<(FileIdentity, bool)>,
+}
+
+impl YankedFile {
+    pub fn pasted(&mut self, from: &Path, to: &Path) {
+        if self.trashed.is_some() && self.path == from {
+            self.path = to.to_path_buf();
+            self.trashed = None;
+        }
+    }
+}
+
+impl From<PathBuf> for YankedFile {
+    fn from(path: PathBuf) -> Self {
+        Self {
+            path,
+            trashed: None,
+        }
+    }
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct FileIdentity {
     device: u64,
     inode: u64,
@@ -104,22 +129,47 @@ impl History {
 
     pub fn copy(
         &mut self,
-        paths: Vec<PathBuf>,
+        paths: Vec<YankedFile>,
         directory: &Path,
         progress: &mut impl FnMut(usize, usize, &Path),
     ) -> Outcome {
         let mut outcome = Outcome::default();
         let mut inverse = Vec::new();
         let total = paths.len();
-        for (index, from) in paths.into_iter().enumerate() {
+        let mut trash = None;
+        for (index, item) in paths.into_iter().enumerate() {
+            let from = item.path;
             progress(index, total, &from);
-            let result = copy_destination(&from, directory).and_then(|to| {
+            let result = (|| {
+                if let Some((identity, is_directory)) = &item.trashed {
+                    let restored = std::fs::symlink_metadata(&from).is_ok_and(|metadata| {
+                        metadata.dev() == identity.device && metadata.ino() == identity.inode
+                    });
+                    if !restored {
+                        let entries = match &mut trash {
+                            Some(entries) => entries,
+                            None => trash.insert(trash_entries()?),
+                        };
+                        let uri = find_trashed(&from, identity, entries)?;
+                        let to = paste_destination(&from, directory, *is_directory)?;
+                        gio("move", &["-T"], &[OsStr::new(&uri), to.as_os_str()])?;
+                        for stack in [&mut self.undo, &mut self.redo] {
+                            for actions in stack.iter_mut() {
+                                actions.retain(|action| !matches!(action, Action::Restore { path, identity: other } if path == &from && other == identity));
+                            }
+                            stack.retain(|actions| !actions.is_empty());
+                        }
+                        let reverse = Action::Trash(to.clone());
+                        return Ok((from, to, reverse));
+                    }
+                }
+                let to = copy_destination(&from, directory)?;
                 let action = Action::Copy {
                     from: from.clone(),
                     to: to.clone(),
                 };
                 action.apply(&mut None).map(|reverse| (from, to, reverse))
-            });
+            })();
             match result {
                 Ok((from, to, reverse)) => {
                     progress(index + 1, total, &to);
@@ -234,6 +284,8 @@ fn execute(
     let mut trash = None;
     while let Some(action) = actions.last() {
         progress(inverse.len(), total, action.path());
+        let is_directory = matches!(action, Action::Trash(_))
+            && std::fs::symlink_metadata(action.path()).is_ok_and(|metadata| metadata.is_dir());
         match action.apply(&mut trash) {
             Ok(reverse) => {
                 match action {
@@ -246,7 +298,16 @@ fn execute(
                         outcome.selected.get_or_insert_with(|| to.clone());
                         outcome.copied.push((from.clone(), to.clone()));
                     }
-                    Action::Trash(_) | Action::RemoveCopy { .. } => outcome.selected = None,
+                    Action::Trash(path) => {
+                        if let Action::Restore { identity, .. } = &reverse {
+                            outcome.trashed.push(YankedFile {
+                                path: path.clone(),
+                                trashed: Some((identity.clone(), is_directory)),
+                            });
+                        }
+                        outcome.selected = None;
+                    }
+                    Action::RemoveCopy { .. } => outcome.selected = None,
                 }
                 outcome.changed = true;
                 inverse.push(reverse);
@@ -366,13 +427,23 @@ fn copy_destination(from: &Path, directory: &Path) -> io::Result<PathBuf> {
     if metadata.is_dir() && directory.starts_with(from.canonicalize()?) {
         return Err(io::Error::other("Cannot copy a folder into itself."));
     }
+    paste_destination(from, &directory, metadata.is_dir())
+}
+
+fn paste_destination(from: &Path, directory: &Path, is_directory: bool) -> io::Result<PathBuf> {
+    let directory = directory.canonicalize()?;
+    if !directory.is_dir() {
+        return Err(io::Error::other(
+            "The paste destination is not a directory.",
+        ));
+    }
     let name = from
         .file_name()
         .ok_or_else(|| io::Error::other("Invalid file name."))?;
     let mut destination = directory.join(name);
     let mut number = 1;
     while destination.try_exists()? || std::fs::symlink_metadata(&destination).is_ok() {
-        let stem = if metadata.is_dir() {
+        let stem = if is_directory {
             Some(name)
         } else {
             from.file_stem()
@@ -383,7 +454,7 @@ fn copy_destination(from: &Path, directory: &Path) -> io::Result<PathBuf> {
         } else {
             name.push(format!(" (copy {number})"));
         }
-        if !metadata.is_dir() {
+        if !is_directory {
             if let Some(extension) = from.extension() {
                 name.push(".");
                 name.push(extension);

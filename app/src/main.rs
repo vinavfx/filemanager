@@ -269,7 +269,7 @@ struct DirectoryFrame {
 enum FileOperation {
     Rename(Vec<(PathBuf, PathBuf)>),
     Move(Vec<(PathBuf, PathBuf)>),
-    Copy(Vec<PathBuf>, PathBuf),
+    Copy(Vec<operations::YankedFile>, PathBuf),
     Trash(Vec<PathBuf>),
     Delete(Vec<PathBuf>),
     EmptyTrash,
@@ -362,7 +362,7 @@ struct FileManager {
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
-    copied_files: Vec<PathBuf>,
+    copied_files: Vec<operations::YankedFile>,
     paste_placement: Option<PastePlacement>,
     selection_anchor: Option<PathBuf>,
     directory_selections: HashMap<PathBuf, DirectorySelection>,
@@ -1022,6 +1022,7 @@ impl FileManager {
                     .and_then(|entry| entry.sequence.as_ref())
                     .map_or_else(|| vec![path.clone()], |frames| frames.as_ref().clone())
             })
+            .map(operations::YankedFile::from)
             .collect();
         self.exit_visual(context);
         self.set_message(Some(format!("Yanked {} items.", selected.len())));
@@ -1330,6 +1331,7 @@ impl FileManager {
                     job.outcome.pending_delete.extend(outcome.pending_delete);
                     job.outcome.renames.extend(outcome.renames);
                     job.outcome.copied.extend(outcome.copied);
+                    job.outcome.trashed.extend(outcome.trashed);
                     job.outcome.selected = outcome.selected;
                     if let Some(error) = outcome.error {
                         match &mut job.outcome.error {
@@ -1351,6 +1353,9 @@ impl FileManager {
                         continue;
                     }
                     let mut outcome = std::mem::take(&mut job.outcome);
+                    if !job.trash_paths.is_empty() && !outcome.trashed.is_empty() {
+                        self.copied_files = std::mem::take(&mut outcome.trashed);
+                    }
                     self.pending_delete.append(&mut outcome.pending_delete);
                     let previous_selection = job.previous_selection.take();
                     let preserve_selection = job.preserve_selection;
@@ -4863,7 +4868,8 @@ impl FileManager {
         };
         let total = match &operation {
             FileOperation::Rename(paths) | FileOperation::Move(paths) => paths.len(),
-            FileOperation::Copy(paths, _) | FileOperation::Delete(paths) => paths.len(),
+            FileOperation::Copy(paths, _) => paths.len(),
+            FileOperation::Delete(paths) => paths.len(),
             _ => trash_paths.len(),
         };
         let preserve_selection = matches!(operation, FileOperation::Undo | FileOperation::Redo);
@@ -4976,6 +4982,18 @@ impl FileManager {
         preserve_selection: bool,
         context: &egui::Context,
     ) {
+        for trashed in &outcome.trashed {
+            for item in &mut self.copied_files {
+                if item.path == trashed.path {
+                    item.clone_from(trashed);
+                }
+            }
+        }
+        for (from, to) in &outcome.copied {
+            for item in &mut self.copied_files {
+                item.pasted(from, to);
+            }
+        }
         self.thumbnails.reuse_copies(&outcome.copied);
         self.thumbnails.reuse_renames(&outcome.renames);
         if let Some(mut placement) = self.paste_placement.take() {
@@ -5540,6 +5558,7 @@ impl FileManager {
                                 pending_delete: Vec::new(),
                                 renames,
                                 copied: Vec::new(),
+                                trashed: Vec::new(),
                                 selected: Some(path),
                                 error: None,
                             },
