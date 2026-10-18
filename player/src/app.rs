@@ -262,6 +262,9 @@ impl Player {
             .exact_height(36.0)
             .show(context, |ui| {
                 ui.horizontal_centered(|ui| {
+                    if ui.button("⏮").on_hover_text("Go to start (_)").clicked() {
+                        self.playback.seek(0, false);
+                    }
                     for (label, direction, hint) in [
                         ("◀", Direction::Reverse, "Reverse (J)"),
                         ("■", Direction::Stop, "Stop (K)"),
@@ -274,6 +277,14 @@ impl Player {
                         {
                             self.playback.set_direction(direction);
                         }
+                    }
+                    if ui
+                        .button("⏭")
+                        .on_hover_text("Go to end (Shift+4)")
+                        .clicked()
+                    {
+                        self.playback
+                            .seek(self.playback.count.saturating_sub(1) as i64, false);
                     }
                     ui.separator();
                     if ui
@@ -897,6 +908,16 @@ impl Player {
         }
         let events = context.input(|input| input.events.clone());
         for event in events {
+            if let egui::Event::Text(text) = &event
+                && text == "_"
+                && context.input(|input| {
+                    !input.modifiers.ctrl && !input.modifiers.alt && !input.modifiers.mac_cmd
+                })
+            {
+                self.playback.seek(0, false);
+                context.request_repaint();
+                continue;
+            }
             let egui::Event::Key {
                 key,
                 pressed: true,
@@ -918,6 +939,12 @@ impl Player {
                     Key::E if !modifiers.shift => self.hide_requested = true,
                     Key::W if !modifiers.shift => self.close(),
                     Key::H if !modifiers.shift => self.hud = !self.hud,
+                    Key::D if !modifiers.shift => {
+                        self.playback.seek(self.playback.frame as i64 - 10, false)
+                    }
+                    Key::U if !modifiers.shift => {
+                        self.playback.seek(self.playback.frame as i64 + 10, false)
+                    }
                     Key::R if modifiers.shift => {
                         self.loader
                             .send(Request::ReloadFrame(self.generation, self.playback.frame));
@@ -949,6 +976,8 @@ impl Player {
                         | Key::CloseBracket
                         | Key::OpenCurlyBracket
                         | Key::CloseCurlyBracket
+                        | Key::Minus
+                        | Key::Num4
                 )
             {
                 continue;
@@ -976,6 +1005,10 @@ impl Player {
                     self.playback.seek(self.playback.frame as i64 + 1, false);
                 }
                 Key::Space if !modifiers.shift => self.playback.toggle(),
+                Key::Minus if modifiers.shift => self.playback.seek(0, false),
+                Key::Num4 if modifiers.shift => self
+                    .playback
+                    .seek(self.playback.count.saturating_sub(1) as i64, false),
                 Key::Home => self.playback.seek(self.playback.in_point as i64, true),
                 Key::End => self.playback.seek(self.playback.out_point as i64, true),
                 Key::OpenBracket | Key::OpenCurlyBracket => {
