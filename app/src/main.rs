@@ -2054,7 +2054,10 @@ impl FileManager {
         }
         if self.new_folder.is_none() && !self.text_input_focused(context) {
             for (key, delta) in [(Key::Equals, 0.1), (Key::Minus, -0.1)] {
-                if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key)) {
+                if context.input_mut(|input| {
+                    input.modifiers.matches_exact(egui::Modifiers::NONE)
+                        && input.consume_key(egui::Modifiers::NONE, key)
+                }) {
                     let zoom = (self.settings.zoom + delta).clamp(0.65, 3.6);
                     if self.settings.zoom != zoom {
                         self.settings.zoom = zoom;
@@ -2384,6 +2387,66 @@ impl FileManager {
             }
             self.scroll_to_selection = false;
             return;
+        }
+        if matches!(self.settings.view, View::Media | View::Grid) {
+            let motion = context.input_mut(|input| {
+                let mut row_start = false;
+                input.events.retain(|event| {
+                    if matches!(event, egui::Event::Text(text) if text == "_") {
+                        row_start = true;
+                        return false;
+                    }
+                    true
+                });
+                if row_start {
+                    return Some(Key::Minus);
+                }
+                [Key::W, Key::E, Key::B, Key::Minus]
+                    .into_iter()
+                    .find(|key| input.consume_key(egui::Modifiers::NONE, *key))
+                    .or_else(|| {
+                        input
+                            .consume_key(egui::Modifiers::SHIFT, Key::Minus)
+                            .then_some(Key::Minus)
+                    })
+                    .or_else(|| {
+                        input
+                            .consume_key(egui::Modifiers::SHIFT, Key::Num4)
+                            .then_some(Key::Num4)
+                    })
+            });
+            if let Some(key) = motion {
+                let current = items
+                    .iter()
+                    .position(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path));
+                let index = current.unwrap_or(0);
+                let count = std::mem::take(&mut self.motion_count)
+                    .max(1)
+                    .min(items.len());
+                let target = match key {
+                    Key::W | Key::E if current.is_some() => {
+                        index.saturating_add(count).min(items.len() - 1)
+                    }
+                    Key::B => index.saturating_sub(count),
+                    Key::Minus => items
+                        .iter()
+                        .position(|(_, position, _)| position.y == items[index].1.y)
+                        .unwrap_or(index),
+                    Key::Num4 => items
+                        .iter()
+                        .rposition(|(_, position, _)| position.y == items[index].1.y)
+                        .unwrap_or(index),
+                    _ => index,
+                };
+                let path = items[target].0.path.clone();
+                if self.visual_line {
+                    self.select_entry(path, context);
+                } else {
+                    self.select(Some(path), context);
+                }
+                self.scroll_to_selection = true;
+                return;
+            }
         }
         let Some((key, _)) = [
             (Key::ArrowUp, Key::K),
