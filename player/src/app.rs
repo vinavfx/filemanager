@@ -361,6 +361,15 @@ impl Player {
                             self.set_rotation(rotation);
                         }
                     }
+                    ui.separator();
+                    for (channel, label) in [(0, "RGB"), (1, "R"), (2, "G"), (3, "B"), (4, "A")] {
+                        if ui
+                            .selectable_label(self.channel == channel, label)
+                            .clicked()
+                        {
+                            self.channel = if self.channel == channel { 0 } else { channel };
+                        }
+                    }
                 });
             });
     }
@@ -894,6 +903,7 @@ impl Player {
                 key,
                 pressed: true,
                 modifiers,
+                repeat,
                 ..
             } = event
             else {
@@ -946,8 +956,19 @@ impl Player {
                 continue;
             }
             match key {
-                Key::J if !modifiers.shift => self.playback.set_direction(Direction::Reverse),
-                Key::K if !modifiers.shift => self.playback.set_direction(Direction::Stop),
+                Key::J | Key::K if !modifiers.shift && !repeat => {
+                    let direction = if key == Key::J {
+                        Direction::Reverse
+                    } else {
+                        Direction::Forward
+                    };
+                    self.playback
+                        .set_direction(if self.playback.direction == direction {
+                            Direction::Stop
+                        } else {
+                            direction
+                        });
+                }
                 Key::ArrowLeft | Key::H if !modifiers.shift => {
                     self.playback.set_direction(Direction::Stop);
                     self.playback.seek(self.playback.frame as i64 - 1, false);
@@ -1010,10 +1031,15 @@ impl Player {
                 Key::U if !modifiers.shift => self.fullscreen(context),
                 Key::F if !modifiers.shift => self.fit_view(),
                 Key::Backtick if !modifiers.shift => self.show_ui = !self.show_ui,
-                Key::R if !modifiers.shift => self.channel = 1,
-                Key::G if !modifiers.shift => self.channel = 2,
-                Key::B if !modifiers.shift => self.channel = 3,
-                Key::A if !modifiers.shift => self.channel = 4,
+                Key::R | Key::G | Key::B | Key::A if !modifiers.shift && !repeat => {
+                    let channel = match key {
+                        Key::R => 1,
+                        Key::G => 2,
+                        Key::B => 3,
+                        _ => 4,
+                    };
+                    self.channel = if self.channel == channel { 0 } else { channel };
+                }
                 Key::C if !modifiers.shift => self.channel = 0,
                 Key::E if modifiers.shift => {
                     self.stored = self.loader.frame(self.generation, self.playback.frame)
