@@ -604,6 +604,7 @@ impl Player {
                 } else {
                     self.loader.frame(self.generation, self.playback.frame)
                 };
+                let image_ready = frame.is_some();
                 if let Some(frame) = frame {
                     ui.painter().add(Renderer::paint(
                         self.renderer.clone(),
@@ -614,23 +615,31 @@ impl Player {
                         self.channel,
                         self.rotation,
                     ));
-                } else {
-                    let message = if self.loading {
-                        "Opening media…"
-                    } else if self.media.is_some() {
-                        "Decoding frame…"
-                    } else {
-                        "Drop a file or press Ctrl+O"
-                    };
+                } else if (self.loading || self.media.is_some()) && self.error.is_none() {
+                    let track =
+                        Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
+                    let phase = context.input(|input| input.time) as f32;
+                    let width = track.width() * 0.25;
+                    let offset = (phase * 3.0).sin() * 0.5 + 0.5;
+                    let bar = Rect::from_min_size(
+                        track.min + egui::vec2((track.width() - width) * offset, 0.0),
+                        egui::vec2(width, track.height()),
+                    );
+                    ui.painter().rect_filled(track, 0.0, Color32::from_gray(38));
+                    ui.painter()
+                        .rect_filled(bar, 0.0, Color32::from_rgb(90, 90, 255));
+                    context.request_repaint_after(Duration::from_millis(16));
+                } else if self.media.is_none() && !self.loading {
                     ui.painter().text(
                         rect.center(),
                         Align2::CENTER_CENTER,
-                        message,
+                        "Drop a file or press Ctrl+O",
                         FontId::proportional(14.0),
                         Color32::GRAY,
                     );
                 }
                 if self.hud
+                    && image_ready
                     && let Some(media) = &self.media
                 {
                     let painter = ui.painter().with_clip_rect(rect);
