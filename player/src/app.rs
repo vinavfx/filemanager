@@ -80,7 +80,7 @@ impl Player {
             rotation: 0,
             origin: Vec2::ZERO,
             fit: true,
-            auto_fit_window: false,
+            auto_fit_window: true,
             viewer: Rect::NOTHING,
             fullscreen: false,
             show_ui: true,
@@ -112,10 +112,10 @@ impl Player {
         self.path = Some(path.clone());
         self.preview = None;
         self.preview_size = None;
-        self.auto_fit_window = false;
         self.media = None;
         self.stored = None;
         self.show_stored = false;
+        self.fit = true;
         self.playback = Playback::default();
         self.loading = true;
         self.error = None;
@@ -129,7 +129,7 @@ impl Player {
         self.media = None;
         self.preview = None;
         self.preview_size = None;
-        self.auto_fit_window = false;
+        self.auto_fit_window = true;
         self.path = None;
         self.loading = false;
         self.error = None;
@@ -197,7 +197,6 @@ impl Player {
                         self.zoom *= previous_size.x / self.image_size().x;
                     } else {
                         self.fit = true;
-                        self.auto_fit_window = true;
                     }
                     self.measured_start = Instant::now();
                     self.measured_frames = 0;
@@ -601,24 +600,23 @@ impl Player {
             .input(|input| input.viewport().monitor_size)
             .unwrap_or(egui::vec2(1280.0, 800.0));
         let maximum = screen * 0.75;
-        let size = self.image_size();
-        let chrome = if !self.show_ui {
-            0.0
-        } else if self.playback.count < 2 {
-            36.0
-        } else {
-            120.0
-        };
-        let ratio = (maximum.x / size.x)
-            .min((maximum.y - chrome) / size.y)
-            .min(1.0);
-        let target = egui::vec2(
-            (size.x * ratio).max(640.0),
-            (size.y * ratio + chrome).max(240.0),
-        );
-        if !self.fullscreen {
-            context.send_viewport_cmd(ViewportCommand::InnerSize(target));
+        let ratio = (maximum.x / 1280.0).min(maximum.y / 720.0);
+        let target = egui::vec2(1280.0, 720.0) * ratio;
+        let decorations = context.input(|input| {
+            let viewport = input.viewport();
+            match (viewport.outer_rect, viewport.inner_rect) {
+                (Some(outer), Some(inner)) => outer.size() - inner.size(),
+                _ => Vec2::ZERO,
+            }
+        });
+        if self.fullscreen {
+            self.fullscreen(context);
         }
+        context.send_viewport_cmd(ViewportCommand::Maximized(false));
+        context.send_viewport_cmd(ViewportCommand::InnerSize(target));
+        context.send_viewport_cmd(ViewportCommand::OuterPosition(
+            ((screen - target - decorations) / 2.0).to_pos2(),
+        ));
         self.fit = true;
     }
 
@@ -631,7 +629,7 @@ impl Player {
                 let previous_height = self.viewer.height();
                 let resized = self.viewer.size() != rect.size();
                 self.viewer = rect;
-                if self.fit && resized {
+                if self.fit {
                     self.fit_view();
                 } else if resized && previous_height.is_finite() {
                     self.origin.y += rect.height() - previous_height;

@@ -53,9 +53,11 @@ fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Player")
-            .with_inner_size([960.0, 600.0])
+            .with_inner_size([960.0, 540.0])
             .with_min_inner_size([640.0, 240.0]),
         renderer: eframe::Renderer::Glow,
+        centered: true,
+        persist_window: false,
         vsync: false,
         ..Default::default()
     };
