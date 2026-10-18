@@ -304,6 +304,10 @@ impl Resolver {
     }
 }
 
+pub fn load(path: &Path) -> Option<egui::ColorImage> {
+    Resolver::new().load(path)
+}
+
 pub struct Icons {
     sender: mpsc::SyncSender<(String, PathBuf)>,
     receiver: mpsc::Receiver<(String, Option<egui::ColorImage>)>,

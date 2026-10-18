@@ -1,4 +1,5 @@
 mod bookmarks;
+mod drag;
 mod files;
 mod icons;
 mod images;
@@ -333,6 +334,7 @@ struct MediaLayout {
 }
 
 struct FileManager {
+    external_drag: drag::ExternalDrag,
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
     directory_frame: Option<DirectoryFrame>,
     preparing_directory: bool,
@@ -456,6 +458,7 @@ impl FileManager {
         let current = requested.canonicalize().unwrap_or(requested);
         let current = if current.is_dir() { current } else { desktop };
         let mut app = Self {
+            external_drag: drag::ExternalDrag::new(context),
             directory_refresh: None,
             directory_frame: None,
             preparing_directory: false,
@@ -3479,6 +3482,7 @@ impl FileManager {
                         .map_or_else(|| vec![path], |frames| frames.as_ref().clone())
                 })
                 .collect::<Vec<_>>();
+            self.external_drag.start(paths.clone());
             response.dnd_set_drag_payload(paths);
         }
         if entry.directory {
@@ -5558,6 +5562,20 @@ impl FileManager {
 
 impl eframe::App for FileManager {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        if context.input(|input| {
+            input.raw.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        ..
+                    }
+                )
+            })
+        }) {
+            self.external_drag.cancel();
+        }
         let frame_directory = self.current.clone();
         let previous_view = std::mem::take(&mut self.prepared_view);
         self.directory_ready = true;
@@ -5757,25 +5775,8 @@ impl eframe::App for FileManager {
                 .cloned()
                 .collect(),
         });
-        if let Some(paths) = egui::DragAndDrop::payload::<Vec<PathBuf>>(context) {
+        if egui::DragAndDrop::has_payload_of_type::<Vec<PathBuf>>(context) {
             context.set_cursor_icon(egui::CursorIcon::Grabbing);
-            if let Some(pointer) = context.pointer_hover_pos() {
-                egui::Area::new(egui::Id::new("dragged-folder"))
-                    .order(egui::Order::Tooltip)
-                    .fixed_pos(pointer + Vec2::new(12.0, 12.0))
-                    .interactable(false)
-                    .show(context, |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            if paths.len() == 1 {
-                                ui.label(
-                                    paths[0].file_name().unwrap_or_default().to_string_lossy(),
-                                );
-                            } else {
-                                ui.label(format!("{} items", paths.len()));
-                            }
-                        });
-                    });
-            }
         }
     }
 }

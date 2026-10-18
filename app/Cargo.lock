@@ -2338,10 +2338,12 @@ dependencies = [
  "eframe",
  "fs2",
  "image",
+ "raw-window-handle",
  "rustix 1.1.5",
  "serde",
  "serde_json",
  "url",
+ "x11rb",
 ]
 
 [[package]]

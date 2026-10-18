@@ -275,6 +275,16 @@ pub fn rename_cached_thumbnails(from: &Path, to: &Path) {
     }
 }
 
+pub fn drag_preview(path: &Path) -> Option<egui::ColorImage> {
+    let video = crate::files::video_file(path);
+    if video || crate::files::image_file(path) {
+        let frame = if video { VIDEO_POSTER } else { 0 };
+        let cached = thumbnail_path(&cache_directory(), fingerprint(path).ok()?, video, frame);
+        return load(&cached, 64).ok();
+    }
+    None
+}
+
 fn cached_thumbnail(
     path: &Path,
     directory: &Path,
