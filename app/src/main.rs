@@ -4458,7 +4458,7 @@ impl FileManager {
                             .aspects
                             .get(&entry.path)
                             .copied()
-                            .unwrap_or(1.0)
+                            .unwrap_or(16.0 / 9.0)
                     })
             };
             match self.media_layout.aspects.insert(entry.path.clone(), aspect) {
