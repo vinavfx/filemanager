@@ -556,13 +556,9 @@ fn sequence(path: &Path) -> Result<Vec<(i64, PathBuf)>, String> {
     Ok(files)
 }
 
-fn probe(path: &Path, count_frames: bool) -> Result<Value, String> {
-    let mut command = Command::new("ffprobe");
-    command.args(["-v", "error", "-select_streams", "v:0"]);
-    if count_frames {
-        command.arg("-count_frames");
-    }
-    let output = command
+fn probe(path: &Path) -> Result<Value, String> {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0"])
         .args(["-show_streams", "-show_format", "-of", "json"])
         .arg(path)
         .stdin(Stdio::null())
@@ -597,7 +593,7 @@ pub fn inspect(path: &Path) -> Result<Media, String> {
     let metadata = if dimensions.is_some() {
         Value::Null
     } else {
-        probe(first, false)?
+        probe(first)?
     };
     let stream = &metadata["streams"][0];
     let (width, height) = match dimensions {
@@ -634,11 +630,20 @@ pub fn inspect(path: &Path) -> Result<Media, String> {
             .and_then(|s| s.parse::<usize>().ok());
         match number.filter(|&n| n > 0) {
             Some(count) => count,
-            None => probe(first, true)?["streams"][0]["nb_read_frames"]
-                .as_str()
-                .and_then(|s| s.parse::<usize>().ok())
-                .filter(|&n| n > 0)
-                .ok_or("Cannot determine frame count")?,
+            None => {
+                let duration = stream["duration"]
+                    .as_str()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|duration| duration.is_finite() && *duration > 0.0)
+                    .or_else(|| {
+                        metadata["format"]["duration"]
+                            .as_str()
+                            .and_then(|value| value.parse::<f64>().ok())
+                            .filter(|duration| duration.is_finite() && *duration > 0.0)
+                    })
+                    .ok_or("Cannot determine video duration without scanning the entire file")?;
+                (duration * rate.value()).round().max(1.0) as usize
+            }
         }
     };
     if count == 0 || count > 100_000_000 {
@@ -766,7 +771,7 @@ fn decode_image(path: &Path) -> Result<Frame, String> {
             smooth_preview: false,
         });
     }
-    let metadata = probe(path, false)?;
+    let metadata = probe(path)?;
     let stream = &metadata["streams"][0];
     let width = stream["width"].as_u64().ok_or("Missing image width")? as u32;
     let height = stream["height"].as_u64().ok_or("Missing image height")? as u32;
