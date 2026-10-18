@@ -396,6 +396,8 @@ struct FileManager {
     disk: Option<Disk>,
     home_places: Vec<places::Place>,
     bookmarks: bookmarks::Bookmarks,
+    bookmark_undo: Vec<(bookmarks::Bookmark, Option<places::Kind>, usize)>,
+    bookmark_redo: Vec<(bookmarks::Bookmark, Option<places::Kind>, usize)>,
     new_folder: Option<NameDialog>,
     confirm_empty_trash: bool,
     pending_delete: Vec<PathBuf>,
@@ -517,6 +519,8 @@ impl FileManager {
             disk: None,
             home_places,
             bookmarks,
+            bookmark_undo: Vec::new(),
+            bookmark_redo: Vec::new(),
             new_folder: None,
             confirm_empty_trash: false,
             pending_delete: Vec::new(),
@@ -1698,12 +1702,9 @@ impl FileManager {
                 let pending_y = std::mem::take(&mut self.pending_y);
                 let pending_z = std::mem::take(&mut self.pending_z);
                 let pending_d = std::mem::take(&mut self.pending_d);
-                if *key == Key::D
-                    && modifiers.matches_exact(egui::Modifiers::NONE)
-                    && !self.sidebar_focused
-                {
+                if *key == Key::D && modifiers.matches_exact(egui::Modifiers::NONE) {
                     self.pending_g = false;
-                    if self.visual_line || pending_d {
+                    if pending_d || self.visual_line && !self.sidebar_focused {
                         return true;
                     }
                     self.pending_d = true;
@@ -1937,10 +1938,18 @@ impl FileManager {
                 }
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::U)) {
-                self.start_operation(FileOperation::Undo, context);
+                if self.sidebar_focused {
+                    self.bookmark_history_step(false);
+                } else {
+                    self.start_operation(FileOperation::Undo, context);
+                }
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::R)) {
-                self.start_operation(FileOperation::Redo, context);
+                if self.sidebar_focused {
+                    self.bookmark_history_step(true);
+                } else {
+                    self.start_operation(FileOperation::Redo, context);
+                }
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::ArrowLeft))
                 || context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::O))
@@ -2975,22 +2984,73 @@ impl FileManager {
                 return;
             }
             if ui.button("Remove bookmark").clicked() {
-                if let Some(path) = bookmark.path.as_ref().filter(|_| kind.is_some()) {
-                    if !self
-                        .settings
-                        .removed_places
-                        .iter()
-                        .any(|removed| removed == path)
-                    {
-                        self.settings.removed_places.push(path.to_path_buf());
-                    }
-                    self.save();
-                } else if let Err(error) = self.bookmarks.remove(&bookmark.uri) {
-                    self.set_message(Some(format!("Cannot save shared bookmarks: {error}")));
-                }
+                self.remove_bookmark(bookmark, kind);
                 ui.close_menu();
             }
         });
+    }
+
+    fn set_bookmark_removed(
+        &mut self,
+        bookmark: &bookmarks::Bookmark,
+        kind: Option<places::Kind>,
+        index: usize,
+        removed: bool,
+    ) -> std::io::Result<()> {
+        if let Some(path) = bookmark.path.as_ref().filter(|_| kind.is_some()) {
+            self.settings.removed_places.retain(|entry| entry != path);
+            if removed {
+                self.settings.removed_places.push(path.clone());
+            }
+            self.save();
+            Ok(())
+        } else if removed {
+            self.bookmarks.remove(&bookmark.uri)
+        } else {
+            self.bookmarks.restore(bookmark, index)
+        }
+    }
+
+    fn remove_bookmark(&mut self, bookmark: &bookmarks::Bookmark, kind: Option<places::Kind>) {
+        if matches!(kind, Some(places::Kind::Trash)) {
+            return;
+        }
+        let index = self
+            .bookmarks
+            .entries
+            .iter()
+            .position(|entry| entry.uri == bookmark.uri)
+            .unwrap_or(0);
+        match self.set_bookmark_removed(bookmark, kind, index, true) {
+            Ok(()) => {
+                self.bookmark_undo.push((bookmark.clone(), kind, index));
+                self.bookmark_redo.clear();
+            }
+            Err(error) => {
+                self.set_message(Some(format!("Cannot save shared bookmarks: {error}")));
+            }
+        }
+    }
+
+    fn bookmark_history_step(&mut self, redo: bool) {
+        let source = if redo {
+            &mut self.bookmark_redo
+        } else {
+            &mut self.bookmark_undo
+        };
+        let Some((bookmark, kind, index)) = source.pop() else {
+            return;
+        };
+        let result = self.set_bookmark_removed(&bookmark, kind, index, redo);
+        let destination = if redo == result.is_ok() {
+            &mut self.bookmark_undo
+        } else {
+            &mut self.bookmark_redo
+        };
+        destination.push((bookmark, kind, index));
+        if let Err(error) = result {
+            self.set_message(Some(format!("Cannot save shared bookmarks: {error}")));
+        }
     }
 
     fn open_bookmark(&mut self, bookmark: &bookmarks::Bookmark, context: &egui::Context) {
@@ -3103,6 +3163,15 @@ impl FileManager {
                 self.scroll_to_bookmark = false;
             } else {
                 self.scroll_to_bookmark |= cursor != previous;
+            }
+            if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
+                if let Some((bookmark, kind)) = entries.get(cursor) {
+                    self.remove_bookmark(bookmark, *kind);
+                    if !matches!(kind, Some(places::Kind::Trash)) {
+                        entries.remove(cursor);
+                        cursor = cursor.min(entries.len().saturating_sub(1));
+                    }
+                }
             }
             self.sidebar_cursor = Some(cursor);
             if context.input_mut(|input| {
@@ -4513,6 +4582,10 @@ impl FileManager {
         }
     }
 
+    fn tree_scale(&self) -> f32 {
+        self.settings.zoom / 0.65
+    }
+
     fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
         if let Some(layout) = &self.tree_layout {
             if layout.sort == self.settings.tree_sort
@@ -4545,7 +4618,7 @@ impl FileManager {
         self.sort_tree_entries(&mut entries);
         for entry in entries {
             let path = entry.path.clone();
-            let y = items.len() as f32 * (30.0 * self.settings.zoom).max(32.0);
+            let y = items.len() as f32 * 32.0 * self.tree_scale();
             items.push((entry, egui::pos2(depth as f32, y)));
             if self.expanded.contains(&path) && depth < 64 {
                 let preview = self
@@ -4579,7 +4652,8 @@ impl FileManager {
         for (index, (entry, position)) in items.iter().enumerate() {
             let depth = position.x;
             ui.push_id(&entry.path, |ui| {
-                let height = (30.0 * self.settings.zoom).max(32.0);
+                let scale = self.tree_scale();
+                let height = 32.0 * scale;
                 let (row, _) = ui.allocate_exact_size(
                     Vec2::new(ui.available_width(), height),
                     egui::Sense::hover(),
@@ -4603,10 +4677,10 @@ impl FileManager {
                     start + index,
                     current_row,
                 );
-                let left = row.left() + gutter + depth * 20.0 * self.settings.zoom;
+                let left = row.left() + gutter + depth * 20.0 * scale;
                 let disclosure = egui::Rect::from_center_size(
-                    egui::pos2(left + 14.0, row.center().y),
-                    Vec2::splat(24.0),
+                    egui::pos2(left + 14.0 * scale, row.center().y),
+                    Vec2::splat(24.0 * scale),
                 );
                 if entry.directory && !entry.symlink {
                     let response =
@@ -4630,7 +4704,8 @@ impl FileManager {
                         }
                     }
                 }
-                let content = egui::Rect::from_min_max(egui::pos2(left + 30.0, row.top()), row.max);
+                let content =
+                    egui::Rect::from_min_max(egui::pos2(left + 30.0 * scale, row.top()), row.max);
                 let response = ui.interact(
                     content,
                     ui.id().with("entry"),
@@ -4642,9 +4717,9 @@ impl FileManager {
                     !self.sidebar_focused && self.selection.contains(&entry.path),
                     false,
                 );
-                let edge = 22.0 * self.settings.zoom;
+                let edge = 22.0 * scale;
                 let icon = egui::Rect::from_center_size(
-                    egui::pos2(content.left() + edge / 2.0 + 6.0, row.center().y),
+                    egui::pos2(content.left() + edge / 2.0 + 6.0 * scale, row.center().y),
                     Vec2::splat(edge),
                 );
                 if !self.paint_thumbnail(ui, icon, entry, &response) {
@@ -4657,7 +4732,7 @@ impl FileManager {
                         ui.visuals().panel_fill.gamma_multiply(0.18),
                     );
                 }
-                let name_left = icon.right() + 10.0;
+                let name_left = icon.right() + 10.0 * scale;
                 let date_left = row.right() - TREE_DATE_WIDTH;
                 let name_right = date_left - TREE_SIZE_WIDTH;
                 let name_rect = egui::Rect::from_min_size(
@@ -4670,7 +4745,7 @@ impl FileManager {
                         &entry.name,
                         egui::pos2(name_left, row.center().y),
                         name_rect.width(),
-                        14.0,
+                        14.0 * scale,
                         if response.hovered() {
                             ACCENT
                         } else {
@@ -4686,20 +4761,30 @@ impl FileManager {
                 } else {
                     files::size_label(entry.size)
                 };
-                ui.painter().text(
-                    egui::pos2(date_left - 12.0, row.center().y),
-                    egui::Align2::RIGHT_CENTER,
-                    size,
-                    egui::FontId::proportional(11.0),
-                    MUTED,
-                );
-                ui.painter().text(
-                    egui::pos2(date_left + 8.0, row.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &entry.modified_label,
-                    egui::FontId::proportional(11.0),
-                    MUTED,
-                );
+                ui.painter()
+                    .with_clip_rect(egui::Rect::from_min_max(
+                        egui::pos2(name_right, row.top()),
+                        egui::pos2(date_left, row.bottom()),
+                    ))
+                    .text(
+                        egui::pos2(date_left - 12.0, row.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        size,
+                        egui::FontId::proportional(11.0 * scale),
+                        MUTED,
+                    );
+                ui.painter()
+                    .with_clip_rect(egui::Rect::from_min_max(
+                        egui::pos2(date_left, row.top()),
+                        row.max,
+                    ))
+                    .text(
+                        egui::pos2(date_left + 8.0, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        &entry.modified_label,
+                        egui::FontId::proportional(11.0 * scale),
+                        MUTED,
+                    );
                 self.entry_response(response, entry, context);
             });
         }
@@ -5185,6 +5270,12 @@ impl FileManager {
         entry: &Entry,
         context: &egui::Context,
     ) -> bool {
+        let font_size = 14.0
+            * if self.settings.view == View::Tree {
+                self.tree_scale()
+            } else {
+                1.0
+            };
         let Some(dialog) = self.new_folder.as_mut() else {
             return false;
         };
@@ -5200,7 +5291,7 @@ impl FileManager {
                 egui::TextEdit::singleline(&mut preview)
                     .id(id)
                     .interactive(false)
-                    .font(egui::FontId::proportional(14.0))
+                    .font(egui::FontId::proportional(font_size))
                     .vertical_align(egui::Align::Center)
                     .min_size(rect.size())
                     .margin(egui::Margin::symmetric(8, 0)),
@@ -5211,7 +5302,7 @@ impl FileManager {
             rect,
             egui::TextEdit::singleline(&mut dialog.name)
                 .id(id)
-                .font(egui::FontId::proportional(14.0))
+                .font(egui::FontId::proportional(font_size))
                 .vertical_align(egui::Align::Center)
                 .min_size(rect.size())
                 .margin(egui::Margin::symmetric(8, 0)),
@@ -5571,7 +5662,7 @@ impl eframe::App for FileManager {
                         View::Tree => {
                             self.tree_header(ui);
                             let items = self.tree_layout();
-                            let height = (30.0 * self.settings.zoom).max(32.0);
+                            let height = 32.0 * self.tree_scale();
                             let navigation: Vec<_> = items
                                 .iter()
                                 .map(|(entry, position)| (entry, *position, height))

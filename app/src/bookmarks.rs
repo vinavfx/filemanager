@@ -114,6 +114,19 @@ impl Bookmarks {
         self.write(&content)
     }
 
+    pub fn restore(&mut self, bookmark: &Bookmark, index: usize) -> io::Result<()> {
+        self.reload()?;
+        if self.entries.iter().any(|entry| entry.uri == bookmark.uri) {
+            return Ok(());
+        }
+        let mut lines: Vec<_> = self.content.lines().map(str::to_owned).collect();
+        lines.insert(
+            index.min(lines.len()),
+            format!("{} {}", bookmark.uri, bookmark.label),
+        );
+        self.write(&(lines.join("\n") + "\n"))
+    }
+
     fn write(&mut self, content: &str) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
