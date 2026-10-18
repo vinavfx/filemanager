@@ -6008,12 +6008,6 @@ impl eframe::App for FileManager {
                 .frame(egui::Frame::NONE.fill(context.style().visuals.panel_fill))
                 .show(context, |ui| self.message_banner(ui));
         }
-        if self.directory_frame.is_none() {
-            self.directory_frame = Some(DirectoryFrame {
-                graphics: context.graphics(Clone::clone),
-                _textures: Vec::new(),
-            });
-        }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
             .show(context, |ui| {
@@ -6031,6 +6025,9 @@ impl eframe::App for FileManager {
                     ui.id().with("directory-background"),
                     egui::Sense::click(),
                 );
+                if self.search.is_none() && self.settings.view == View::Tree {
+                    self.tree_header(ui);
+                }
                 if self.search.is_some() {
                     self.search_results(ui, context);
                 } else if self.display_entries().is_empty() {
@@ -6053,7 +6050,6 @@ impl eframe::App for FileManager {
                         View::Grid => self.grid(ui, context),
                         View::Media => self.media(ui, context),
                         View::Tree => {
-                            self.tree_header(ui);
                             let items = self.tree_layout();
                             let height = 32.0 * self.tree_scale();
                             let navigation: Vec<_> = items
@@ -6169,12 +6165,12 @@ impl eframe::App for FileManager {
                 && self.preparing_directory
                 && (self.directory_refresh.is_some() || self.prepared_view != previous_view))
         {
-            self.preparing_directory = true;
-            if let Some(frame) = &self.directory_frame {
-                context.graphics_mut(|graphics| graphics.clone_from(&frame.graphics));
-            }
             context.request_repaint_after(std::time::Duration::from_millis(16));
-            return;
+            if let Some(frame) = &self.directory_frame {
+                self.preparing_directory = true;
+                context.graphics_mut(|graphics| graphics.clone_from(&frame.graphics));
+                return;
+            }
         }
         self.preparing_directory = false;
         self.wait_for_thumbnails = false;

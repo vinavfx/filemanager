@@ -12,5 +12,5 @@ if ! command -v cargo >/dev/null 2>&1; then
     fi
 fi
 
-exec cargo run --locked \
+exec cargo run --release --locked \
     --manifest-path "${PROJECT_DIR}/app/Cargo.toml" -- "$@"
