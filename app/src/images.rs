@@ -12,7 +12,7 @@ const THUMBNAIL_EDGE: u32 = 192;
 const THUMBNAIL_VERSION: u32 = 3;
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_PENDING: usize = 48;
-const MAX_UPLOADS_PER_FRAME: usize = 8;
+const MAX_UPLOADS_PER_FRAME: usize = 2;
 pub const VIDEO_FRAMES: usize = 8;
 pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
 type ThumbnailKey = (PathBuf, usize);
@@ -493,7 +493,7 @@ impl Thumbnails {
         self.frame_used.clear();
         let started = Instant::now();
         let mut uploads = 0;
-        while uploads < MAX_UPLOADS_PER_FRAME && started.elapsed() < Duration::from_millis(3) {
+        while uploads < MAX_UPLOADS_PER_FRAME && started.elapsed() < Duration::from_millis(1) {
             let Ok((generation, path, key, image)) = self.receiver.try_recv() else {
                 break;
             };
@@ -555,7 +555,7 @@ impl Thumbnails {
             self.revision = self.revision.wrapping_add(1);
             self.cache_bytes += bytes;
         }
-        if uploads == MAX_UPLOADS_PER_FRAME || started.elapsed() >= Duration::from_millis(3) {
+        if uploads == MAX_UPLOADS_PER_FRAME || started.elapsed() >= Duration::from_millis(1) {
             context.request_repaint_after(Duration::from_millis(16));
         }
     }

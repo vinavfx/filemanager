@@ -957,28 +957,18 @@ impl FileManager {
         self.selection_size = None;
         if let Some(path) = &path {
             self.last_selected = Some(path.clone());
-            if path.is_dir() {
-                self.size_job = Some(files::folder_size(path.clone(), context.clone()));
-            } else if let Some(entry) = self
+            let entry = self
                 .entries
                 .iter()
                 .chain(self.tree_cache.values().flatten())
-                .find(|entry| &entry.path == path && entry.sequence.is_some())
-            {
+                .find(|entry| &entry.path == path);
+            if let Some(entry) = entry.filter(|entry| !entry.directory) {
                 self.selection_size = Some(SizeResult {
                     bytes: entry.size,
                     incomplete: false,
                 });
             } else {
-                match std::fs::symlink_metadata(path) {
-                    Ok(metadata) => {
-                        self.selection_size = Some(SizeResult {
-                            bytes: metadata.len(),
-                            incomplete: false,
-                        })
-                    }
-                    Err(error) => self.set_message(Some(format!("Cannot read file size: {error}"))),
-                }
+                self.size_job = Some(files::folder_size(path.clone(), context.clone()));
             }
         }
         self.selection = path.iter().cloned().collect();
@@ -5627,7 +5617,7 @@ impl eframe::App for FileManager {
             }
         });
         context.request_repaint_after(std::time::Duration::from_secs(1));
-        if let Err(error) = self.bookmarks.poll() {
+        if let Err(error) = self.bookmarks.poll(context) {
             self.set_message(Some(format!("Cannot read shared bookmarks: {error}")));
         }
         self.poll(context);

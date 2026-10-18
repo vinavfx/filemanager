@@ -1,5 +1,7 @@
+use eframe::egui;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -11,12 +13,15 @@ pub struct Bookmark {
     pub exists: bool,
 }
 
+type BookmarkResult = io::Result<(String, Vec<Bookmark>)>;
+
 pub struct Bookmarks {
     pub entries: Vec<Bookmark>,
     path: PathBuf,
     legacy: PathBuf,
     content: String,
     checked: Instant,
+    receiver: Option<mpsc::Receiver<BookmarkResult>>,
 }
 
 impl Bookmarks {
@@ -29,56 +34,83 @@ impl Bookmarks {
             legacy: home.join(".gtk-bookmarks"),
             content: String::new(),
             checked: Instant::now(),
+            receiver: None,
         }
     }
 
     pub fn reload(&mut self) -> io::Result<()> {
-        let content = match std::fs::read_to_string(&self.path) {
+        self.receiver = None;
+        let (content, entries) = Self::read(&self.path, &self.legacy)?;
+        self.content = content;
+        self.entries = entries;
+        Ok(())
+    }
+
+    fn read(path: &Path, legacy: &Path) -> BookmarkResult {
+        let content = match std::fs::read_to_string(path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match std::fs::read_to_string(&self.legacy) {
+                match std::fs::read_to_string(legacy) {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
                     result => result?,
                 }
             }
             result => result?,
         };
-        if content != self.content {
-            self.entries = content
-                .lines()
-                .filter_map(|line| {
-                    let (uri, label) = line
-                        .split_once(' ')
-                        .map_or((line, None), |(uri, label)| (uri, Some(label)));
-                    let url = Url::parse(uri).ok()?;
-                    let path = url.to_file_path().ok();
-                    let label = label.map(str::to_owned).unwrap_or_else(|| {
-                        path.as_ref().and_then(|path| path.file_name()).map_or_else(
-                            || uri.to_owned(),
-                            |name| name.to_string_lossy().into_owned(),
-                        )
-                    });
-                    Some(Bookmark {
-                        uri: uri.to_owned(),
-                        path,
-                        label,
-                        exists: true,
-                    })
+        let entries = content
+            .lines()
+            .filter_map(|line| {
+                let (uri, label) = line
+                    .split_once(' ')
+                    .map_or((line, None), |(uri, label)| (uri, Some(label)));
+                let url = Url::parse(uri).ok()?;
+                let path = url.to_file_path().ok();
+                let label = label.map(str::to_owned).unwrap_or_else(|| {
+                    path.as_ref().and_then(|path| path.file_name()).map_or_else(
+                        || uri.to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    )
+                });
+                Some(Bookmark {
+                    uri: uri.to_owned(),
+                    exists: path.as_ref().is_none_or(|path| path.exists()),
+                    path,
+                    label,
                 })
-                .collect();
-            self.content = content;
-        }
-        for bookmark in &mut self.entries {
-            bookmark.exists = bookmark.path.as_ref().is_none_or(|path| path.exists());
-        }
-        Ok(())
+            })
+            .collect();
+        Ok((content, entries))
     }
 
-    pub fn poll(&mut self) -> io::Result<()> {
+    pub fn poll(&mut self, context: &egui::Context) -> io::Result<()> {
+        if let Some(receiver) = &self.receiver {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.receiver = None;
+                    let (content, entries) = result?;
+                    self.content = content;
+                    self.entries = entries;
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.receiver = None;
+                    return Err(io::Error::other("Bookmark reader stopped unexpectedly."));
+                }
+            }
+        }
         if self.checked.elapsed() < Duration::from_secs(1) {
             return Ok(());
         }
         self.checked = Instant::now();
-        self.reload()
+        let path = self.path.clone();
+        let legacy = self.legacy.clone();
+        let context = context.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(Self::read(&path, &legacy));
+            context.request_repaint();
+        });
+        Ok(())
     }
 
     pub fn add(&mut self, path: &Path) -> io::Result<()> {

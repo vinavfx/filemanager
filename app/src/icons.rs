@@ -339,7 +339,10 @@ impl Icons {
     }
 
     pub fn poll(&mut self, context: &egui::Context) {
-        while let Ok((key, image)) = self.receiver.try_recv() {
+        for _ in 0..2 {
+            let Ok((key, image)) = self.receiver.try_recv() else {
+                return;
+            };
             self.pending.remove(&key);
             if self.cache.len() >= CACHE_CAPACITY {
                 if let Some(oldest) = self.order.pop_front() {
@@ -356,6 +359,7 @@ impl Icons {
             self.order.push_back(key.clone());
             self.cache.insert(key, texture);
         }
+        context.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     pub fn textures(&self) -> impl Iterator<Item = &egui::TextureHandle> {
