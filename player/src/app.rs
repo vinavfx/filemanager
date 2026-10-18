@@ -38,6 +38,8 @@ pub struct Player {
     hud: bool,
     channel: i32,
     stored: Option<Arc<Frame>>,
+    preview: Option<Arc<Frame>>,
+    preview_size: Option<Vec2>,
     show_stored: bool,
     drag_origin: Vec2,
     pan_origin: Vec2,
@@ -86,6 +88,8 @@ impl Player {
             hud: false,
             channel: 0,
             stored: None,
+            preview: None,
+            preview_size: None,
             show_stored: false,
             drag_origin: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
@@ -106,6 +110,9 @@ impl Player {
     pub fn open(&mut self, path: PathBuf) {
         self.generation += 1;
         self.path = Some(path.clone());
+        self.preview = None;
+        self.preview_size = None;
+        self.auto_fit_window = false;
         self.media = None;
         self.stored = None;
         self.show_stored = false;
@@ -120,6 +127,9 @@ impl Player {
         self.generation += 1;
         self.loader.send(Request::Close(self.generation));
         self.media = None;
+        self.preview = None;
+        self.preview_size = None;
+        self.auto_fit_window = false;
         self.path = None;
         self.loading = false;
         self.error = None;
@@ -167,6 +177,11 @@ impl Player {
         }
         while let Ok(event) = self.loader.events.try_recv() {
             match event {
+                Event::Preview(id, frame, (width, height)) if id == self.generation => {
+                    self.preview = Some(frame);
+                    self.preview_size = Some(egui::vec2(width as f32, height as f32));
+                    self.fit_view();
+                }
                 Event::Loaded(id, media) if id == self.generation => {
                     self.playback.load(media.count, media.rate);
                     self.rate_text = media.rate.label();
@@ -175,10 +190,15 @@ impl Player {
                         "{} - Player",
                         media.path.file_name().unwrap_or_default().to_string_lossy()
                     )));
+                    let previous_size = self.image_size();
                     self.media = Some(media);
                     self.loading = false;
-                    self.fit = true;
-                    self.auto_fit_window = true;
+                    if self.preview.is_some() {
+                        self.zoom *= previous_size.x / self.image_size().x;
+                    } else {
+                        self.fit = true;
+                        self.auto_fit_window = true;
+                    }
                     self.measured_start = Instant::now();
                     self.measured_frames = 0;
                 }
@@ -518,6 +538,7 @@ impl Player {
             .media
             .as_ref()
             .map(|media| egui::vec2(media.width as f32, media.height as f32))
+            .or(self.preview_size)
             .unwrap_or(Vec2::splat(1.0));
         if self.rotation == 0 {
             size
@@ -618,17 +639,22 @@ impl Player {
                     self.loader.frame(self.generation, self.playback.frame)
                 };
                 let image_ready = frame.is_some();
-                if let Some(frame) = frame {
+                if image_ready && !self.show_stored {
+                    self.preview = None;
+                }
+                let image_size = self.image_size() * self.zoom;
+                if let Some(frame) = frame.or_else(|| self.preview.clone()) {
                     ui.painter().add(Renderer::paint(
                         self.renderer.clone(),
                         frame,
                         rect,
                         self.origin,
-                        self.zoom,
+                        image_size,
                         self.channel,
                         self.rotation,
                     ));
-                } else if (self.loading || self.media.is_some()) && self.error.is_none() {
+                }
+                if !image_ready && (self.loading || self.media.is_some()) && self.error.is_none() {
                     let track =
                         Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 1.0), rect.max);
                     let phase = context.input(|input| input.time) as f32;
@@ -638,11 +664,16 @@ impl Player {
                         track.min + egui::vec2((track.width() - width) * offset, 0.0),
                         egui::vec2(width, track.height()),
                     );
-                    ui.painter().rect_filled(track, 0.0, Color32::from_gray(38));
-                    ui.painter()
-                        .rect_filled(bar, 0.0, Color32::from_rgb(90, 90, 255));
+                    let painter = context
+                        .layer_painter(egui::LayerId::new(
+                            egui::Order::Foreground,
+                            egui::Id::new("loading_overlay"),
+                        ))
+                        .with_clip_rect(rect);
+                    painter.rect_filled(track, 0.0, Color32::from_gray(38));
+                    painter.rect_filled(bar, 0.0, Color32::from_rgb(90, 90, 255));
                     context.request_repaint_after(Duration::from_millis(16));
-                } else if self.media.is_none() && !self.loading {
+                } else if self.media.is_none() && self.preview.is_none() && !self.loading {
                     ui.painter().text(
                         rect.center(),
                         Align2::CENTER_CENTER,

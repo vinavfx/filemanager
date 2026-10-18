@@ -134,6 +134,11 @@ impl Renderer {
                 frame.gamma,
             );
             gl.uniform_1_i32(
+                gl.get_uniform_location(self.program, "smooth_preview")
+                    .as_ref(),
+                i32::from(frame.smooth_preview),
+            );
+            gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "channel").as_ref(),
                 channel,
             );
@@ -159,16 +164,11 @@ impl Renderer {
         frame: Arc<Frame>,
         rect: Rect,
         origin: Vec2,
-        zoom: f32,
+        size: Vec2,
         channel: i32,
         rotation: i32,
     ) -> egui::PaintCallback {
-        let size = if rotation == 0 {
-            egui::vec2(frame.width as f32, frame.height as f32)
-        } else {
-            egui::vec2(frame.height as f32, frame.width as f32)
-        } * zoom
-            / rect.size();
+        let size = size / rect.size();
         let origin = origin / rect.size();
         egui::PaintCallback {
             rect,

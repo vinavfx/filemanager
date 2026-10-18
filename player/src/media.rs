@@ -1,12 +1,13 @@
 use crate::playback::Rate;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub const CACHE_LIMIT: usize = 24 * 1024 * 1024 * 1024;
 
@@ -20,6 +21,7 @@ pub struct Frame {
     pub height: u32,
     pub pixels: Pixels,
     pub gamma: f32,
+    pub smooth_preview: bool,
 }
 
 impl Frame {
@@ -94,6 +96,7 @@ pub enum Request {
 }
 
 pub enum Event {
+    Preview(u64, Arc<Frame>, (u32, u32)),
     Loaded(u64, Media),
     Error(u64, String),
 }
@@ -162,6 +165,11 @@ fn worker(
                             generation,
                             ..Cache::default()
                         };
+                    }
+                    if let Some((frame, dimensions)) = cached_preview(&path) {
+                        let _ =
+                            events.send(Event::Preview(generation, Arc::new(frame), dimensions));
+                        context.request_repaint();
                     }
                     match inspect(&path) {
                         Ok(media) => {
@@ -264,6 +272,53 @@ fn worker(
             thread::sleep(Duration::from_millis(12));
         }
     }
+}
+
+fn cached_preview(path: &Path) -> Option<(Frame, (u32, u32))> {
+    let path = std::path::absolute(path).ok()?;
+    let path = if path.is_file() {
+        path
+    } else {
+        sequence(&path).ok()?.first()?.1.clone()
+    };
+    if !image_extension(&path) {
+        return None;
+    }
+    let metadata = path.metadata().ok()?;
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .hash(&mut hasher);
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".cache")
+        });
+    let cached = base
+        .join("still-files/thumbnails")
+        .join(format!("{:016x}-192-v3.webp", hasher.finish()));
+    let image = image::open(cached).ok()?.into_rgba8();
+    let dimensions = image::ImageReader::open(&path)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.into_dimensions().ok())
+        .unwrap_or_else(|| image.dimensions());
+    Some((
+        Frame {
+            width: image.width(),
+            height: image.height(),
+            pixels: Pixels::Bytes(image.into_raw()),
+            gamma: 1.0,
+            smooth_preview: true,
+        },
+        dimensions,
+    ))
 }
 
 fn image_extension(path: &Path) -> bool {
@@ -542,6 +597,7 @@ impl Decoder {
             height: self.media.height,
             pixels: Pixels::Bytes(pixels),
             gamma: 1.0,
+            smooth_preview: false,
         })
     }
 }
@@ -578,6 +634,7 @@ fn decode_image(path: &Path) -> Result<Frame, String> {
             height,
             pixels,
             gamma,
+            smooth_preview: false,
         });
     }
     let metadata = probe(path, false)?;
@@ -628,6 +685,7 @@ fn decode_image(path: &Path) -> Result<Frame, String> {
         height,
         pixels: Pixels::Float(pixels),
         gamma: 1.0,
+        smooth_preview: false,
     })
 }
 
