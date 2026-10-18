@@ -13,9 +13,7 @@ const THUMBNAIL_VERSION: u32 = 3;
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_PENDING: usize = 48;
 const MAX_UPLOADS_PER_FRAME: usize = 2;
-pub const VIDEO_FRAMES: usize = 8;
-pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
-type ThumbnailKey = (PathBuf, usize);
+type ThumbnailKey = PathBuf;
 type ThumbnailRequest = (u64, ThumbnailKey, Option<u64>);
 type ThumbnailResult = (u64, ThumbnailKey, Option<u64>, Result<CachedImage, String>);
 
@@ -69,12 +67,10 @@ fn media_output(
 
 fn video_frame(
     path: &Path,
-    frame: usize,
     generation: &AtomicU64,
     requested_generation: u64,
 ) -> Result<egui::ColorImage, String> {
-    let mut seconds = 0.0;
-    if frame > 0 {
+    let seconds = {
         let bytes = media_output(
             Command::new("ffprobe")
                 .args([
@@ -96,13 +92,8 @@ fn video_frame(
             .filter_map(|line| line.trim().parse::<f64>().ok())
             .find(|duration| duration.is_finite() && *duration > 0.0)
             .ok_or_else(|| "Video duration unavailable".to_owned())?;
-        seconds = if frame == VIDEO_POSTER {
-            duration * 0.5
-        } else {
-            (duration * 0.98).min((duration - 0.1).max(0.0)) * frame as f64
-                / (VIDEO_FRAMES - 1) as f64
-        };
-    }
+        duration * 0.5
+    };
     let bytes = media_output(
         Command::new("ffmpeg")
             .args(["-v", "error", "-nostdin", "-threads", "1", "-ss"])
@@ -226,12 +217,8 @@ fn metadata_fingerprint(path: &Path, metadata: &std::fs::Metadata) -> u64 {
     hasher.finish()
 }
 
-fn thumbnail_path(directory: &Path, key: u64, video: bool, frame: usize) -> PathBuf {
-    let suffix = if video {
-        format!("-video-v3-{VIDEO_FRAMES}-{frame}")
-    } else {
-        String::new()
-    };
+fn thumbnail_path(directory: &Path, key: u64, video: bool) -> PathBuf {
+    let suffix = if video { "-video-v3-8-4" } else { "" };
     directory.join(format!(
         "{key:016x}-{THUMBNAIL_EDGE}-v{THUMBNAIL_VERSION}{suffix}.webp"
     ))
@@ -246,11 +233,9 @@ pub fn copy_cached_thumbnails(from: &Path, to: &Path) {
         return;
     };
     let directory = cache_directory();
-    for frame in 0..if video { VIDEO_FRAMES } else { 1 } {
-        let source = thumbnail_path(&directory, source, video, frame);
-        let destination = thumbnail_path(&directory, destination, video, frame);
-        let _ = std::fs::hard_link(source, destination);
-    }
+    let source = thumbnail_path(&directory, source, video);
+    let destination = thumbnail_path(&directory, destination, video);
+    let _ = std::fs::hard_link(source, destination);
 }
 
 pub fn rename_cached_thumbnails(from: &Path, to: &Path) {
@@ -268,18 +253,15 @@ pub fn rename_cached_thumbnails(from: &Path, to: &Path) {
     let source = metadata_fingerprint(from, &metadata);
     let destination = metadata_fingerprint(to, &metadata);
     let directory = cache_directory();
-    for frame in 0..if video { VIDEO_FRAMES } else { 1 } {
-        let source = thumbnail_path(&directory, source, video, frame);
-        let destination = thumbnail_path(&directory, destination, video, frame);
-        let _ = std::fs::rename(source, destination);
-    }
+    let source = thumbnail_path(&directory, source, video);
+    let destination = thumbnail_path(&directory, destination, video);
+    let _ = std::fs::rename(source, destination);
 }
 
 pub fn drag_preview(path: &Path) -> Option<egui::ColorImage> {
     let video = crate::files::video_file(path);
     if video || crate::files::image_file(path) {
-        let frame = if video { VIDEO_POSTER } else { 0 };
-        let cached = thumbnail_path(&cache_directory(), fingerprint(path).ok()?, video, frame);
+        let cached = thumbnail_path(&cache_directory(), fingerprint(path).ok()?, video);
         return load(&cached, 64).ok();
     }
     None
@@ -290,7 +272,6 @@ fn cached_thumbnail(
     directory: &Path,
     generation: &AtomicU64,
     requested_generation: u64,
-    frame: usize,
     key: u64,
 ) -> Result<Option<CachedImage>, String> {
     let active = || generation.load(Ordering::Relaxed) == requested_generation;
@@ -298,9 +279,9 @@ fn cached_thumbnail(
         return Ok(None);
     }
     let video = crate::files::video_file(path);
-    let cached = thumbnail_path(directory, key, video, frame);
+    let cached = thumbnail_path(directory, key, video);
     let image = if video {
-        video_frame(path, frame, generation, requested_generation)?
+        video_frame(path, generation, requested_generation)?
     } else {
         load(path, THUMBNAIL_EDGE)?
     };
@@ -383,7 +364,7 @@ impl Thumbnails {
                 if generation.load(Ordering::Relaxed) != requested_generation {
                     continue;
                 }
-                let image = fingerprint(&path.0).map(|key| {
+                let image = fingerprint(&path).map(|key| {
                     if previous == Some(key) {
                         return Some(CachedImage {
                             key,
@@ -391,8 +372,7 @@ impl Thumbnails {
                             warning: None,
                         });
                     }
-                    let cached =
-                        thumbnail_path(&directory, key, crate::files::video_file(&path.0), path.1);
+                    let cached = thumbnail_path(&directory, key, crate::files::video_file(&path));
                     match load(&cached, THUMBNAIL_EDGE) {
                         Ok(image) => Some(CachedImage {
                             key,
@@ -440,11 +420,10 @@ impl Thumbnails {
                     Err(_) => break,
                 };
                 let image = match cached_thumbnail(
-                    &path.0,
+                    &path,
                     &directory,
                     &generation,
                     requested_generation,
-                    path.1,
                     key,
                 ) {
                     Ok(Some(image)) => Ok(image),
@@ -523,7 +502,7 @@ impl Thumbnails {
                     self.warning = Some(warning);
                 }
                 context.load_texture(
-                    format!("{}#{}", path.0.display(), path.1),
+                    path.display().to_string(),
                     image,
                     egui::TextureOptions::LINEAR,
                 )
@@ -585,7 +564,7 @@ impl Thumbnails {
         let reused: Vec<_> = self
             .cache
             .iter()
-            .filter_map(|((path, frame), image)| {
+            .filter_map(|(path, image)| {
                 let destination = paths.iter().find_map(|(from, to)| {
                     let suffix = path.strip_prefix(from).ok()?;
                     Some(if suffix.as_os_str().is_empty() {
@@ -601,7 +580,7 @@ impl Thumbnails {
                     return None;
                 }
                 let texture = image.as_ref().ok()?;
-                let stored = self.fingerprints.get(&(path.clone(), *frame))?.0?;
+                let stored = self.fingerprints.get(path)?.0?;
                 let metadata = destination.metadata().ok()?;
                 let source = if renamed {
                     Some(metadata_fingerprint(path, &metadata))
@@ -612,22 +591,16 @@ impl Thumbnails {
                     return None;
                 }
                 let key = metadata_fingerprint(&destination, &metadata);
-                Some((
-                    (path.clone(), *frame),
-                    (destination, *frame),
-                    stored,
-                    key,
-                    texture.clone(),
-                ))
+                Some((path.clone(), destination, stored, key, texture.clone()))
             })
             .collect();
         for (source, path, stored, key, texture) in reused {
             if renamed {
                 let directory = cache_directory();
-                let video = crate::files::video_file(&source.0);
+                let video = crate::files::video_file(&source);
                 let _ = std::fs::rename(
-                    thumbnail_path(&directory, stored, video, source.1),
-                    thumbnail_path(&directory, key, video, path.1),
+                    thumbnail_path(&directory, stored, video),
+                    thumbnail_path(&directory, key, video),
                 );
                 self.remove_cached_texture(&source);
                 self.fingerprints.remove(&source);
@@ -646,13 +619,8 @@ impl Thumbnails {
         }
     }
 
-    pub fn get(&mut self, path: &Path, frame: usize) -> Option<&egui::TextureHandle> {
-        let frame = if crate::files::video_file(path) {
-            frame.min(VIDEO_FRAMES - 1)
-        } else {
-            0
-        };
-        let key = (path.to_path_buf(), frame);
+    pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {
+        let key = path.to_path_buf();
         let outdated = self
             .fingerprints
             .get(&key)
@@ -681,46 +649,15 @@ impl Thumbnails {
             }
             self.pending.insert(key.clone(), loading);
         }
-        let fallback = (
-            path.to_path_buf(),
-            if crate::files::video_file(path) {
-                VIDEO_POSTER
-            } else {
-                0
-            },
-        );
-        let displayed = if self.cache.get(&key).is_some_and(Result::is_ok) {
-            key
-        } else {
-            fallback
-        };
-        if self.cache.contains_key(&displayed) {
-            self.last_used.insert(displayed.clone(), Instant::now());
-            self.frame_used.insert(displayed.clone());
+        if self.cache.contains_key(&key) {
+            self.last_used.insert(key.clone(), Instant::now());
+            self.frame_used.insert(key.clone());
         }
-        self.cache
-            .get(&displayed)
-            .and_then(|result| result.as_ref().ok())
+        self.cache.get(&key).and_then(|result| result.as_ref().ok())
     }
 
-    pub fn get_entry(
-        &mut self,
-        entry: &crate::files::Entry,
-        frame: usize,
-    ) -> Option<&egui::TextureHandle> {
-        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
-        let (path, source_frame) = entry.thumbnail(poster);
-        self.get(path, source_frame);
-        if frame != poster {
-            let (path, source_frame) = entry.thumbnail(frame);
-            self.get(path, source_frame);
-        }
-        let displayed = self.displayed_frame(entry, frame)?;
-        let (path, source_frame) = entry.thumbnail(displayed);
-        self.cache
-            .get(&(path.to_path_buf(), source_frame))?
-            .as_ref()
-            .ok()
+    pub fn get_entry(&mut self, entry: &crate::files::Entry) -> Option<&egui::TextureHandle> {
+        self.get(entry.thumbnail())
     }
 
     pub fn textures(&self) -> impl Iterator<Item = &egui::TextureHandle> {
@@ -729,35 +666,13 @@ impl Thumbnails {
             .filter_map(|key| self.cache.get(key)?.as_ref().ok())
     }
 
-    pub fn displayed_frame(&self, entry: &crate::files::Entry, frame: usize) -> Option<usize> {
-        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
-        [frame, poster].into_iter().find(|frame| {
-            let (path, source_frame) = entry.thumbnail(*frame);
-            self.cache
-                .get(&(path.to_path_buf(), source_frame))
-                .is_some_and(|image| image.is_ok())
-        })
-    }
-
     pub fn entry_ready(&self, entry: &crate::files::Entry) -> bool {
-        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
-        let (path, frame) = entry.thumbnail(poster);
-        self.cache.contains_key(&(path.to_path_buf(), frame))
+        self.cache.contains_key(entry.thumbnail())
     }
 
     pub fn entry_aspect_ratio(&self, entry: &crate::files::Entry) -> Option<f32> {
-        let (path, _) = entry.thumbnail(VIDEO_POSTER);
-        self.aspect_ratio(path)
-    }
-
-    fn aspect_ratio(&self, path: &Path) -> Option<f32> {
-        let frame = if crate::files::video_file(path) {
-            VIDEO_POSTER
-        } else {
-            0
-        };
         self.cache
-            .get(&(path.to_path_buf(), frame))
+            .get(entry.thumbnail())
             .and_then(|result| result.as_ref().ok())
             .map(|texture| {
                 let size = texture.size_vec2();

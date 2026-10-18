@@ -20,7 +20,6 @@ const ACCENT: Color32 = Color32::from_rgb(112, 168, 157);
 const MUTED: Color32 = Color32::from_rgb(125, 132, 143);
 const TREE_SIZE_WIDTH: f32 = 110.0;
 const TREE_DATE_WIDTH: f32 = 156.0;
-const PREVIEW_BAR_HEIGHT: f32 = 6.0;
 const RECURSIVE_MAX_DEPTH: usize = 5;
 const RECURSIVE_MAX_FOLDERS: usize = 64;
 const RECURSIVE_MAX_ENTRIES: usize = 2_000;
@@ -3649,13 +3648,7 @@ impl FileManager {
         paint_deletion_lock(ui, rect, entry.deletion_locked);
     }
 
-    fn paint_thumbnail(
-        &mut self,
-        ui: &egui::Ui,
-        rect: egui::Rect,
-        entry: &Entry,
-        response: &egui::Response,
-    ) -> bool {
+    fn paint_thumbnail(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) -> bool {
         let video = entry.animated();
         if entry.directory
             || (!files::image_file(&entry.path) && !video)
@@ -3664,19 +3657,8 @@ impl FileManager {
             return false;
         }
         self.prepared_view.push((entry.path.clone(), rect));
-        let progress = if video && response.hovered() {
-            response.hover_pos().map(|pointer| {
-                ((pointer.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0)
-            })
-        } else {
-            None
-        };
-        let poster = if video { images::VIDEO_POSTER } else { 0 };
-        let frame = progress.map_or(poster, |progress| {
-            ((progress * images::VIDEO_FRAMES as f32) as usize).min(images::VIDEO_FRAMES - 1)
-        });
         let image_bounds = rect;
-        let Some(texture) = self.thumbnails.get_entry(entry, frame) else {
+        let Some(texture) = self.thumbnails.get_entry(entry) else {
             if self.wait_for_thumbnails {
                 self.directory_ready &= self.thumbnails.entry_ready(entry);
             }
@@ -3698,40 +3680,6 @@ impl FileManager {
                 texture_tint(ui, texture)
             },
         );
-        if progress.is_some() {
-            let displayed = self
-                .thumbnails
-                .displayed_frame(entry, frame)
-                .unwrap_or(poster);
-            let progress = if let Some(paths) = &entry.sequence {
-                let index = if displayed == images::VIDEO_POSTER {
-                    paths.len() / 2
-                } else {
-                    (paths.len() - 1) * displayed / (images::VIDEO_FRAMES - 1)
-                };
-                index as f32 / (paths.len() - 1) as f32
-            } else if displayed == images::VIDEO_POSTER {
-                0.5
-            } else {
-                displayed as f32 / (images::VIDEO_FRAMES - 1) as f32
-            };
-            let inset = image_bounds.shrink(4.0);
-            let height = PREVIEW_BAR_HEIGHT.min(inset.height()).max(0.0);
-            let left = egui::pos2(inset.left(), inset.bottom() - height);
-            let width = inset.width().max(0.0);
-            let track = egui::Rect::from_min_size(left, Vec2::new(width, height));
-            let background = if ui.visuals().dark_mode {
-                Color32::from_rgb(55, 62, 70)
-            } else {
-                Color32::from_rgb(208, 214, 220)
-            };
-            ui.painter().rect_filled(track, 2.0, background);
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(left, Vec2::new(width * progress, height)),
-                2.0,
-                ACCENT,
-            );
-        }
         paint_deletion_lock(ui, image_rect, entry.deletion_locked);
         true
     }
@@ -4133,7 +4081,7 @@ impl FileManager {
                                         rect.center_top() + Vec2::new(0.0, height * 0.34),
                                         Vec2::splat(64.0 * self.settings.zoom),
                                     );
-                                    if !self.paint_thumbnail(ui, icon_rect, entry, &response) {
+                                    if !self.paint_thumbnail(ui, icon_rect, entry) {
                                         self.paint_entry_icon(
                                             ui,
                                             icon_rect.shrink(8.0 * self.settings.zoom),
@@ -4476,7 +4424,7 @@ impl FileManager {
                             let highlighted =
                                 !self.sidebar_focused && self.selection.contains(&entry.path);
                             ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
-                            if !self.paint_thumbnail(ui, rect, entry, &response) {
+                            if !self.paint_thumbnail(ui, rect, entry) {
                                 let edge = (64.0 * self.settings.zoom)
                                     .min(rect.width().min(rect.height()) * 0.5);
                                 self.paint_entry_icon(
@@ -4895,7 +4843,7 @@ impl FileManager {
                     egui::pos2(content.left() + edge / 2.0 + 6.0 * scale, row.center().y),
                     Vec2::splat(edge),
                 );
-                if !self.paint_thumbnail(ui, icon, entry, &response) {
+                if !self.paint_thumbnail(ui, icon, entry) {
                     self.paint_entry_icon(ui, icon, entry);
                 }
                 if response.hovered() {

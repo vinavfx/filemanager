@@ -32,17 +32,11 @@ impl Entry {
         self.sequence.is_some() || video_file(&self.path)
     }
 
-    pub fn thumbnail(&self, frame: usize) -> (&Path, usize) {
+    pub fn thumbnail(&self) -> &Path {
         if let Some(paths) = &self.sequence {
-            let index = if frame == crate::images::VIDEO_POSTER {
-                paths.len() / 2
-            } else {
-                (paths.len() - 1) * frame.min(crate::images::VIDEO_FRAMES - 1)
-                    / (crate::images::VIDEO_FRAMES - 1)
-            };
-            (&paths[index], 0)
+            &paths[paths.len() / 2]
         } else {
-            (&self.path, if self.animated() { frame } else { 0 })
+            &self.path
         }
     }
 }
