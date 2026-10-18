@@ -1178,19 +1178,13 @@ impl FileManager {
 
     fn open_media(&mut self, path: &Path, application: &str) {
         let executable = if application == "player" {
-            let project = Path::new(env!("CARGO_MANIFEST_DIR"))
+            let executable = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .and_then(Path::parent)
-                .map(|directory| directory.join("player"));
-            let executable = project.and_then(|project| {
-                ["target/release/player", "target/debug/player"]
-                    .iter()
-                    .map(|target| project.join(target))
-                    .find(|target| target.is_file())
-            });
+                .map(|directory| directory.join("player/start.sh"))
+                .filter(|launcher| launcher.is_file());
             let Some(executable) = executable else {
                 self.set_message(Some(
-                    "Cannot find the Player executable in ../player/target.".into(),
+                    "Cannot find the integrated Player launcher at player/start.sh.".into(),
                 ));
                 return;
             };

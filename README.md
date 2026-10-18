@@ -1,6 +1,23 @@
 # Still Files
 
-Gestor de archivos minimalista para Linux, escrito en Rust con egui. El proyecto está en `app/` y el lanzador es `start.sh`.
+Gestor de archivos minimalista para Linux, escrito en Rust con egui, con Player integrado para imágenes, secuencias y vídeos.
+
+## Bloques independientes
+
+| Bloque                     | Fuentes y manifiesto                | Lanzador                      |
+| -------------------------- | ----------------------------------- | ----------------------------- |
+| Filemanager                | `app/src/` y `app/Cargo.toml`       | `./start.sh`                  |
+| [Player](player/README.md) | `player/src/` y `player/Cargo.toml` | `./player/start.sh [archivo]` |
+
+Cada bloque conserva sus dependencias, `Cargo.lock`, compilaciones en `target/` y proceso residente. No comparten módulos ni requieren el
+repositorio externo de player. Filemanager abre los medios mediante `player/start.sh`; los demás archivos usan su aplicación asociada.
+
+Para compilar ambos sin descargar dependencias:
+
+```bash
+(cd app && cargo build --offline)
+(cd player && cargo build --offline)
+```
 
 ## Arranque
 
@@ -13,7 +30,7 @@ Requiere Rust 1.89 o superior, un escritorio X11 o Wayland y OpenGL. Herramienta
 | Konsole                  | Abrir una terminal desde el menú contextual.                             |
 | `fzf`                    | Búsqueda recursiva; debe estar en `PATH` o `~/.fzf/bin/fzf`.             |
 | `zip`                    | Comprimir archivos y carpetas.                                           |
-| `ffmpeg` y `ffprobe`     | Crear las previsualizaciones de vídeo.                                   |
+| `ffmpeg` y `ffprobe`     | Crear previsualizaciones y decodificar medios en Player.                 |
 | `gdk-pixbuf-thumbnailer` | Rasterizar iconos SVG/XPM del tema del sistema.                          |
 | `date`                   | Mostrar fechas en la zona horaria local.                                 |
 
@@ -53,21 +70,21 @@ esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo
 
 ### Movimiento y apertura
 
-| Atajo               | Acción                            | Detalle                                                                   |
-| ------------------- | --------------------------------- | ------------------------------------------------------------------------- |
-| `↑` / `k`           | Mover arriba                      | Selecciona el elemento superior.                                          |
-| `↓` / `j`           | Mover abajo                       | Selecciona el elemento inferior.                                          |
-| `←` / `h`           | Mover a la izquierda              | En árbol, cierra la carpeta o selecciona su padre visible.                |
-| `→` / `l`           | Mover a la derecha                | En árbol, abre la carpeta o selecciona su primer hijo.                    |
-| Número + movimiento | Repetir el movimiento             | Por ejemplo, `5j` baja cinco posiciones en el panel de archivos.          |
-| `Home` / `gg`       | Ir al principio                   | Selecciona el primer elemento.                                            |
-| `End` / `G`         | Ir al final                       | Selecciona el último elemento.                                            |
-| `Ctrl+D` / `Ctrl+U` | Bajar / subir media pantalla      | Desplaza la vista y la selección.                                         |
-| `zz`                | Centrar la selección              | Centra el elemento actual en el panel de archivos.                        |
-| `Enter` / `Espacio` | Abrir                             | Entra en una carpeta o abre el archivo con su aplicación asociada.        |
-| `o`                 | Abrir o desplegar                 | En árbol alterna la apertura de la carpeta; en archivos equivale a abrir. |
-| `Mayús+O`           | Desplegar o plegar recursivamente | Solo en árbol; mantiene abierta la carpeta seleccionada.                  |
-| `Alt+P`             | Seleccionar el padre visible      | Solo en árbol; no cambia de directorio ni pliega carpetas.                |
+| Atajo               | Acción                            | Detalle                                                                                    |
+| ------------------- | --------------------------------- | ------------------------------------------------------------------------------------------ |
+| `↑` / `k`           | Mover arriba                      | Selecciona el elemento superior.                                                           |
+| `↓` / `j`           | Mover abajo                       | Selecciona el elemento inferior.                                                           |
+| `←` / `h`           | Mover a la izquierda              | En árbol, cierra la carpeta o selecciona su padre visible.                                 |
+| `→` / `l`           | Mover a la derecha                | En árbol, abre la carpeta o selecciona su primer hijo.                                     |
+| Número + movimiento | Repetir el movimiento             | Por ejemplo, `5j` baja cinco posiciones en el panel de archivos.                           |
+| `Home` / `gg`       | Ir al principio                   | Selecciona el primer elemento.                                                             |
+| `End` / `G`         | Ir al final                       | Selecciona el último elemento.                                                             |
+| `Ctrl+D` / `Ctrl+U` | Bajar / subir media pantalla      | Desplaza la vista y la selección.                                                          |
+| `zz`                | Centrar la selección              | Centra el elemento actual en el panel de archivos.                                         |
+| `Enter` / `Espacio` | Abrir                             | Entra en carpetas; abre medios con Player y los demás archivos con su aplicación asociada. |
+| `o`                 | Abrir o desplegar                 | En árbol alterna la apertura de la carpeta; en archivos equivale a abrir.                  |
+| `Mayús+O`           | Desplegar o plegar recursivamente | Solo en árbol; mantiene abierta la carpeta seleccionada.                                   |
+| `Alt+P`             | Seleccionar el padre visible      | Solo en árbol; no cambia de directorio ni pliega carpetas.                                 |
 
 ### Navegación entre carpetas y paneles
 
