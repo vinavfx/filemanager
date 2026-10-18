@@ -75,7 +75,7 @@ fn run() -> Result<(), String> {
 
 fn initialize_decoder_threads() -> Result<(), String> {
     rayon_core::ThreadPoolBuilder::new()
-        .num_threads(4)
+        .num_threads(std::thread::available_parallelism().map_or(1, usize::from))
         .build_global()
         .map_err(|error| format!("Cannot initialize image decoder threads: {error}"))
 }

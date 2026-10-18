@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 pub const CACHE_LIMIT: usize = 24 * 1024 * 1024 * 1024;
+const PRELOAD_FRAMES: usize = 4;
 
 pub enum Pixels {
     Bytes(Vec<u8>),
@@ -88,6 +89,66 @@ impl Cache {
     }
 }
 
+#[derive(Default)]
+struct ImageCache {
+    frames: VecDeque<(u64, Arc<Frame>)>,
+    bytes: usize,
+}
+
+impl ImageCache {
+    fn get(&mut self, key: u64) -> Option<Arc<Frame>> {
+        let index = self.frames.iter().position(|entry| entry.0 == key)?;
+        let entry = self.frames.remove(index)?;
+        let frame = entry.1.clone();
+        self.frames.push_back(entry);
+        Some(frame)
+    }
+
+    fn remove(&mut self, key: u64) {
+        if let Some(index) = self.frames.iter().position(|entry| entry.0 == key)
+            && let Some((_, frame)) = self.frames.remove(index)
+        {
+            self.bytes -= frame.bytes();
+        }
+    }
+
+    fn evict(&mut self, cache: &mut Cache) {
+        if let Some((_, oldest)) = self.frames.pop_front() {
+            self.bytes -= oldest.bytes();
+            cache.frames.retain(|_, frame| {
+                if Arc::ptr_eq(frame, &oldest) {
+                    cache.bytes -= frame.bytes();
+                    false
+                } else {
+                    true
+                }
+            });
+            cache.order.retain(|index| cache.frames.contains_key(index));
+        }
+    }
+
+    fn insert(&mut self, key: u64, frame: Arc<Frame>, cache: &mut Cache) {
+        self.remove(key);
+        if frame.bytes() > CACHE_LIMIT {
+            return;
+        }
+        while self.bytes + frame.bytes() > CACHE_LIMIT && !self.frames.is_empty() {
+            self.evict(cache);
+        }
+        self.bytes += frame.bytes();
+        self.frames.push_back((key, frame));
+    }
+}
+
+fn image_key(path: &Path) -> Option<u64> {
+    let metadata = path.metadata().ok()?;
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata.modified().ok()?.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 pub enum Request {
     Open(u64, PathBuf),
     Seek(u64, usize),
@@ -144,6 +205,7 @@ fn worker(
     let mut target = 0;
     let mut preload = 0;
     let mut failed = HashSet::new();
+    let mut images = ImageCache::default();
     loop {
         let request = match receiver.recv_timeout(Duration::from_millis(2)) {
             Ok(request) => Some(request),
@@ -166,13 +228,23 @@ fn worker(
                             ..Cache::default()
                         };
                     }
-                    if let Some((frame, dimensions)) = cached_preview(&path) {
+                    let retained = std::path::absolute(&path)
+                        .ok()
+                        .and_then(|path| image_key(&path))
+                        .is_some_and(|key| images.frames.iter().any(|entry| entry.0 == key));
+                    if !retained && let Some((frame, dimensions)) = cached_preview(&path) {
                         let _ =
                             events.send(Event::Preview(generation, Arc::new(frame), dimensions));
                         context.request_repaint();
                     }
                     match inspect(&path) {
                         Ok(media) => {
+                            if let Some(key) = media.files.first().and_then(|path| image_key(path))
+                                && let Some(frame) = images.get(key)
+                                && let Ok(mut cache) = cache.lock()
+                            {
+                                cache.insert(0, frame);
+                            }
                             let _ = events.send(Event::Loaded(generation, media.clone()));
                             decoder = Some(Decoder { media, pipe: None });
                         }
@@ -183,6 +255,13 @@ fn worker(
                     context.request_repaint();
                 }
                 Request::Seek(id, frame) if id == generation => {
+                    if let Some(key) = decoder
+                        .as_ref()
+                        .and_then(|decoder| decoder.media.files.get(frame))
+                        .and_then(|path| image_key(path))
+                    {
+                        images.get(key);
+                    }
                     target = frame;
                     preload = frame;
                 }
@@ -195,6 +274,14 @@ fn worker(
                     }
                     failed.remove(&frame);
                     if let Some(decoder) = &mut decoder {
+                        if let Some(key) = decoder
+                            .media
+                            .files
+                            .get(frame)
+                            .and_then(|path| image_key(path))
+                        {
+                            images.remove(key);
+                        }
                         decoder.pipe = None;
                     }
                     target = frame;
@@ -217,60 +304,102 @@ fn worker(
             continue;
         };
         let count = decoder.media.count;
-        let index = {
+        let indices = {
             let Ok(cache) = cache.lock() else { break };
+            let mut indices = Vec::new();
             if target < count && !cache.frames.contains_key(&target) && !failed.contains(&target) {
-                Some(target)
+                indices.push(target);
+            }
+            let parallel = if decoder.media.files.is_empty() {
+                1
             } else {
-                let mut index = None;
-                let scans = if cache.frames.len() + failed.len() >= count {
-                    0
-                } else {
-                    count.min(1024)
-                };
-                for _ in 0..scans {
-                    if cache.bytes >= CACHE_LIMIT {
-                        break;
-                    }
-                    let candidate = preload % count;
-                    preload = (preload + 1) % count;
-                    if !cache.frames.contains_key(&candidate) && !failed.contains(&candidate) {
-                        let estimate = cache
-                            .frames
-                            .values()
-                            .next()
-                            .map(|frame| frame.bytes())
-                            .unwrap_or(
-                                decoder.media.width as usize * decoder.media.height as usize * 16,
-                            );
-                        if cache.bytes.saturating_add(estimate) <= CACHE_LIMIT {
-                            index = Some(candidate);
-                        }
-                        break;
-                    }
+                PRELOAD_FRAMES
+            };
+            let estimate = decoder.media.width as usize * decoder.media.height as usize * 16;
+            let scans = if cache.frames.len() + failed.len() >= count {
+                0
+            } else {
+                count.min(1024)
+            };
+            for _ in 0..scans {
+                if indices.len() >= parallel
+                    || cache
+                        .bytes
+                        .saturating_add(estimate.saturating_mul(indices.len() + 1))
+                        > CACHE_LIMIT
+                {
+                    break;
                 }
-                index
+                let candidate = preload % count;
+                preload = (preload + 1) % count;
+                if !cache.frames.contains_key(&candidate)
+                    && !failed.contains(&candidate)
+                    && !indices.contains(&candidate)
+                {
+                    indices.push(candidate);
+                }
             }
+            indices
         };
-        if let Some(index) = index {
-            match decoder.read(index) {
-                Ok(frame) => {
-                    if let Ok(mut cache) = cache.lock() {
-                        cache.insert(index, Arc::new(frame));
-                    }
-                }
-                Err(error) => {
-                    failed.insert(index);
-                    let _ = events.send(Event::Error(
-                        generation,
-                        format!("Frame {}: {error}", decoder.media.number(index)),
-                    ));
+        if indices.is_empty() {
+            thread::sleep(Duration::from_millis(12));
+            continue;
+        }
+        thread::scope(|scope| {
+            let (results, receiver) = mpsc::channel();
+            for index in indices {
+                let path = decoder.media.files.get(index).cloned();
+                let key = path.as_deref().and_then(image_key);
+                if let Some(frame) = key.and_then(|key| images.get(key)) {
+                    let _ = results.send((index, key, Ok(frame)));
+                } else if let Some(path) = path {
+                    let results = results.clone();
+                    scope.spawn(move || {
+                        let frame = decode_image(&path).map(Arc::new);
+                        let _ = results.send((index, key, frame));
+                    });
+                } else {
+                    let frame = decoder.read(index).map(Arc::new);
+                    let _ = results.send((index, key, frame));
                 }
             }
+            drop(results);
+            let mut frames: Vec<_> = receiver.into_iter().collect();
+            frames.sort_unstable_by_key(|(index, _, _)| *index);
+            let Ok(mut cache) = cache.lock() else { return };
+            for (index, key, frame) in frames {
+                match frame {
+                    Ok(frame) => {
+                        if let Some(key) = key
+                            && decoder
+                                .media
+                                .files
+                                .get(index)
+                                .and_then(|path| image_key(path))
+                                == Some(key)
+                        {
+                            images.insert(key, frame.clone(), &mut cache);
+                        } else {
+                            while images.bytes + cache.bytes + frame.bytes() > CACHE_LIMIT
+                                && !images.frames.is_empty()
+                            {
+                                images.evict(&mut cache);
+                            }
+                        }
+                        cache.insert(index, frame);
+                    }
+                    Err(error) => {
+                        failed.insert(index);
+                        let _ = events.send(Event::Error(
+                            generation,
+                            format!("Frame {}: {error}", decoder.media.number(index)),
+                        ));
+                    }
+                }
+            }
+            drop(cache);
             context.request_repaint();
-        } else {
-            thread::sleep(Duration::from_millis(12));
-        }
+        });
     }
 }
 
@@ -336,15 +465,15 @@ fn image_extension(path: &Path) -> bool {
 
 fn number_parts(path: &Path) -> Option<(String, String, usize, i64)> {
     let stem = path.file_stem()?.to_str()?;
-    let start = stem.trim_end_matches(|c: char| c.is_ascii_digit()).len();
-    if start == stem.len() {
-        return None;
-    }
+    let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let start = stem[..end]
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .len();
     Some((
         stem[..start].to_owned(),
-        path.extension()?.to_str()?.to_owned(),
-        stem.len() - start,
-        stem[start..].parse().ok()?,
+        format!("{}.{}", &stem[end..], path.extension()?.to_str()?),
+        end - start,
+        stem[start..end].parse().ok()?,
     ))
 }
 
@@ -407,10 +536,10 @@ fn sequence(path: &Path) -> Result<Vec<(i64, PathBuf)>, String> {
             {
                 files.push((number, candidate));
             }
-        } else if let (Some((prefix, extension, width, original)), Some((p, e, w, number))) =
+        } else if let (Some((prefix, suffix, width, original)), Some((p, s, w, number))) =
             (&parts, number_parts(&candidate))
             && prefix == &p
-            && extension == &e
+            && suffix == &s
             && (width == &w
                 || (*width == original.to_string().len() && w == number.to_string().len()))
         {
