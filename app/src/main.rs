@@ -3504,7 +3504,7 @@ impl FileManager {
                 texture.id(),
                 rect,
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                texture_tint(ui, texture),
+                Color32::WHITE,
             );
             if entry.symlink {
                 ui.painter().text(
@@ -3516,6 +3516,9 @@ impl FileManager {
                 );
             }
         } else {
+            if !entry.directory {
+                self.directory_ready &= self.icons.ready(&entry.path);
+            }
             paint_icon(ui, rect, entry);
         }
         paint_deletion_lock(ui, rect, entry.deletion_locked);
@@ -3762,9 +3765,10 @@ impl FileManager {
                                                 egui::Pos2::ZERO,
                                                 egui::pos2(1.0, 1.0),
                                             ),
-                                            texture_tint(ui, texture),
+                                            Color32::WHITE,
                                         );
                                     } else {
+                                        self.directory_ready &= self.icons.ready(&hit.path);
                                         ui.painter().rect_stroke(
                                             icon_rect.shrink2(Vec2::new(4.0, 1.0)),
                                             2.0,

@@ -349,13 +349,6 @@ impl Icons {
                     egui::TextureOptions::LINEAR,
                 )
             });
-            if let Some(texture) = &texture {
-                context.animate_bool_with_time(
-                    egui::Id::new(("loaded-texture", texture.id())),
-                    false,
-                    0.12,
-                );
-            }
             self.order.push_back(key.clone());
             self.cache.insert(key, texture);
         }
@@ -371,6 +364,10 @@ impl Icons {
         } else {
             format!("name:{}", path.file_name()?.to_string_lossy())
         })
+    }
+
+    pub fn ready(&self, path: &Path) -> bool {
+        Self::key(path).is_none_or(|key| self.cache.contains_key(&key))
     }
 
     pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {
