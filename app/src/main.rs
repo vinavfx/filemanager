@@ -67,8 +67,8 @@ fn with_scrollbar_color<R>(
 
 #[derive(Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum View {
-    Tree,
     #[default]
+    Tree,
     Grid,
     Media,
 }
@@ -106,8 +106,8 @@ impl Default for Settings {
         Self {
             removed_places: Vec::new(),
             entry_order: HashMap::new(),
-            view: View::Grid,
-            media_return_view: View::Grid,
+            view: View::Tree,
+            media_return_view: View::Tree,
             tree_sort: TreeSort::Name,
             tree_descending: false,
             tree_zoom: 1.0,
@@ -475,6 +475,7 @@ impl FileManager {
                 Some(format!("Cannot read settings: {error}")),
             ),
         };
+        settings.view = View::Tree;
         apply_theme(context, settings.dark_mode);
         let home_places = places::defaults(&home);
         let mut bookmarks = bookmarks::Bookmarks::new(&home);

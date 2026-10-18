@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const THUMBNAIL_EDGE: u32 = 192;
-const THUMBNAIL_VERSION: u32 = 3;
+const THUMBNAIL_VERSION: u32 = 4;
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_PENDING: usize = 48;
 const MAX_UPLOADS_PER_FRAME: usize = 2;
@@ -122,8 +122,8 @@ fn video_frame(
     )?;
     let image = image::load_from_memory(&bytes)
         .map_err(|error| error.to_string())?
-        .to_rgba8();
-    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        .to_rgb8();
+    Ok(egui::ColorImage::from_rgb(
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     ))
@@ -140,6 +140,11 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
             image.color(),
             image::ColorType::Rgb32F | image::ColorType::Rgba32F
         );
+        let image = if floating_point {
+            image::DynamicImage::ImageRgb32F(image.into_rgb32f())
+        } else {
+            image::DynamicImage::ImageRgb8(image.into_rgb8())
+        };
         let image = if image.width() > edge || image.height() > edge {
             if floating_point {
                 image.resize(edge, edge, image::imageops::FilterType::Triangle)
@@ -156,10 +161,10 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
             ));
         }
         let image = if floating_point {
-            let float = image.into_rgba32f();
-            image::RgbaImage::from_fn(float.width(), float.height(), |x, y| {
+            let float = image.into_rgb32f();
+            image::RgbImage::from_fn(float.width(), float.height(), |x, y| {
                 let pixel = float.get_pixel(x, y);
-                let mut rgba = [0; 4];
+                let mut rgb = [0; 3];
                 for channel in 0..3 {
                     let linear = pixel[channel].clamp(0.0, 1.0);
                     let srgb = if linear <= 0.0031308 {
@@ -167,15 +172,14 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
                     } else {
                         1.055 * linear.powf(1.0 / 2.4) - 0.055
                     };
-                    rgba[channel] = (srgb * 255.0).round() as u8;
+                    rgb[channel] = (srgb * 255.0).round() as u8;
                 }
-                rgba[3] = (pixel[3].clamp(0.0, 1.0) * 255.0).round() as u8;
-                image::Rgba(rgba)
+                image::Rgb(rgb)
             })
         } else {
-            image.into_rgba8()
+            image.into_rgb8()
         };
-        Ok(egui::ColorImage::from_rgba_unmultiplied(
+        Ok(egui::ColorImage::from_rgb(
             [image.width() as usize, image.height() as usize],
             image.as_raw(),
         ))
@@ -295,14 +299,14 @@ fn cached_thumbnail(
         let bytes: Vec<u8> = image
             .pixels
             .iter()
-            .flat_map(egui::Color32::to_srgba_unmultiplied)
+            .flat_map(|pixel| [pixel.r(), pixel.g(), pixel.b()])
             .collect();
         image::save_buffer_with_format(
             &temporary,
             &bytes,
             image.size[0] as u32,
             image.size[1] as u32,
-            image::ColorType::Rgba8,
+            image::ColorType::Rgb8,
             image::ImageFormat::WebP,
         )?;
         if active() {
