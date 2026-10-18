@@ -2,8 +2,8 @@
 
 ## Referencia utilizada
 
-DJV 1.3.0, commit `020d9fb885dda19307afb39015555e9552c90e43`, a partir del archivo fuente guardado, las capturas y
-`preferencias-originales.conf`. No se utiliza el historial personal ni se necesita una instalación de DJV en ejecución.
+[DJV 1.3.0](https://github.com/grizzlypeak3d/DJV), commit `020d9fb885dda19307afb39015555e9552c90e43`. Durante el desarrollo se consultaron
+sus fuentes, capturas y preferencias; este repositorio ya no incluye ese material. No se necesita una instalación de DJV en ejecución.
 
 La confirmación del usuario establece Rust, apertura de EXR, MP4, MOV, JPG y otras secuencias o vídeos disponibles, sin menús, con barra
 superior de zoom y orientación, y timeline inferior con una barra de reproducción debajo. Autoriza descargar dependencias y compilar. Se
@@ -24,8 +24,7 @@ nuevos.
 | `OpenEXRLoad.cpp`, preferencias OpenEXR                                                       | Perfil gamma 2.2, datos de alta precisión y configuración de cuatro hilos.                                                                                                                                                |
 | `Speed.cpp`, `Time.cpp`, `Sequence.cpp`, `Memory.cpp`                                         | Velocidades racionales, lista de 16 FPS originales, índices de secuencia y GiB binarios.                                                                                                                                  |
 
-Las fuentes adicionales se extrajeron para consulta; el archivo original permanece intacto. El código nuevo está en `src/`, no es una
-envoltura del motor Qt.
+El código de Player está en `src/`; no es una envoltura del motor Qt.
 
 ## Decisiones técnicas
 
@@ -63,8 +62,8 @@ integral ni rendimiento garantizado. Las diferencias de color, capas EXR, animac
 
 ## Licencias
 
-La lógica portada se basa en DJV bajo BSD de tres cláusulas; el aviso original completo se conserva en `LICENSE` y en la referencia
-guardada. No se distribuyen sus bibliotecas Qt ni sus binarios.
+La lógica portada se basa en DJV bajo BSD de tres cláusulas; el aviso original completo se conserva en `LICENSE`. No se distribuyen sus
+bibliotecas Qt ni sus binarios.
 
 Las bibliotecas Rust se resuelven mediante `Cargo.lock`; sus licencias permanecen en sus paquetes de Cargo: `eframe`/`egui`, `image`, `exr`,
 `rayon-core`, `bytemuck` y `serde_json`, además de las dependencias transitivas. FFmpeg y Zenity son ejecutables externos, no copiados al

@@ -1,8 +1,8 @@
 # Player
 
-Visor en Rust para Linux, basado en la navegación de DJV 1.3.0 y las preferencias guardadas en este repositorio. Arriba, zoom y orientación;
-abajo, timeline con caché real y, debajo de él, una barra con reversa, parada, avance, bucle, FPS y fotograma actual. Sin menús, audio,
-paneles ni herramientas adicionales.
+Visor en Rust para Linux, basado en la navegación de DJV 1.3.0 y las preferencias utilizadas durante el desarrollo. Arriba, zoom y
+orientación; abajo, timeline con caché real y, debajo de él, una barra con reversa, parada, avance, bucle, FPS y fotograma actual. Sin
+menús, audio, paneles ni herramientas adicionales.
 
 ## Ubicación en el repositorio
 
