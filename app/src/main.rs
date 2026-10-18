@@ -278,6 +278,7 @@ enum FileOperation {
 }
 
 enum OperationUpdate {
+    Visibility(Vec<PathBuf>, bool),
     Progress(usize, usize, PathBuf),
     Finished(operations::History, operations::Outcome),
 }
@@ -290,6 +291,10 @@ struct OperationJob {
     completed_offset: usize,
     outcome: operations::Outcome,
     preserve_selection: bool,
+    visual_changed: bool,
+    restored_paths: Vec<PathBuf>,
+    hidden_paths: Vec<PathBuf>,
+    pending_visibility: Vec<mpsc::Receiver<Vec<PathBuf>>>,
     label: &'static str,
     completed: usize,
     total: usize,
@@ -363,6 +368,7 @@ struct FileManager {
     history: Vec<PathBuf>,
     operations: operations::History,
     operation_job: Option<OperationJob>,
+    removed_entries: HashMap<PathBuf, Entry>,
     position: usize,
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
@@ -475,6 +481,7 @@ impl FileManager {
             history: vec![current.clone()],
             operations: operations::History::default(),
             operation_job: None,
+            removed_entries: HashMap::new(),
             breadcrumb_path: current.clone(),
             thumbnails: images::Thumbnails::new(context.egui_ctx.clone()),
             icons: icons::Icons::new(context.egui_ctx.clone()),
@@ -1311,11 +1318,37 @@ impl FileManager {
     }
 
     fn poll(&mut self, context: &egui::Context) {
+        if let Some(job) = &mut self.operation_job {
+            let mut hidden = Vec::new();
+            job.pending_visibility
+                .retain(|receiver| match receiver.try_recv() {
+                    Ok(paths) => {
+                        hidden.extend(paths);
+                        true
+                    }
+                    Err(mpsc::TryRecvError::Empty) => true,
+                    Err(mpsc::TryRecvError::Disconnected) => false,
+                });
+            if !hidden.is_empty() {
+                job.visual_changed = true;
+                job.hidden_paths.extend(hidden.iter().cloned());
+                self.update_operation_visibility(&hidden, false, context);
+            }
+        }
         for _ in 0..64 {
             let Some(job) = &mut self.operation_job else {
                 break;
             };
             match job.receiver.try_recv() {
+                Ok(OperationUpdate::Visibility(paths, restoring)) => {
+                    job.visual_changed = true;
+                    if restoring {
+                        job.restored_paths.extend(paths.iter().cloned());
+                    } else {
+                        job.hidden_paths.extend(paths.iter().cloned());
+                    }
+                    self.update_operation_visibility(&paths, restoring, context);
+                }
                 Ok(OperationUpdate::Progress(completed, total, path)) => {
                     job.completed = job.completed_offset + completed;
                     if job.trash_paths.is_empty() {
@@ -1349,6 +1382,8 @@ impl FileManager {
                         );
                         continue;
                     }
+                    let visual_changed = job.visual_changed;
+                    let restored_paths = std::mem::take(&mut job.restored_paths);
                     let mut outcome = std::mem::take(&mut job.outcome);
                     if !job.trash_paths.is_empty() && !outcome.trashed.is_empty() {
                         self.copied_files = std::mem::take(&mut outcome.trashed);
@@ -1359,7 +1394,16 @@ impl FileManager {
                     let changed = outcome.changed;
                     self.operations = history;
                     self.operation_job = None;
+                    outcome.changed |= visual_changed;
                     self.complete_operation(outcome, preserve_selection, context);
+                    if visual_changed {
+                        self.preparing_directory = false;
+                        self.wait_for_thumbnails = false;
+                        self.directory_frame = None;
+                    }
+                    if !restored_paths.is_empty() {
+                        self.select_restored_paths(&restored_paths, context);
+                    }
                     if let Some((directory, mut state)) = previous_selection.filter(|_| changed) {
                         if directory == self.current && !self.pending_delete.is_empty() {
                             state
@@ -1381,7 +1425,7 @@ impl FileManager {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    let restore = !job.trash_paths.is_empty();
+                    let restore = job.visual_changed;
                     self.operation_job = None;
                     self.paste_placement = None;
                     if restore {
@@ -1512,6 +1556,12 @@ impl FileManager {
         self.watch_media_directories(context);
         if let Some(search) = &mut self.search {
             search.poll();
+        }
+        if let Some(job) = &self.operation_job {
+            let paths = job.hidden_paths.clone();
+            if !paths.is_empty() {
+                self.update_operation_visibility(&paths, false, context);
+            }
         }
         self.thumbnails.poll(context);
         self.icons.poll(context);
@@ -4913,6 +4963,135 @@ impl FileManager {
         }
     }
 
+    fn select_restored_paths(&mut self, paths: &[PathBuf], context: &egui::Context) {
+        let paths: HashSet<_> = paths.iter().collect();
+        let restored: HashSet<_> =
+            self.entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .filter(|entry| {
+                    paths.contains(&entry.path)
+                        || entry.sequence.as_ref().is_some_and(|sequence| {
+                            sequence.iter().any(|path| paths.contains(path))
+                        })
+                })
+                .map(|entry| entry.path.clone())
+                .collect();
+        if !restored.is_empty() {
+            self.select(restored.iter().min().cloned(), context);
+            self.selection = restored;
+        }
+    }
+
+    fn update_operation_visibility(
+        &mut self,
+        paths: &[PathBuf],
+        restoring: bool,
+        context: &egui::Context,
+    ) {
+        let roots: HashSet<_> = paths.iter().map(PathBuf::as_path).collect();
+        let hidden = |path: &Path| path.ancestors().any(|root| roots.contains(root));
+        let affected = |entry: &Entry| {
+            hidden(&entry.path)
+                || entry.sequence.as_ref().is_some_and(|sequence| {
+                    sequence.iter().any(|path| roots.contains(path.as_path()))
+                })
+        };
+        if restoring {
+            let entries: Vec<_> = self
+                .removed_entries
+                .values()
+                .filter(|entry| affected(entry))
+                .cloned()
+                .collect();
+            for entry in entries {
+                let Some(parent) = entry.path.parent() else {
+                    continue;
+                };
+                let target = if parent == self.current
+                    || (self.settings.recursive_media && entry.path.starts_with(&self.current))
+                {
+                    Arc::make_mut(&mut self.entries)
+                } else if let Some(entries) = self.tree_cache.get_mut(parent) {
+                    entries
+                } else {
+                    continue;
+                };
+                if !target.iter().any(|existing| existing.path == entry.path) {
+                    target.push(entry);
+                }
+            }
+            Arc::make_mut(&mut self.entries).sort_by_cached_key(|entry| {
+                (
+                    !entry.directory,
+                    entry.name.to_lowercase(),
+                    entry.name.clone(),
+                )
+            });
+            if let Some(order) = self.settings.entry_order.get(&self.current) {
+                order_entries(Arc::make_mut(&mut self.entries).as_mut_slice(), order);
+            }
+            self.select_restored_paths(paths, context);
+        } else {
+            let entries_changed = self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .any(affected);
+            let search_changed = self
+                .search
+                .as_ref()
+                .and_then(|search| search.update.as_ref())
+                .is_some_and(|update| update.hits.iter().any(|hit| hidden(&hit.path)));
+            if !entries_changed && !search_changed {
+                return;
+            }
+            let nearby = self.selected.as_ref().and_then(|selected| {
+                let index = self
+                    .visible_paths
+                    .iter()
+                    .position(|path| path == selected)?;
+                self.visible_paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, path)| !hidden(path))
+                    .min_by_key(|(position, _)| (position.abs_diff(index), *position < index))
+                    .map(|(_, path)| path.clone())
+            });
+            for entry in self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .filter(|entry| affected(entry))
+            {
+                self.removed_entries
+                    .insert(entry.path.clone(), entry.clone());
+            }
+            Arc::make_mut(&mut self.entries).retain(|entry| !affected(entry));
+            for entries in self.tree_cache.values_mut() {
+                entries.retain(|entry| !affected(entry));
+            }
+            self.visible_paths.retain(|path| !hidden(path));
+            if let Some(search) = &mut self.search {
+                if let Some(update) = &mut search.update {
+                    update.hits.retain(|hit| !hidden(&hit.path));
+                    search.cursor = search.cursor.min(update.hits.len().saturating_sub(1));
+                }
+            }
+            self.tree_layout = None;
+            self.retain_visible_selection(context);
+            if self.selection.is_empty() {
+                self.select(nearby, context);
+            }
+        }
+        self.tree_layout = None;
+        self.media_layout = Default::default();
+        self.media_cache.clear();
+        self.directory_frame = None;
+        self.preparing_directory = false;
+        self.wait_for_thumbnails = false;
+    }
+
     fn move_paths(&mut self, paths: &[PathBuf], directory: &Path, context: &egui::Context) {
         if self.operation_job.is_some() || files::is_trash(directory) {
             return;
@@ -4928,9 +5107,32 @@ impl FileManager {
         self.start_operation(FileOperation::Move(paths), context);
     }
 
-    fn start_operation(&mut self, operation: FileOperation, context: &egui::Context) {
+    fn start_operation(&mut self, mut operation: FileOperation, context: &egui::Context) {
         if self.new_folder.is_some() {
             return;
+        }
+        if let FileOperation::Trash(paths) = &mut operation {
+            if self
+                .operation_job
+                .as_ref()
+                .is_some_and(|job| job.trash_paths.is_empty())
+            {
+                return;
+            }
+            self.mounts.poll();
+            paths.retain(|path| {
+                if matches!(self.mounts.kind(path), Some(mounts::Kind::Network)) {
+                    if !self.pending_delete.contains(path) {
+                        self.pending_delete.push(path.clone());
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            if paths.is_empty() {
+                return;
+            }
         }
         self.media_cache.clear();
         if let Some(job) = &mut self.operation_job {
@@ -4946,6 +5148,18 @@ impl FileManager {
             }
             job.total += paths.len();
             job.trash_paths.extend(paths.iter().cloned());
+            let (sender, receiver) = mpsc::channel();
+            job.pending_visibility.push(receiver);
+            let queued = paths.clone();
+            let context = context.clone();
+            std::thread::spawn(move || {
+                for chunk in queued.chunks(128) {
+                    if files::can_trash(chunk) {
+                        let _ = sender.send(chunk.to_vec());
+                        context.request_repaint();
+                    }
+                }
+            });
             job.pending_trash.extend(paths);
             return;
         }
@@ -4997,6 +5211,10 @@ impl FileManager {
             completed_offset: 0,
             outcome: operations::Outcome::default(),
             preserve_selection,
+            visual_changed: false,
+            restored_paths: Vec::new(),
+            hidden_paths: Vec::new(),
+            pending_visibility: Vec::new(),
             label,
             completed: 0,
             total,
@@ -5012,6 +5230,24 @@ impl FileManager {
         let (sender, receiver) = mpsc::channel();
         let context = context.clone();
         std::thread::spawn(move || {
+            if let FileOperation::Trash(paths) = &operation {
+                for chunk in paths.chunks(128) {
+                    if files::can_trash(chunk) {
+                        let _ = sender.send(OperationUpdate::Visibility(chunk.to_vec(), false));
+                        context.request_repaint();
+                    }
+                }
+            } else if let FileOperation::Delete(paths) = &operation {
+                let _ = sender.send(OperationUpdate::Visibility(paths.clone(), false));
+                context.request_repaint();
+            }
+            if matches!(operation, FileOperation::Undo | FileOperation::Redo) {
+                let paths = history.restoring_paths(matches!(operation, FileOperation::Redo));
+                if !paths.is_empty() {
+                    let _ = sender.send(OperationUpdate::Visibility(paths, true));
+                    context.request_repaint();
+                }
+            }
             let mut progress = |completed, total, path: &Path| {
                 let _ = sender.send(OperationUpdate::Progress(
                     completed,

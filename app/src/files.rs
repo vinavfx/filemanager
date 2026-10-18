@@ -365,6 +365,22 @@ pub fn is_trash(path: &Path) -> bool {
     path == Path::new("trash:///")
 }
 
+pub fn can_trash(paths: &[PathBuf]) -> bool {
+    Command::new("gio")
+        .args(["info", "-a", "access::can-trash", "--"])
+        .args(paths)
+        .env("LC_ALL", "C")
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| line.trim() == "access::can-trash: TRUE")
+                    .count()
+                    == paths.len()
+        })
+}
+
 pub fn deletion_locked(path: &Path) -> bool {
     use rustix::fs::{accessat, Access, AtFlags, CWD};
 

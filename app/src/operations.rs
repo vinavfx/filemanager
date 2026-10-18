@@ -243,6 +243,19 @@ impl History {
         }
     }
 
+    pub fn restoring_paths(&self, redo: bool) -> Vec<PathBuf> {
+        let stack = if redo { &self.redo } else { &self.undo };
+        stack
+            .last()
+            .into_iter()
+            .flatten()
+            .filter_map(|action| match action {
+                Action::Restore { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn undo(&mut self, progress: &mut impl FnMut(usize, usize, &Path)) -> Outcome {
         replay(&mut self.undo, &mut self.redo, "Nothing to undo.", progress)
     }
