@@ -333,6 +333,11 @@ struct MediaLayout {
     target: f32,
 }
 
+struct MarqueeSelection {
+    origin: egui::Pos2,
+    initial: HashSet<PathBuf>,
+}
+
 struct FileManager {
     external_drag: drag::ExternalDrag,
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
@@ -362,6 +367,7 @@ struct FileManager {
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
+    marquee_selection: Option<MarqueeSelection>,
     copied_files: Vec<operations::YankedFile>,
     paste_placement: Option<PastePlacement>,
     selection_anchor: Option<PathBuf>,
@@ -487,6 +493,7 @@ impl FileManager {
             selected: None,
             last_selected: None,
             selection: HashSet::new(),
+            marquee_selection: None,
             copied_files: Vec::new(),
             paste_placement: None,
             selection_anchor: None,
@@ -3899,6 +3906,70 @@ impl FileManager {
             .unwrap_or_else(|| Arc::clone(&self.entries))
     }
 
+    fn marquee_selection(
+        &mut self,
+        ui: &egui::Ui,
+        background: &egui::Response,
+        origin: egui::Pos2,
+        items: impl Iterator<Item = (PathBuf, egui::Rect)>,
+    ) {
+        if background.drag_started_by(egui::PointerButton::Primary) {
+            let Some(pointer) = ui.input(|input| input.pointer.press_origin()) else {
+                return;
+            };
+            let additive = ui.input(|input| input.modifiers.shift || input.modifiers.command);
+            self.marquee_selection = Some(MarqueeSelection {
+                origin: pointer - origin.to_vec2(),
+                initial: if additive {
+                    self.selection.clone()
+                } else {
+                    HashSet::new()
+                },
+            });
+            self.sidebar_focused = false;
+        }
+        let Some(marquee) = &self.marquee_selection else {
+            return;
+        };
+        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+            let rect = egui::Rect::from_two_pos(marquee.origin + origin.to_vec2(), pointer);
+            let mut selection = marquee.initial.clone();
+            selection.extend(
+                items
+                    .filter(|(_, item)| rect.intersects(*item))
+                    .map(|(path, _)| path),
+            );
+            if selection != self.selection {
+                let first = self
+                    .visible_paths
+                    .iter()
+                    .find(|path| selection.contains(*path))
+                    .cloned();
+                self.select(first, ui.ctx());
+                self.selection = selection;
+                if self.selection.len() > 1 {
+                    self.size_job = None;
+                    self.selection_size = None;
+                }
+                ui.ctx().request_repaint();
+            }
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                ui.visuals().selection.bg_fill.gamma_multiply(0.3),
+            );
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        if !ui.input(|input| input.pointer.primary_down()) {
+            self.marquee_selection = None;
+        }
+    }
+
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         let entries = self.display_entries();
         let width = 116.0 * self.settings.zoom;
@@ -3964,6 +4035,12 @@ impl FileManager {
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show_rows(ui, height, rows, |ui, range| {
                         ui.set_style(content_style);
+                        let background = ui.interact(
+                            ui.clip_rect(),
+                            ui.id().with("marquee"),
+                            egui::Sense::drag(),
+                        );
+                        let mut origin = None;
                         let start = (range.start * columns).min(entries.len());
                         let end = (range.end * columns).min(entries.len());
                         for (index, row) in entries[start..end].chunks(columns).enumerate() {
@@ -3985,6 +4062,14 @@ impl FileManager {
                                     let (rect, response) = ui.allocate_exact_size(
                                         Vec2::new(width, height),
                                         egui::Sense::click_and_drag(),
+                                    );
+                                    origin.get_or_insert(
+                                        rect.min
+                                            - Vec2::new(
+                                                0.0,
+                                                range.start as f32
+                                                    * (height + ui.spacing().item_spacing.y),
+                                            ),
                                     );
                                     if !self.sidebar_focused && self.selection.contains(&entry.path)
                                     {
@@ -4040,6 +4125,29 @@ impl FileManager {
                                     self.entry_response(response, entry, context);
                                 }
                             });
+                        }
+                        if let Some(origin) = origin {
+                            self.marquee_selection(
+                                ui,
+                                &background,
+                                origin,
+                                entries.iter().enumerate().map(|(index, entry)| {
+                                    let position = origin
+                                        + Vec2::new(
+                                            (index % columns) as f32
+                                                * (width + ui.spacing().item_spacing.x),
+                                            (index / columns) as f32
+                                                * (height + ui.spacing().item_spacing.y),
+                                        );
+                                    (
+                                        entry.path.clone(),
+                                        egui::Rect::from_min_size(
+                                            position,
+                                            Vec2::new(width, height),
+                                        ),
+                                    )
+                                }),
+                            );
                         }
                     });
             });
@@ -4705,8 +4813,24 @@ impl FileManager {
                 }
                 let content =
                     egui::Rect::from_min_max(egui::pos2(left + 30.0 * scale, row.top()), row.max);
+                let name_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        entry.name.clone(),
+                        egui::FontId::proportional(14.0 * scale),
+                        ui.visuals().text_color(),
+                    )
+                    .size()
+                    .x;
+                let hit_rect = egui::Rect::from_min_max(
+                    content.min,
+                    egui::pos2(
+                        (content.left() + 44.0 * scale + name_width).min(content.right()),
+                        content.bottom(),
+                    ),
+                );
                 let response = ui.interact(
-                    content,
+                    hit_rect,
                     ui.id().with("entry"),
                     egui::Sense::click_and_drag(),
                 );
@@ -5624,6 +5748,12 @@ impl eframe::App for FileManager {
         if !self.confirm_empty_trash && self.pending_delete.is_empty() {
             self.shortcuts(context);
         }
+        if self.search.is_some()
+            || self.settings.view == View::Media
+            || self.current != frame_directory
+        {
+            self.marquee_selection = None;
+        }
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
@@ -5737,11 +5867,45 @@ impl eframe::App for FileManager {
                                         )
                                         .show_rows(ui, height, items.len(), |ui, range| {
                                             ui.set_style(content_style);
+                                            let background = ui.interact(
+                                                ui.clip_rect(),
+                                                ui.id().with("marquee"),
+                                                egui::Sense::drag(),
+                                            );
+                                            let origin = ui.cursor().min
+                                                - Vec2::new(0.0, range.start as f32 * height);
+                                            let width = ui.available_width();
                                             self.tree(
                                                 ui,
                                                 &items[range.clone()],
                                                 range.start,
                                                 context,
+                                            );
+                                            let gutter = self.number_width();
+                                            let scale = self.tree_scale();
+                                            self.marquee_selection(
+                                                ui,
+                                                &background,
+                                                origin,
+                                                items.iter().enumerate().map(
+                                                    |(index, (entry, position))| {
+                                                        let left = gutter
+                                                            + position.x * 20.0 * scale
+                                                            + 30.0 * scale;
+                                                        let rect = egui::Rect::from_min_size(
+                                                            origin
+                                                                + Vec2::new(
+                                                                    left,
+                                                                    index as f32 * height,
+                                                                ),
+                                                            Vec2::new(
+                                                                (width - left).max(0.0),
+                                                                height,
+                                                            ),
+                                                        );
+                                                        (entry.path.clone(), rect)
+                                                    },
+                                                ),
                                             );
                                         });
                                 });
@@ -5758,6 +5922,9 @@ impl eframe::App for FileManager {
                 }
                 background.context_menu(|ui| self.directory_menu(ui, context));
             });
+        if !context.input(|input| input.pointer.primary_down()) {
+            self.marquee_selection = None;
+        }
         self.submit_name_edit(context);
         self.empty_trash_window(context);
         if self.current != frame_directory
