@@ -324,6 +324,7 @@ struct MediaLayout {
     items: Arc<Vec<(Entry, egui::Pos2, f32)>>,
     complete: bool,
     thumbnail_revision: u64,
+    updated: Option<std::time::Instant>,
     aspects: HashMap<PathBuf, f32>,
     paths: Vec<PathBuf>,
     rows: Vec<(std::ops::Range<usize>, f32)>,
@@ -3988,6 +3989,17 @@ impl FileManager {
             self.media_layout.indices = indices;
             self.media_layout.source = Arc::downgrade(&source);
         }
+        if !source_changed
+            && !resized
+            && self
+                .media_layout
+                .updated
+                .is_some_and(|updated| updated.elapsed() < std::time::Duration::from_millis(100))
+        {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        self.media_layout.updated = Some(std::time::Instant::now());
         self.media_layout.thumbnail_revision = self.thumbnails.revision();
         let previous_count = self.media_layout.paths.len();
         self.media_layout
@@ -4016,7 +4028,15 @@ impl FileManager {
             let aspect = if entry.directory {
                 1.0
             } else {
-                self.thumbnails.entry_aspect_ratio(entry)
+                self.thumbnails
+                    .entry_aspect_ratio(entry)
+                    .unwrap_or_else(|| {
+                        self.media_layout
+                            .aspects
+                            .get(&entry.path)
+                            .copied()
+                            .unwrap_or(1.0)
+                    })
             };
             match self.media_layout.aspects.insert(entry.path.clone(), aspect) {
                 Some(previous) if previous != aspect => {

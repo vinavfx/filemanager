@@ -12,9 +12,12 @@ const THUMBNAIL_EDGE: u32 = 192;
 const THUMBNAIL_VERSION: u32 = 3;
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_PENDING: usize = 48;
+const MAX_UPLOADS_PER_FRAME: usize = 8;
 pub const VIDEO_FRAMES: usize = 8;
 pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
 type ThumbnailKey = (PathBuf, usize);
+type ThumbnailRequest = (u64, ThumbnailKey, Option<u64>);
+type ThumbnailResult = (u64, ThumbnailKey, Option<u64>, Result<CachedImage, String>);
 
 fn media_output(
     command: &mut Command,
@@ -155,8 +158,14 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
         } else {
             image
         };
+        if let Some(image) = image.as_rgb8() {
+            return Ok(egui::ColorImage::from_rgb(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            ));
+        }
         let image = if floating_point {
-            let float = image.to_rgba32f();
+            let float = image.into_rgba32f();
             image::RgbaImage::from_fn(float.width(), float.height(), |x, y| {
                 let pixel = float.get_pixel(x, y);
                 let mut rgba = [0; 4];
@@ -173,7 +182,7 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
                 image::Rgba(rgba)
             })
         } else {
-            image.to_rgba8()
+            image.into_rgba8()
         };
         Ok(egui::ColorImage::from_rgba_unmultiplied(
             [image.width() as usize, image.height() as usize],
@@ -185,7 +194,7 @@ pub fn load(path: &Path, edge: u32) -> Result<egui::ColorImage, String> {
 
 struct CachedImage {
     key: u64,
-    image: egui::ColorImage,
+    image: Option<egui::ColorImage>,
     warning: Option<String>,
 }
 
@@ -314,21 +323,22 @@ fn cached_thumbnail(
     })();
     Ok(active().then_some(CachedImage {
         key,
-        image,
+        image: Some(image),
         warning: saved.err().map(|error| error.to_string()),
     }))
 }
 
 pub struct Thumbnails {
-    sender: mpsc::SyncSender<(u64, ThumbnailKey)>,
-    receiver: mpsc::Receiver<(u64, ThumbnailKey, Result<CachedImage, String>)>,
+    sender: mpsc::SyncSender<ThumbnailRequest>,
+    receiver: mpsc::Receiver<ThumbnailResult>,
     generation: Arc<AtomicU64>,
-    pending: HashSet<ThumbnailKey>,
+    pending: HashMap<ThumbnailKey, bool>,
     cache: HashMap<ThumbnailKey, Result<egui::TextureHandle, String>>,
     cache_bytes: usize,
     revision: u64,
     fingerprints: HashMap<ThumbnailKey, (Option<u64>, Instant)>,
     last_used: HashMap<ThumbnailKey, Instant>,
+    frame_used: HashSet<ThumbnailKey>,
     completed: usize,
     total: usize,
     finished_until: f64,
@@ -337,10 +347,10 @@ pub struct Thumbnails {
 
 impl Thumbnails {
     pub fn new(context: egui::Context) -> Self {
-        let (sender, requests) = mpsc::sync_channel::<(u64, ThumbnailKey)>(16);
+        let (sender, requests) = mpsc::sync_channel::<ThumbnailRequest>(MAX_PENDING);
         let requests = Arc::new(Mutex::new(requests));
-        let (results, receiver) = mpsc::channel();
-        let (decode, decoding) = mpsc::channel::<(u64, ThumbnailKey, u64)>();
+        let (results, receiver) = mpsc::sync_channel(MAX_PENDING);
+        let (decode, decoding) = mpsc::sync_channel::<(u64, ThumbnailKey, u64)>(MAX_PENDING);
         let decoding = Arc::new(Mutex::new(decoding));
         let directory = cache_directory();
         let generation = Arc::new(AtomicU64::new(0));
@@ -356,7 +366,7 @@ impl Thumbnails {
                     Ok(receiver) => receiver.recv(),
                     Err(_) => break,
                 };
-                let (requested_generation, path) = match request {
+                let (requested_generation, path, previous) = match request {
                     Ok(request) => request,
                     Err(_) => break,
                 };
@@ -364,12 +374,19 @@ impl Thumbnails {
                     continue;
                 }
                 let image = fingerprint(&path.0).map(|key| {
+                    if previous == Some(key) {
+                        return Some(CachedImage {
+                            key,
+                            image: None,
+                            warning: None,
+                        });
+                    }
                     let cached =
                         thumbnail_path(&directory, key, crate::files::video_file(&path.0), path.1);
                     match load(&cached, THUMBNAIL_EDGE) {
                         Ok(image) => Some(CachedImage {
                             key,
-                            image,
+                            image: Some(image),
                             warning: None,
                         }),
                         Err(_) => {
@@ -383,7 +400,11 @@ impl Thumbnails {
                     Ok(None) => continue,
                     Err(error) => Err(error),
                 };
-                if results.send((requested_generation, path, image)).is_err() {
+                let key = image.as_ref().ok().map(|cached| cached.key);
+                if results
+                    .send((requested_generation, path, key, image))
+                    .is_err()
+                {
                     break;
                 }
                 context.request_repaint();
@@ -391,6 +412,7 @@ impl Thumbnails {
         }
         let workers = std::thread::available_parallelism()
             .map_or(2, usize::from)
+            .saturating_sub(1)
             .clamp(1, 4);
         for _ in 0..workers {
             let requests = Arc::clone(&decoding);
@@ -422,7 +444,10 @@ impl Thumbnails {
                     }
                     Err(error) => Err(error),
                 };
-                if results.send((requested_generation, path, image)).is_err() {
+                if results
+                    .send((requested_generation, path, Some(key), image))
+                    .is_err()
+                {
                     break;
                 }
                 context.request_repaint();
@@ -432,12 +457,13 @@ impl Thumbnails {
             sender,
             receiver,
             generation,
-            pending: HashSet::new(),
+            pending: HashMap::new(),
             cache: HashMap::new(),
             cache_bytes: 0,
             revision: 0,
             fingerprints: HashMap::new(),
             last_used: HashMap::new(),
+            frame_used: HashSet::new(),
             completed: 0,
             total: 0,
             finished_until: 0.0,
@@ -450,38 +476,50 @@ impl Thumbnails {
     }
 
     pub fn is_loading(&self) -> bool {
-        !self.pending.is_empty()
+        self.pending.values().any(|loading| *loading)
     }
 
     pub fn poll(&mut self, context: &egui::Context) {
+        self.frame_used.clear();
         let started = Instant::now();
-        while started.elapsed() < Duration::from_millis(3) {
-            let Ok((generation, path, image)) = self.receiver.try_recv() else {
+        let mut uploads = 0;
+        while uploads < MAX_UPLOADS_PER_FRAME && started.elapsed() < Duration::from_millis(3) {
+            let Ok((generation, path, key, image)) = self.receiver.try_recv() else {
                 break;
             };
             if generation != self.generation.load(Ordering::Relaxed) {
                 continue;
             }
-            self.pending.remove(&path);
-            self.completed += 1;
-            let key = image
-                .as_ref()
-                .map(|cached| cached.key)
-                .ok()
-                .or_else(|| fingerprint(&path.0).ok());
+            let loading = self.pending.remove(&path).unwrap_or(false);
+            if loading {
+                self.completed += 1;
+            }
             self.fingerprints
                 .insert(path.clone(), (key, Instant::now()));
-            let texture = image.map(|cached| {
-                if let Some(warning) = cached.warning {
+            if loading && !self.is_loading() {
+                self.finished_until = context.input(|input| input.time) + 0.8;
+                context.request_repaint_after(Duration::from_millis(800));
+            }
+            let image = match image {
+                Ok(CachedImage { image: None, .. }) => continue,
+                Ok(cached) => cached
+                    .image
+                    .map(|image| (image, cached.warning))
+                    .ok_or_else(|| "Thumbnail image unavailable".to_owned()),
+                Err(error) => Err(error),
+            };
+            let texture = image.map(|(image, warning)| {
+                if let Some(warning) = warning {
                     self.warning = Some(warning);
                 }
                 context.load_texture(
                     format!("{}#{}", path.0.display(), path.1),
-                    cached.image,
+                    image,
                     egui::TextureOptions::LINEAR,
                 )
             });
             if let Ok(texture) = &texture {
+                uploads += 1;
                 context.animate_bool_with_time(
                     egui::Id::new(("loaded-texture", texture.id())),
                     self.cache.get(&path).is_some_and(|image| image.is_ok()),
@@ -506,12 +544,8 @@ impl Thumbnails {
             self.cache.insert(path, texture);
             self.revision = self.revision.wrapping_add(1);
             self.cache_bytes += bytes;
-            if self.pending.is_empty() {
-                self.finished_until = context.input(|input| input.time) + 0.8;
-                context.request_repaint_after(Duration::from_millis(800));
-            }
         }
-        if started.elapsed() >= Duration::from_millis(3) {
+        if uploads == MAX_UPLOADS_PER_FRAME || started.elapsed() >= Duration::from_millis(3) {
             context.request_repaint_after(Duration::from_millis(16));
         }
     }
@@ -609,36 +643,33 @@ impl Thumbnails {
             0
         };
         let key = (path.to_path_buf(), frame);
-        let mut outdated = false;
-        if self.cache.contains_key(&key)
-            && self
-                .fingerprints
-                .get(&key)
-                .is_none_or(|(_, checked)| checked.elapsed() >= Duration::from_secs(1))
-        {
-            let current = fingerprint(path).ok();
-            let previous = self
-                .fingerprints
-                .insert(key.clone(), (current, Instant::now()));
-            outdated = previous.is_none_or(|(fingerprint, _)| fingerprint != current);
-        }
+        let outdated = self
+            .fingerprints
+            .get(&key)
+            .is_none_or(|(_, checked)| checked.elapsed() >= Duration::from_secs(1));
         if (outdated || !self.cache.contains_key(&key))
-            && !self.pending.contains(&key)
+            && !self.pending.contains_key(&key)
             && self.pending.len() < MAX_PENDING
             && self
                 .sender
-                .try_send((self.generation.load(Ordering::Relaxed), key.clone()))
+                .try_send((
+                    self.generation.load(Ordering::Relaxed),
+                    key.clone(),
+                    self.cache
+                        .get(&key)
+                        .and_then(|_| self.fingerprints.get(&key)?.0),
+                ))
                 .is_ok()
         {
-            if self.pending.is_empty() {
-                self.completed = 0;
-                self.total = 0;
+            let loading = !self.cache.contains_key(&key);
+            if loading {
+                if !self.is_loading() {
+                    self.completed = 0;
+                    self.total = 0;
+                }
+                self.total += 1;
             }
-            self.total += 1;
-            self.pending.insert(key.clone());
-        }
-        if self.cache.contains_key(&key) {
-            self.last_used.insert(key.clone(), Instant::now());
+            self.pending.insert(key.clone(), loading);
         }
         let fallback = (
             path.to_path_buf(),
@@ -648,14 +679,18 @@ impl Thumbnails {
                 0
             },
         );
+        let displayed = if self.cache.get(&key).is_some_and(Result::is_ok) {
+            key
+        } else {
+            fallback
+        };
+        if self.cache.contains_key(&displayed) {
+            self.last_used.insert(displayed.clone(), Instant::now());
+            self.frame_used.insert(displayed.clone());
+        }
         self.cache
-            .get(&key)
+            .get(&displayed)
             .and_then(|result| result.as_ref().ok())
-            .or_else(|| {
-                self.cache
-                    .get(&fallback)
-                    .and_then(|result| result.as_ref().ok())
-            })
     }
 
     pub fn get_entry(
@@ -679,9 +714,9 @@ impl Thumbnails {
     }
 
     pub fn textures(&self) -> impl Iterator<Item = &egui::TextureHandle> {
-        self.cache
-            .values()
-            .filter_map(|texture| texture.as_ref().ok())
+        self.frame_used
+            .iter()
+            .filter_map(|key| self.cache.get(key)?.as_ref().ok())
     }
 
     pub fn displayed_frame(&self, entry: &crate::files::Entry, frame: usize) -> Option<usize> {
@@ -700,12 +735,12 @@ impl Thumbnails {
         self.cache.contains_key(&(path.to_path_buf(), frame))
     }
 
-    pub fn entry_aspect_ratio(&self, entry: &crate::files::Entry) -> f32 {
+    pub fn entry_aspect_ratio(&self, entry: &crate::files::Entry) -> Option<f32> {
         let (path, _) = entry.thumbnail(VIDEO_POSTER);
         self.aspect_ratio(path)
     }
 
-    pub fn aspect_ratio(&self, path: &Path) -> f32 {
+    fn aspect_ratio(&self, path: &Path) -> Option<f32> {
         let frame = if crate::files::video_file(path) {
             VIDEO_POSTER
         } else {
@@ -714,7 +749,7 @@ impl Thumbnails {
         self.cache
             .get(&(path.to_path_buf(), frame))
             .and_then(|result| result.as_ref().ok())
-            .map_or(1.0, |texture| {
+            .map(|texture| {
                 let size = texture.size_vec2();
                 size.x / size.y
             })
@@ -722,7 +757,7 @@ impl Thumbnails {
 
     pub fn progress(&self, context: &egui::Context) -> Option<(usize, usize)> {
         if self.total > 0
-            && (!self.pending.is_empty() || context.input(|input| input.time) < self.finished_until)
+            && (self.is_loading() || context.input(|input| input.time) < self.finished_until)
         {
             Some((self.completed, self.total))
         } else {
@@ -738,6 +773,7 @@ impl Thumbnails {
         self.generation.fetch_add(1, Ordering::Relaxed);
         self.revision = self.revision.wrapping_add(1);
         self.pending.clear();
+        self.frame_used.clear();
         self.cache.retain(|_, texture| texture.is_ok());
         self.fingerprints
             .retain(|path, _| self.cache.contains_key(path));
