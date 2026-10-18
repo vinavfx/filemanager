@@ -1166,28 +1166,63 @@ impl FileManager {
             self.navigate(path, context);
             return;
         }
-        let target = self
-            .entries
-            .iter()
-            .chain(self.tree_cache.values().flatten())
-            .find(|entry| entry.path == path)
-            .and_then(|entry| entry.sequence.as_ref())
-            .map_or_else(
-                || Ok(path.clone()),
-                |frames| files::sequence_open_path(&path, frames),
-            );
-        let result = target.and_then(|target| {
-            std::process::Command::new("xdg-open")
-                .arg(target)
-                .spawn()
-                .map(|mut child| {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                })
-        });
-        if let Err(error) = result {
-            self.set_message(Some(format!("Cannot open file: {error}")));
+        let multimedia = files::image_file(&path)
+            || files::video_file(&path)
+            || self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .any(|entry| entry.path == path && entry.sequence.is_some());
+        self.open_media(&path, if multimedia { "player" } else { "xdg-open" });
+    }
+
+    fn open_media(&mut self, path: &Path, application: &str) {
+        let executable = if application == "player" {
+            let project = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .map(|directory| directory.join("player"));
+            let executable = project.and_then(|project| {
+                ["target/release/player", "target/debug/player"]
+                    .iter()
+                    .map(|target| project.join(target))
+                    .find(|target| target.is_file())
+            });
+            let Some(executable) = executable else {
+                self.set_message(Some(
+                    "Cannot find the Player executable in ../player/target.".into(),
+                ));
+                return;
+            };
+            executable
+        } else {
+            PathBuf::from(application)
+        };
+        let mut command = std::process::Command::new(executable);
+        if matches!(application, "vlc" | "mpv") {
+            command.arg("--");
+            let frames = self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .find(|entry| entry.path == path)
+                .and_then(|entry| entry.sequence.as_ref());
+            if let Some(frames) = frames {
+                command.args(frames.iter());
+            } else {
+                command.arg(path);
+            }
+        } else {
+            command.arg(path);
+        }
+        if let Err(error) = command.spawn().map(|mut child| {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }) {
+            self.set_message(Some(format!(
+                "Cannot open file with {application}: {error}"
+            )));
         }
     }
 
@@ -1243,14 +1278,21 @@ impl FileManager {
 
     fn directory_menu(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         if files::is_trash(&self.current) {
-            if ui.button("Refresh · F5").clicked() {
+            if self
+                .icons
+                .button(ui, "Refresh · F5", "view-refresh", true)
+                .clicked()
+            {
                 self.refresh(context);
                 ui.close_menu();
             }
-            if ui
-                .add_enabled(
+            if self
+                .icons
+                .button(
+                    ui,
+                    "Empty Trash…",
+                    "user-trash",
                     self.operation_job.is_none(),
-                    egui::Button::new("Empty Trash…"),
                 )
                 .clicked()
             {
@@ -1259,40 +1301,62 @@ impl FileManager {
             }
             return;
         }
-        if ui.button("Open Konsole here").clicked() {
+        if self
+            .icons
+            .button(ui, "Open Konsole here", "utilities-terminal", true)
+            .clicked()
+        {
             self.open_terminal(&self.current.clone());
             ui.close_menu();
         }
-        if ui
-            .add_enabled(
+        if self
+            .icons
+            .button(
+                ui,
+                "New folder… · Ctrl+N",
+                "folder-new",
                 self.operation_job.is_none(),
-                egui::Button::new("New folder… · Ctrl+N"),
             )
             .clicked()
         {
             self.start_new_folder(context);
             ui.close_menu();
         }
-        if ui.button("Bookmark this folder").clicked() {
+        if self
+            .icons
+            .button(ui, "Bookmark this folder", "bookmark-new", true)
+            .clicked()
+        {
             self.add_bookmark(self.current.clone());
             ui.close_menu();
         }
-        if ui
-            .add_enabled(
+        if self
+            .icons
+            .button(
+                ui,
+                "Compress this folder to ZIP",
+                "package-x-generic",
                 self.compression_job.is_none(),
-                egui::Button::new("Compress this folder to ZIP"),
             )
             .clicked()
         {
             self.compress(self.current.clone(), context);
             ui.close_menu();
         }
-        if ui.button("Copy directory path").clicked() {
+        if self
+            .icons
+            .button(ui, "Copy directory path", "edit-copy", true)
+            .clicked()
+        {
             context.copy_text(self.current.to_string_lossy().into_owned());
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("Refresh · Ctrl+R / F5").clicked() {
+        if self
+            .icons
+            .button(ui, "Refresh · Ctrl+R / F5", "view-refresh", true)
+            .clicked()
+        {
             self.refresh(context);
             ui.close_menu();
         }
@@ -1305,7 +1369,11 @@ impl FileManager {
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("Properties").clicked() {
+        if self
+            .icons
+            .button(ui, "Properties", "document-properties", true)
+            .clicked()
+        {
             self.show_properties(&self.current.clone());
             ui.close_menu();
         }
@@ -3034,10 +3102,13 @@ impl FileManager {
         }
         response.context_menu(|ui| {
             if matches!(kind, Some(places::Kind::Trash)) {
-                if ui
-                    .add_enabled(
+                if self
+                    .icons
+                    .button(
+                        ui,
+                        "Empty Trash…",
+                        "user-trash",
                         self.operation_job.is_none(),
-                        egui::Button::new("Empty Trash…"),
                     )
                     .clicked()
                 {
@@ -3046,7 +3117,11 @@ impl FileManager {
                 }
                 return;
             }
-            if ui.button("Remove bookmark").clicked() {
+            if self
+                .icons
+                .button(ui, "Remove bookmark", "bookmark-remove", true)
+                .clicked()
+            {
                 self.remove_bookmark(bookmark, kind);
                 ui.close_menu();
             }
@@ -3570,49 +3645,94 @@ impl FileManager {
             self.open(entry.path.clone(), context);
         }
         response.context_menu(|ui| {
-            if ui
-                .button(if entry.sequence.is_some() {
-                    "Open first frame"
-                } else {
-                    "Open"
-                })
+            let multimedia = entry.sequence.is_some()
+                || files::image_file(&entry.path)
+                || files::video_file(&entry.path);
+            if self
+                .icons
+                .button(
+                    ui,
+                    if multimedia {
+                        "Open with Player"
+                    } else {
+                        "Open"
+                    },
+                    if multimedia {
+                        "media-playback-start"
+                    } else {
+                        "document-open"
+                    },
+                    true,
+                )
                 .clicked()
             {
                 self.open(entry.path.clone(), context);
                 ui.close_menu();
             }
+            if multimedia {
+                for (application, label) in [("vlc", "Open with VLC"), ("mpv", "Open with MPV")] {
+                    if self.icons.button(ui, label, application, true).clicked() {
+                        self.open_media(&entry.path, application);
+                        ui.close_menu();
+                    }
+                }
+            }
             if entry.directory {
-                if ui.button("Open Konsole here").clicked() {
+                if self
+                    .icons
+                    .button(ui, "Open Konsole here", "utilities-terminal", true)
+                    .clicked()
+                {
                     self.open_terminal(&entry.path);
                     ui.close_menu();
                 }
-                if ui.button("Add bookmark").clicked() {
+                if self
+                    .icons
+                    .button(ui, "Add bookmark", "bookmark-new", true)
+                    .clicked()
+                {
                     self.add_bookmark(entry.path.clone());
                     ui.close_menu();
                 }
             }
             if entry.sequence.is_none()
                 && (entry.directory || files::image_file(&entry.path))
-                && ui
-                    .add_enabled(
+                && self
+                    .icons
+                    .button(
+                        ui,
+                        "Compress to ZIP",
+                        "package-x-generic",
                         self.compression_job.is_none(),
-                        egui::Button::new("Compress to ZIP"),
                     )
                     .clicked()
             {
                 self.compress(entry.path.clone(), context);
                 ui.close_menu();
             }
-            if ui.button("Copy path").clicked() {
+            if self
+                .icons
+                .button(ui, "Copy path", "edit-copy", true)
+                .clicked()
+            {
                 context.copy_text(entry.path.to_string_lossy().into_owned());
                 ui.close_menu();
             }
             ui.separator();
-            if !files::is_trash(&self.current) && ui.button("Move to Trash · Delete").clicked() {
+            if !files::is_trash(&self.current)
+                && self
+                    .icons
+                    .button(ui, "Move to Trash · Delete", "user-trash", true)
+                    .clicked()
+            {
                 self.trash_selection(context);
                 ui.close_menu();
             }
-            if ui.button("Properties").clicked() {
+            if self
+                .icons
+                .button(ui, "Properties", "document-properties", true)
+                .clicked()
+            {
                 self.show_properties(&entry.path);
                 ui.close_menu();
             }

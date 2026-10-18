@@ -323,7 +323,14 @@ impl Icons {
         std::thread::spawn(move || {
             let mut resolver = Resolver::new();
             while let Ok((key, path)) = requests.recv() {
-                if results.send((key, resolver.load(&path))).is_err() {
+                let image = if let Some(name) = key.strip_prefix("icon:") {
+                    resolver
+                        .lookup(&[name.to_owned()])
+                        .and_then(|path| resolver.render(&path))
+                } else {
+                    resolver.load(&path)
+                };
+                if results.send((key, image)).is_err() {
                     break;
                 }
                 context.request_repaint();
@@ -378,8 +385,27 @@ impl Icons {
         Self::key(path).is_none_or(|key| self.cache.contains_key(&key))
     }
 
+    pub fn button(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        icon: &str,
+        enabled: bool,
+    ) -> egui::Response {
+        let texture = self.request(format!("icon:{icon}"), Path::new(""));
+        let button = if let Some(texture) = texture {
+            egui::Button::image_and_text((texture.id(), egui::vec2(16.0, 16.0)), label)
+        } else {
+            egui::Button::new(format!("   {label}"))
+        };
+        ui.add_enabled(enabled, button)
+    }
+
     pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {
-        let key = Self::key(path)?;
+        self.request(Self::key(path)?, path)
+    }
+
+    fn request(&mut self, key: String, path: &Path) -> Option<&egui::TextureHandle> {
         if !self.cache.contains_key(&key)
             && !self.pending.contains(&key)
             && self
