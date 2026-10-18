@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 const THUMBNAIL_EDGE: u32 = 192;
 const THUMBNAIL_VERSION: u32 = 3;
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_PENDING: usize = 48;
 pub const VIDEO_FRAMES: usize = 8;
 pub const VIDEO_POSTER: usize = VIDEO_FRAMES / 2;
 type ThumbnailKey = (PathBuf, usize);
@@ -271,24 +272,14 @@ fn cached_thumbnail(
     generation: &AtomicU64,
     requested_generation: u64,
     frame: usize,
+    key: u64,
 ) -> Result<Option<CachedImage>, String> {
     let active = || generation.load(Ordering::Relaxed) == requested_generation;
     if !active() {
         return Ok(None);
     }
-    let key = fingerprint(path)?;
     let video = crate::files::video_file(path);
     let cached = thumbnail_path(directory, key, video, frame);
-    if let Ok(image) = load(&cached, THUMBNAIL_EDGE) {
-        return Ok(active().then_some(CachedImage {
-            key,
-            image,
-            warning: None,
-        }));
-    }
-    if !active() {
-        return Ok(None);
-    }
     let image = if video {
         video_frame(path, frame, generation, requested_generation)?
     } else {
@@ -349,6 +340,8 @@ impl Thumbnails {
         let (sender, requests) = mpsc::sync_channel::<(u64, ThumbnailKey)>(16);
         let requests = Arc::new(Mutex::new(requests));
         let (results, receiver) = mpsc::channel();
+        let (decode, decoding) = mpsc::channel::<(u64, ThumbnailKey, u64)>();
+        let decoding = Arc::new(Mutex::new(decoding));
         let directory = cache_directory();
         let generation = Arc::new(AtomicU64::new(0));
         for _ in 0..2 {
@@ -357,6 +350,7 @@ impl Thumbnails {
             let context = context.clone();
             let directory = directory.clone();
             let generation = Arc::clone(&generation);
+            let decode = decode.clone();
             std::thread::spawn(move || loop {
                 let request = match requests.lock() {
                     Ok(receiver) => receiver.recv(),
@@ -366,12 +360,60 @@ impl Thumbnails {
                     Ok(request) => request,
                     Err(_) => break,
                 };
+                if generation.load(Ordering::Relaxed) != requested_generation {
+                    continue;
+                }
+                let image = fingerprint(&path.0).map(|key| {
+                    let cached =
+                        thumbnail_path(&directory, key, crate::files::video_file(&path.0), path.1);
+                    match load(&cached, THUMBNAIL_EDGE) {
+                        Ok(image) => Some(CachedImage {
+                            key,
+                            image,
+                            warning: None,
+                        }),
+                        Err(_) => {
+                            let _ = decode.send((requested_generation, path.clone(), key));
+                            None
+                        }
+                    }
+                });
+                let image = match image {
+                    Ok(Some(image)) => Ok(image),
+                    Ok(None) => continue,
+                    Err(error) => Err(error),
+                };
+                if results.send((requested_generation, path, image)).is_err() {
+                    break;
+                }
+                context.request_repaint();
+            });
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(2, usize::from)
+            .clamp(1, 4);
+        for _ in 0..workers {
+            let requests = Arc::clone(&decoding);
+            let results = results.clone();
+            let context = context.clone();
+            let directory = directory.clone();
+            let generation = Arc::clone(&generation);
+            std::thread::spawn(move || loop {
+                let request = match requests.lock() {
+                    Ok(receiver) => receiver.recv(),
+                    Err(_) => break,
+                };
+                let (requested_generation, path, key) = match request {
+                    Ok(request) => request,
+                    Err(_) => break,
+                };
                 let image = match cached_thumbnail(
                     &path.0,
                     &directory,
                     &generation,
                     requested_generation,
                     path.1,
+                    key,
                 ) {
                     Ok(Some(image)) => Ok(image),
                     Ok(None) => {
@@ -582,6 +624,7 @@ impl Thumbnails {
         }
         if (outdated || !self.cache.contains_key(&key))
             && !self.pending.contains(&key)
+            && self.pending.len() < MAX_PENDING
             && self
                 .sender
                 .try_send((self.generation.load(Ordering::Relaxed), key.clone()))
@@ -649,14 +692,6 @@ impl Thumbnails {
                 .get(&(path.to_path_buf(), source_frame))
                 .is_some_and(|image| image.is_ok())
         })
-    }
-
-    pub fn entry_available(&self, entry: &crate::files::Entry) -> bool {
-        let poster = if entry.animated() { VIDEO_POSTER } else { 0 };
-        let (path, frame) = entry.thumbnail(poster);
-        self.cache
-            .get(&(path.to_path_buf(), frame))
-            .is_some_and(|image| image.is_ok())
     }
 
     pub fn entry_ready(&self, entry: &crate::files::Entry) -> bool {

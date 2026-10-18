@@ -3472,9 +3472,6 @@ impl FileManager {
             return;
         }
         self.prepared_view.push((entry.path.clone(), rect));
-        if !entry.directory {
-            self.directory_ready &= self.icons.ready(&entry.path);
-        }
         let texture = if entry.directory {
             None
         } else {
@@ -3733,9 +3730,6 @@ impl FileManager {
                                         Vec2::splat(22.0),
                                     );
                                     self.prepared_view.push((hit.path.clone(), icon_rect));
-                                    if !hit.directory {
-                                        self.directory_ready &= self.icons.ready(&hit.path);
-                                    }
                                     if hit.directory {
                                         paint_folder(ui, icon_rect);
                                     } else if let Some(texture) = self.icons.get(&hit.path) {
@@ -3996,16 +3990,14 @@ impl FileManager {
         }
         self.media_layout.thumbnail_revision = self.thumbnails.revision();
         let previous_count = self.media_layout.paths.len();
-        self.media_layout.paths.retain(|path| {
-            let entry = &source[self.media_layout.indices[path]];
-            entry.directory || self.thumbnails.entry_available(entry)
-        });
-        let removed = self.media_layout.paths.len() != previous_count;
+        self.media_layout
+            .paths
+            .retain(|path| self.media_layout.indices.contains_key(path));
+        let mut removed = self.media_layout.paths.len() != previous_count;
         if removed {
-            self.media_layout.aspects.retain(|path, _| {
-                let entry = &source[self.media_layout.indices[path]];
-                entry.directory || self.thumbnails.entry_available(entry)
-            });
+            self.media_layout
+                .aspects
+                .retain(|path, _| self.media_layout.indices.contains_key(path));
             self.media_layout.rows.clear();
         }
         let resized =
@@ -4015,47 +4007,33 @@ impl FileManager {
             self.media_layout.width = width;
             self.media_layout.target = target;
         }
-        let mut requested = 0;
         let mut resolved = 0;
         for entry in source
             .iter()
             .filter(|entry| self.media_layout.indices.contains_key(&entry.path))
         {
-            if self.media_layout.aspects.contains_key(&entry.path) {
-                resolved += 1;
-                continue;
-            }
-            if !entry.directory && !self.thumbnails.entry_available(entry) {
-                if self.thumbnails.entry_ready(entry) {
-                    resolved += 1;
-                } else if requested < 18 {
-                    let frame = if entry.animated() {
-                        images::VIDEO_POSTER
-                    } else {
-                        0
-                    };
-                    self.thumbnails.get_entry(entry, frame);
-                    requested += 1;
-                }
-                continue;
-            }
             resolved += 1;
             let aspect = if entry.directory {
                 1.0
             } else {
                 self.thumbnails.entry_aspect_ratio(entry)
             };
-            self.media_layout.aspects.insert(entry.path.clone(), aspect);
-            self.media_layout.paths.push(entry.path.clone());
-        }
-        if self.settings.entry_order.contains_key(&self.current) {
-            let previous = self.media_layout.paths.clone();
-            self.media_layout
-                .paths
-                .sort_by_key(|path| self.media_layout.indices[path]);
-            if previous != self.media_layout.paths {
-                self.media_layout.rows.clear();
+            match self.media_layout.aspects.insert(entry.path.clone(), aspect) {
+                Some(previous) if previous != aspect => {
+                    self.media_layout.rows.clear();
+                    removed = true;
+                }
+                Some(_) => {}
+                None => self.media_layout.paths.push(entry.path.clone()),
             }
+        }
+        let previous = self.media_layout.paths.clone();
+        self.media_layout
+            .paths
+            .sort_by_key(|path| self.media_layout.indices[path]);
+        if previous != self.media_layout.paths {
+            self.media_layout.rows.clear();
+            removed = true;
         }
         let aspects: Vec<_> = self
             .media_layout

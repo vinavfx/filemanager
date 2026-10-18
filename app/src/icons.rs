@@ -267,7 +267,17 @@ impl Resolver {
         let image = if path.extension().is_some_and(|extension| extension == "png") {
             image::open(path).ok()?
         } else {
-            fs::create_dir_all(self.temporary.parent()?).ok()?;
+            let directory = self.temporary.parent()?;
+            let key = crate::images::fingerprint(path).ok()?;
+            let cached = directory.join(format!("{key:016x}-{ICON_SIZE}.png"));
+            if let Ok(image) = image::open(&cached) {
+                let image = image.into_rgba8();
+                return Some(egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width() as usize, image.height() as usize],
+                    image.as_raw(),
+                ));
+            }
+            fs::create_dir_all(directory).ok()?;
             let status = Command::new("gdk-pixbuf-thumbnailer")
                 .args(["-s", "96"])
                 .arg(path)
@@ -281,7 +291,9 @@ impl Resolver {
             } else {
                 None
             };
-            let _ = fs::remove_file(&self.temporary);
+            if image.is_none() || fs::rename(&self.temporary, &cached).is_err() {
+                let _ = fs::remove_file(&self.temporary);
+            }
             image?
         };
         let image = image.thumbnail(ICON_SIZE, ICON_SIZE).into_rgba8();
@@ -351,10 +363,6 @@ impl Icons {
 
     pub fn textures(&self) -> impl Iterator<Item = &egui::TextureHandle> {
         self.cache.values().filter_map(Option::as_ref)
-    }
-
-    pub fn ready(&self, path: &Path) -> bool {
-        Self::key(path).is_none_or(|key| self.cache.contains_key(&key))
     }
 
     fn key(path: &Path) -> Option<String> {
