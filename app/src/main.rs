@@ -5293,12 +5293,17 @@ impl FileManager {
                     .visible_paths
                     .iter()
                     .position(|path| path == selected)?;
-                self.visible_paths
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, path)| !hidden(path))
-                    .min_by_key(|(position, _)| (position.abs_diff(index), *position < index))
-                    .map(|(_, path)| path.clone())
+                let mut previous = self.visible_paths[..=index].iter().rev();
+                let mut next = self.visible_paths[index + 1..].iter();
+                if self.settings.view == View::Media {
+                    next.find(|path| !hidden(path))
+                        .or_else(|| previous.find(|path| !hidden(path)))
+                } else {
+                    previous
+                        .find(|path| !hidden(path))
+                        .or_else(|| next.find(|path| !hidden(path)))
+                }
+                .cloned()
             });
             for entry in self
                 .entries
@@ -5660,7 +5665,7 @@ impl FileManager {
             let selected = selected
                 .filter(|path| {
                     path.parent() == Some(self.current.as_path())
-                        || (self.settings.view == View::Tree
+                        || ((self.settings.view == View::Tree || self.settings.recursive_media)
                             && path != &self.current
                             && path.starts_with(&self.current))
                 })
