@@ -382,6 +382,8 @@ struct FileManager {
     visible_paths: Vec<PathBuf>,
     scroll_to_selection: bool,
     media_layout: MediaLayout,
+    media_scroll_target: Option<f32>,
+    media_scrolling_until: f64,
     center_selection: bool,
     page_scroll_delta: f32,
     pending_g: bool,
@@ -509,6 +511,8 @@ impl FileManager {
             visible_paths: Vec::new(),
             scroll_to_selection: false,
             media_layout: MediaLayout::default(),
+            media_scroll_target: None,
+            media_scrolling_until: 0.0,
             center_selection: false,
             page_scroll_delta: 0.0,
             pending_g: false,
@@ -756,6 +760,8 @@ impl FileManager {
             cached.layout = std::mem::take(&mut self.media_layout);
         }
         self.media_layout = MediaLayout::default();
+        self.media_scroll_target = None;
+        self.media_scrolling_until = 0.0;
         self.media_directories = Arc::default();
         self.media_watch = None;
         self.wait_for_thumbnails = false;
@@ -4158,6 +4164,15 @@ impl FileManager {
         let resized = self.media_layout.width != width || self.media_layout.target != target;
         if !source_changed
             && !resized
+            && !self.media_layout.items.is_empty()
+            && (self.media_scroll_target.is_some()
+                || context.input(|input| input.time) < self.media_scrolling_until)
+        {
+            context.request_repaint_after(std::time::Duration::from_millis(150));
+            return;
+        }
+        if !source_changed
+            && !resized
             && self.media_layout.thumbnail_revision == self.thumbnails.revision()
             && (self.media_layout.complete || self.thumbnails.is_loading())
         {
@@ -4246,13 +4261,24 @@ impl FileManager {
                 None => self.media_layout.paths.push(entry.path.clone()),
             }
         }
-        let previous = self.media_layout.paths.clone();
-        self.media_layout
-            .paths
-            .sort_by_key(|path| self.media_layout.indices[path]);
-        if previous != self.media_layout.paths {
-            self.media_layout.rows.clear();
-            removed = true;
+        if source_changed {
+            let previous = self.media_layout.paths.clone();
+            self.media_layout
+                .paths
+                .sort_by_key(|path| self.media_layout.indices[path]);
+            if previous != self.media_layout.paths {
+                self.media_layout.rows.clear();
+                removed = true;
+            }
+        }
+        let complete = self.media_scan.is_none() && resolved == self.media_layout.indices.len();
+        let was_complete = self.media_layout.complete;
+        self.media_layout.complete = complete;
+        if !complete {
+            context.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if !source_changed && !resized && !removed && was_complete == complete {
+            return;
         }
         let aspects: Vec<_> = self
             .media_layout
@@ -4260,11 +4286,6 @@ impl FileManager {
             .iter()
             .map(|path| self.media_layout.aspects[path])
             .collect();
-        let complete = self.media_scan.is_none() && resolved == self.media_layout.indices.len();
-        self.media_layout.complete = complete;
-        if !complete {
-            context.request_repaint_after(std::time::Duration::from_millis(50));
-        }
         if self
             .media_layout
             .rows
@@ -4330,8 +4351,54 @@ impl FileManager {
         let gutter = self.number_width();
         let width =
             (ui.available_width() - ui.spacing().scroll.allocated_width() - gutter).max(1.0);
+        let (now, dt, manual_scroll, navigating) = context.input(|input| {
+            (
+                input.time,
+                input.stable_dt.min(0.05),
+                input.raw_scroll_delta != Vec2::ZERO
+                    || input.smooth_scroll_delta != Vec2::ZERO
+                    || input.pointer.any_down(),
+                [
+                    Key::ArrowUp,
+                    Key::ArrowDown,
+                    Key::ArrowLeft,
+                    Key::ArrowRight,
+                    Key::H,
+                    Key::J,
+                    Key::K,
+                    Key::L,
+                ]
+                .into_iter()
+                .any(|key| input.key_down(key)),
+            )
+        });
+        if manual_scroll {
+            self.media_scroll_target = None;
+        }
+        if manual_scroll || navigating || self.media_scroll_target.is_some() {
+            self.media_scrolling_until = now + 0.15;
+        }
+        let scroll_id = ui.make_persistent_id(egui::Id::new("media"));
+        let mut offset =
+            egui::scroll_area::State::load(context, scroll_id).map_or(0.0, |state| state.offset.y);
+        let previous_items = Arc::clone(&self.media_layout.items);
         self.prepare_media_layout(width, 192.0 * self.settings.zoom, context);
         let items = Arc::clone(&self.media_layout.items);
+        if !Arc::ptr_eq(&previous_items, &items) {
+            let anchor = previous_items
+                .partition_point(|(_, position, height)| position.y + height <= offset);
+            if let Some((entry, previous, _)) = previous_items.get(anchor) {
+                if let Some((_, position, _)) =
+                    items.iter().find(|(item, _, _)| item.path == entry.path)
+                {
+                    let shift = position.y - previous.y;
+                    offset += shift;
+                    if let Some(target) = &mut self.media_scroll_target {
+                        *target += shift;
+                    }
+                }
+            }
+        }
         if items.is_empty() {
             ui.centered_and_justified(|ui| {
                 if self.media_layout.complete {
@@ -4344,10 +4411,6 @@ impl FileManager {
             });
             return;
         }
-        let widths: Vec<_> = items
-            .iter()
-            .map(|(entry, _, height)| self.media_layout.aspects[&entry.path] * height)
-            .collect();
         let rows = self.media_layout.rows.clone();
         let complete = self.media_layout.complete;
         let count = items.len();
@@ -4365,8 +4428,43 @@ impl FileManager {
             .iter()
             .position(|(range, _)| range.contains(&current_index))
             .unwrap_or(0);
+        let viewport = ui.available_height();
+        let max_offset = (total_height - viewport).max(0.0);
+        offset = offset.clamp(0.0, max_offset);
+        let page_delta = std::mem::take(&mut self.page_scroll_delta);
+        if page_delta != 0.0 {
+            self.media_scroll_target = Some((offset + page_delta).clamp(0.0, max_offset));
+        }
+        if self.scroll_to_selection {
+            if let Some((_, position, height)) = items.get(current_index) {
+                let target = if self.center_selection {
+                    position.y + (height - viewport) / 2.0
+                } else {
+                    self.media_scroll_target
+                        .unwrap_or(offset)
+                        .min(position.y)
+                        .max(position.y + height - viewport)
+                };
+                self.media_scroll_target = Some(target.clamp(0.0, max_offset));
+            }
+            self.scroll_to_selection = false;
+            self.center_selection = false;
+        }
+        if let Some(target) = self.media_scroll_target {
+            let target = target.clamp(0.0, max_offset);
+            offset += (target - offset) * (1.0 - (-20.0 * dt).exp());
+            if (target - offset).abs() < 0.5 {
+                offset = target;
+                self.media_scroll_target = None;
+            } else {
+                self.media_scroll_target = Some(target);
+                context.request_repaint();
+            }
+        }
         with_scrollbar_color(ui, |ui, content_style| {
             self.entry_scroll_area(ui, "media")
+                .vertical_scroll_offset(offset)
+                .animated(false)
                 .auto_shrink([false, false])
                 .drag_to_scroll(false)
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
@@ -4380,9 +4478,7 @@ impl FileManager {
                             egui::pos2(origin.x, y),
                             Vec2::new(width + gutter, height),
                         );
-                        if !(ui.is_rect_visible(row_rect)
-                            || self.scroll_to_selection && row == current_row)
-                        {
+                        if !ui.is_rect_visible(row_rect) {
                             y += height;
                             continue;
                         }
@@ -4400,19 +4496,9 @@ impl FileManager {
                             let entry = &items[index].0;
                             let rect = egui::Rect::from_min_size(
                                 egui::pos2(x, y),
-                                Vec2::new(widths[index], height),
+                                Vec2::new(self.media_layout.aspects[&entry.path] * height, height),
                             );
                             x = rect.right();
-                            if self.scroll_to_selection
-                                && self.selected.as_ref() == Some(&entry.path)
-                            {
-                                ui.scroll_to_rect(
-                                    rect,
-                                    self.center_selection.then_some(egui::Align::Center),
-                                );
-                                self.scroll_to_selection = false;
-                                self.center_selection = false;
-                            }
                             if !ui.is_rect_visible(rect) {
                                 continue;
                             }
@@ -5894,6 +5980,10 @@ impl eframe::App for FileManager {
             self.external_drag.cancel();
         }
         let frame_directory = self.current.clone();
+        if self.settings.view != View::Media || self.search.is_some() {
+            self.media_scroll_target = None;
+            self.media_scrolling_until = 0.0;
+        }
         let previous_view = std::mem::take(&mut self.prepared_view);
         self.directory_ready = true;
         if self.settings.view == View::Media && self.search.is_none() {
