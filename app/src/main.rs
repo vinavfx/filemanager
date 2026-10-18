@@ -4393,9 +4393,10 @@ impl FileManager {
                 .iter()
                 .enumerate()
                 .filter(|(_, entry)| {
-                    entry.directory
-                        || files::image_file(&entry.path)
-                        || files::video_file(&entry.path)
+                    !entry.directory
+                        && (entry.sequence.is_some()
+                            || files::image_file(&entry.path)
+                            || files::video_file(&entry.path))
                 })
                 .map(|(index, entry)| (entry.path.clone(), index))
                 .collect();
@@ -4609,9 +4610,7 @@ impl FileManager {
         if items.is_empty() {
             ui.centered_and_justified(|ui| {
                 if self.media_layout.complete {
-                    ui.label(
-                        RichText::new("No folders, images or videos in this folder").color(MUTED),
-                    );
+                    ui.label(RichText::new("No images or videos in this folder").color(MUTED));
                 } else {
                     ui.spinner();
                 }
