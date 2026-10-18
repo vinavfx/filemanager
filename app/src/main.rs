@@ -3,6 +3,7 @@ mod drag;
 mod files;
 mod icons;
 mod images;
+mod instance;
 mod layout;
 mod mounts;
 mod operations;
@@ -423,12 +424,16 @@ struct FileManager {
 }
 
 impl FileManager {
-    fn new(context: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*context.egui_ctx.style()).clone();
+    fn new(
+        context: &egui::Context,
+        external_drag: drag::ExternalDrag,
+        requested: Option<PathBuf>,
+    ) -> Self {
+        let mut style = (*context.style()).clone();
         style.spacing.item_spacing = Vec2::new(8.0, 8.0);
         style.spacing.button_padding = Vec2::new(10.0, 7.0);
         style.spacing.scroll = egui::style::ScrollStyle::solid();
-        context.egui_ctx.set_style(style);
+        context.set_style(style);
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .map_or_else(|| home.join(".config"), PathBuf::from)
@@ -449,7 +454,7 @@ impl FileManager {
                 Some(format!("Cannot read settings: {error}")),
             ),
         };
-        apply_theme(&context.egui_ctx, settings.dark_mode);
+        apply_theme(context, settings.dark_mode);
         let home_places = places::defaults(&home);
         let mut bookmarks = bookmarks::Bookmarks::new(&home);
         let bookmark_error = bookmarks
@@ -465,13 +470,11 @@ impl FileManager {
             .iter()
             .find(|place| matches!(place.kind, places::Kind::Desktop))
             .map_or_else(|| home.clone(), |place| place.path.clone());
-        let requested = std::env::args_os()
-            .nth(1)
-            .map_or_else(|| desktop.clone(), PathBuf::from);
+        let requested = requested.unwrap_or_else(|| desktop.clone());
         let current = requested.canonicalize().unwrap_or(requested);
         let current = if current.is_dir() { current } else { desktop };
         let mut app = Self {
-            external_drag: drag::ExternalDrag::new(context),
+            external_drag,
             directory_refresh: None,
             directory_frame: None,
             preparing_directory: false,
@@ -484,14 +487,14 @@ impl FileManager {
             operation_job: None,
             removed_entries: HashMap::new(),
             breadcrumb_path: current.clone(),
-            thumbnails: images::Thumbnails::new(context.egui_ctx.clone()),
-            icons: icons::Icons::new(context.egui_ctx.clone()),
+            thumbnails: images::Thumbnails::new(context.clone()),
+            icons: icons::Icons::new(context.clone()),
             mounts: mounts::Mounts::new(),
             current,
             config,
             settings,
             entries: Arc::default(),
-            folder_counts: files::FolderCounts::new(context.egui_ctx.clone()),
+            folder_counts: files::FolderCounts::new(context.clone()),
             media_scan: None,
             media_cache: Vec::new(),
             media_directories: Arc::default(),
@@ -549,7 +552,7 @@ impl FileManager {
             message: config_error.or(bookmark_error),
             message_deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         };
-        app.refresh(&context.egui_ctx);
+        app.refresh(context);
         app
     }
 
@@ -4493,10 +4496,11 @@ impl FileManager {
                         );
                         let mut x = origin.x + gutter;
                         for index in range {
-                            let entry = &items[index].0;
+                            let (entry, position, _) = &items[index];
+                            let center_x = origin.x + gutter + position.x;
                             let rect = egui::Rect::from_min_size(
                                 egui::pos2(x, y),
-                                Vec2::new(self.media_layout.aspects[&entry.path] * height, height),
+                                Vec2::new((center_x - x) * 2.0, height),
                             );
                             x = rect.right();
                             if !ui.is_rect_visible(rect) {
@@ -6727,7 +6731,108 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
     }
 }
 
+struct ResidentApp {
+    root: FileManager,
+    visible: bool,
+    quitting: bool,
+    windows: Vec<(egui::ViewportId, FileManager)>,
+    next_window: u64,
+    requests: mpsc::Receiver<instance::Request>,
+    _instance: instance::Instance,
+}
+
+impl eframe::App for ResidentApp {
+    fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
+        if self.quitting {
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        while let Ok(request) = self.requests.try_recv() {
+            match request {
+                instance::Request::Quit => {
+                    self.quitting = true;
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                instance::Request::Open(path) => {
+                    if self.visible {
+                        let id = egui::ViewportId::from_hash_of(("file-manager", self.next_window));
+                        self.next_window += 1;
+                        let window =
+                            FileManager::new(context, self.root.external_drag.sibling(), path);
+                        self.windows.push((id, window));
+                    } else {
+                        let home = std::env::var_os("HOME")
+                            .map_or_else(|| PathBuf::from("/"), PathBuf::from);
+                        let directory = path.unwrap_or_else(|| {
+                            self.root
+                                .home_places
+                                .iter()
+                                .find(|place| matches!(place.kind, places::Kind::Desktop))
+                                .map_or(home, |place| place.path.clone())
+                        });
+                        self.root.navigate(directory, context);
+                        self.root.refresh(context);
+                        self.visible = true;
+                        context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        context.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+            }
+        }
+        if context.input(|input| input.viewport().close_requested()) {
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.root.external_drag.cancel();
+            self.visible = false;
+        }
+        if self.visible {
+            apply_theme(context, self.root.settings.dark_mode);
+            self.root.update(context, frame);
+        }
+        self.windows.retain_mut(|(id, window)| {
+            let mut closed = false;
+            context.show_viewport_immediate(
+                *id,
+                egui::ViewportBuilder::default()
+                    .with_title("Still Files")
+                    .with_inner_size([1120.0, 740.0])
+                    .with_min_inner_size([760.0, 460.0]),
+                |context, _| {
+                    closed = context.input(|input| input.viewport().close_requested());
+                    if !closed {
+                        apply_theme(context, window.settings.dark_mode);
+                        window.update(context, frame);
+                    }
+                },
+            );
+            !closed
+        });
+    }
+}
+
 fn main() -> eframe::Result {
+    let argument = std::env::args_os().nth(1);
+    let request = if argument.as_deref() == Some(std::ffi::OsStr::new("--quit")) {
+        instance::Request::Quit
+    } else {
+        let path = argument.map(PathBuf::from).map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            }
+        });
+        instance::Request::Open(path)
+    };
+    let Some(instance) = instance::Instance::start(&request)
+        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?
+    else {
+        return Ok(());
+    };
+    let instance::Request::Open(path) = request else {
+        return Ok(());
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 740.0])
@@ -6737,6 +6842,18 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Still Files",
         options,
-        Box::new(|context| Ok(Box::new(FileManager::new(context)))),
+        Box::new(move |context| {
+            let requests = instance.listen(context.egui_ctx.clone())?;
+            let root = FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
+            Ok(Box::new(ResidentApp {
+                root,
+                visible: true,
+                quitting: false,
+                windows: Vec::new(),
+                next_window: 1,
+                requests,
+                _instance: instance,
+            }))
+        }),
     )
 }

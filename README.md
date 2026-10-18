@@ -24,7 +24,13 @@ Desde la raíz del repositorio:
 ./start.sh /ruta/a/una/carpeta
 ```
 
-El lanzador descarga dependencias y compila si es necesario; después reutiliza la compilación. La interfaz está en inglés.
+El lanzador ejecuta directamente la compilación actualizada más reciente, de desarrollo o de producción; si no existe, compila en modo de
+producción y puede descargar dependencias. La interfaz está en inglés.
+
+La primera apertura deja un proceso residente por sesión gráfica. Las siguientes abren ventanas en ese mismo proceso, sin reiniciar el motor
+gráfico. Al cerrar todas las ventanas, permanece en segundo plano para acelerar la reapertura; el contenido y las miniaturas de cada carpeta
+siguen cargándose según sea necesario. Para terminar también el proceso residente, ejecuta `./start.sh --quit`. Después de recompilar, usa
+esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo.
 
 ## Atajos de teclado
 

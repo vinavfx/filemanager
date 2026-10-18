@@ -62,6 +62,13 @@ impl ExternalDrag {
         }
     }
 
+    pub fn sibling(&self) -> Self {
+        Self {
+            window: self.window,
+            cancelled: Arc::default(),
+        }
+    }
+
     pub fn start(&mut self, paths: Vec<PathBuf>) {
         self.cancel();
         let Some(window) = self.window else {
@@ -114,6 +121,20 @@ impl Session {
     fn new(origin: Window, paths: Vec<PathBuf>) -> Result<Self> {
         let (connection, screen) = x11rb::connect(None)?;
         let root = connection.setup().roots[screen].root;
+        let mut origin = connection
+            .get_input_focus()?
+            .reply()
+            .map_or(origin, |reply| match reply.focus {
+                0 | 1 => origin,
+                focus => focus,
+            });
+        while origin != root {
+            let tree = connection.query_tree(origin)?.reply()?;
+            if tree.parent == root || tree.parent == NONE {
+                break;
+            }
+            origin = tree.parent;
+        }
         let atoms = Atoms::new(&connection)?.reply()?;
         let source = connection.generate_id()?;
         let compositor = connection
