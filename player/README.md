@@ -49,8 +49,9 @@ imagen.
   saltar fotogramas.
 - Caché y precarga activadas. Límite de 24 GiB, sin reservarlos al iniciar; purga por orden de inserción, no LRU. La línea azul solo
   representa imágenes decodificadas residentes.
-- Fondo negro, filtrado lineal, HUD inicialmente oculto y rueda de zoom del 10 %. EXR con gamma 2.2 y cuatro hilos de descompresión. Las
-  imágenes de alta precisión se mantienen en coma flotante y se suben a una textura `RGBA32F`, sin convertirlas antes a ocho bits.
+- Fondo negro, filtrado lineal, HUD inferior derecho inicialmente oculto y rueda de zoom del 10 %. EXR con gamma 2.2 y cuatro hilos de
+  descompresión. Las imágenes de alta precisión se mantienen en coma flotante y se suben a una textura `RGBA32F`, sin convertirlas antes a
+  ocho bits.
 - Ajuste automático de ventana limitado al 75 % de la pantalla. `U` oculta los controles y restaura su visibilidad al salir. Paleta oscura y
   Noto Sans de 12 puntos cuando está instalada; fuente integrada como alternativa.
 
@@ -60,9 +61,10 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 
 | Acción                                                | Teclas                          |
 | ----------------------------------------------------- | ------------------------------- |
-| Avance / parada / reversa                             | `L` / `K` / `J`                 |
+| Parada / reversa                                      | `K` / `J`                       |
 | Alternar reproducción y recuperar el sentido anterior | `Espacio`                       |
 | Entrada / salida                                      | `Inicio` / `Fin`                |
+| Fotograma anterior / siguiente (pausa)                | `←` o `H` / `→` o `L`           |
 | Anterior / siguiente                                  | `[` / `]`                       |
 | Retroceder / avanzar 10                               | `{` / `}`                       |
 | Retroceder / avanzar 100                              | `Ctrl+[` / `Ctrl+]`             |
@@ -72,17 +74,19 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Activar puntos de entrada/salida                      | `P`                             |
 | Centrar / ajustar imagen / restablecer vista          | `Insert` / `Retroceso` / `Supr` |
 | Duplicar / reducir a la mitad / restablecer zoom      | `=` / `-` / `0`                 |
-| Pantalla completa / ajustar ventana                   | `U` / `F`                       |
-| Mostrar u ocultar interfaz / HUD                      | Acento grave / `H`              |
+| Pantalla completa / ajustar imagen al visor           | `U` / `F`                       |
+| Mostrar u ocultar interfaz / HUD                      | Acento grave / `Ctrl+H`         |
 | Canal rojo / verde / azul / alfa / predeterminado     | `R` / `G` / `B` / `A` / `C`     |
 | Guardar / mostrar fotograma de referencia             | `Mayús+E` / `E`                 |
 | Abrir / cerrar archivo / salir                        | `Ctrl+O` / `Ctrl+W` / `Ctrl+Q`  |
 | Cerrar ventana y permanecer en segundo plano          | `Ctrl+E`                        |
 | Recargar archivo / fotograma                          | `Ctrl+R` / `Ctrl+Mayús+R`       |
 
-En el visor: botón central o `Mayús` + arrastre izquierdo para mover; `Ctrl` + arrastre izquierdo para desplazar un fotograma por cada cinco
-píxeles; `Ctrl` + clic central/derecho para duplicar/reducir el zoom. Rueda para zoom, `Mayús` + rueda para fotogramas y `Ctrl` + rueda para
-velocidad. El zoom se ancla al puntero dentro del visor y al centro fuera de él.
+El avance manual de fotogramas ignora las marcas de entrada/salida; la reproducción sigue respetándolas cuando están activadas.
+
+En el visor: botón central, `Alt` o `Mayús` + arrastre izquierdo para mover; `Ctrl` + arrastre izquierdo para desplazar un fotograma por
+cada cinco píxeles; `Ctrl` + clic central/derecho para duplicar/reducir el zoom. Rueda para zoom, `Mayús` + rueda para fotogramas y `Ctrl` +
+rueda para velocidad. El zoom se ancla al puntero dentro del visor y al centro fuera de él.
 
 En el timeline, cualquier botón permite buscar y arrastrar. El arrastre pausa temporalmente el reloj, permite salir del rango de
 entrada/salida y conserva el estado de reproducción al soltar, como el widget original. No se han inventado atajos de flechas ni

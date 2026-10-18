@@ -295,7 +295,7 @@ impl Player {
                     {
                         let frame = media.index(number);
                         self.playback.set_direction(Direction::Stop);
-                        self.playback.seek(frame as i64, true);
+                        self.playback.seek(frame as i64, false);
                     }
                 });
             });
@@ -633,30 +633,68 @@ impl Player {
                 if self.hud
                     && let Some(media) = &self.media
                 {
-                    let text = format!(
-                        "File  = {}\nSize  = {}x{}\nProxy = None\nFrame = {}\nSpeed = {:.2}/{:.2}",
-                        media.path.file_name().unwrap_or_default().to_string_lossy(),
-                        media.width,
-                        media.height,
-                        media.number(self.playback.frame),
-                        self.playback.rate.value(),
-                        self.actual_rate
+                    let painter = ui.painter().with_clip_rect(rect);
+                    let width = (rect.width() - 64.0).clamp(1.0, 340.0);
+                    let title = painter.layout(
+                        media
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        FontId::proportional(17.0),
+                        Color32::from_rgb(235, 240, 248),
+                        width,
                     );
-                    let position = rect.min + egui::vec2(12.0, 12.0);
-                    ui.painter().text(
-                        position + Vec2::splat(1.0),
-                        Align2::LEFT_TOP,
-                        &text,
-                        FontId::proportional(12.0),
-                        Color32::BLACK,
+                    let size = egui::vec2(width + 32.0, title.size().y + 144.0);
+                    let position = rect.max - Vec2::splat(16.0) - size;
+                    let content = position + Vec2::splat(16.0);
+                    let panel = Rect::from_min_size(position, size);
+                    painter.rect_filled(
+                        panel,
+                        10.0,
+                        Color32::from_rgba_unmultiplied(22, 26, 33, 225),
                     );
-                    ui.painter().text(
-                        position,
-                        Align2::LEFT_TOP,
-                        text,
-                        FontId::proportional(12.0),
-                        Color32::WHITE,
+                    painter.rect_stroke(
+                        panel,
+                        10.0,
+                        Stroke::new(1.0, Color32::from_white_alpha(35)),
+                        egui::StrokeKind::Inside,
                     );
+                    let rows_y = content.y + title.size().y + 22.0;
+                    painter.galley(content, title, Color32::WHITE);
+                    painter.line_segment(
+                        [
+                            egui::pos2(content.x, rows_y - 10.0),
+                            egui::pos2(panel.right() - 16.0, rows_y - 10.0),
+                        ],
+                        Stroke::new(1.0, Color32::from_white_alpha(25)),
+                    );
+                    for (index, (label, value)) in [
+                        ("Resolution", format!("{} × {}", media.width, media.height)),
+                        ("Frame", media.number(self.playback.frame).to_string()),
+                        ("Target FPS", format!("{:.2}", self.playback.rate.value())),
+                        ("Actual FPS", format!("{:.2}", self.actual_rate)),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let row = egui::pos2(content.x, rows_y + index as f32 * 25.0);
+                        painter.text(
+                            row,
+                            Align2::LEFT_TOP,
+                            label,
+                            FontId::proportional(15.0),
+                            Color32::from_rgb(155, 167, 185),
+                        );
+                        painter.text(
+                            egui::pos2(panel.right() - 16.0, row.y),
+                            Align2::RIGHT_TOP,
+                            value,
+                            FontId::monospace(15.0),
+                            Color32::from_rgb(205, 225, 250),
+                        );
+                    }
                 }
                 if let Some(error) = &self.error {
                     let error_rect = Rect::from_min_size(
@@ -708,7 +746,7 @@ impl Player {
             });
             if modifiers.ctrl && (middle || right) {
                 self.set_zoom(self.zoom * if middle { 2.0 } else { 0.5 }, position);
-            } else if (middle && !modifiers.ctrl) || (left && modifiers.shift) {
+            } else if (middle && !modifiers.ctrl) || (left && (modifiers.shift || modifiers.alt)) {
                 self.drag_mode = 1;
                 self.pan_origin = self.origin;
             } else if left && modifiers.ctrl {
@@ -734,7 +772,7 @@ impl Player {
                 && let Some(position) = position
             {
                 let offset = ((position.x - self.drag_origin.x) / 5.0).trunc() as i64;
-                self.playback.seek(self.drag_frame as i64 + offset, true);
+                self.playback.seek(self.drag_frame as i64 + offset, false);
                 context.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
         } else {
@@ -761,7 +799,7 @@ impl Player {
                 if modifiers.shift {
                     self.playback.set_direction(Direction::Stop);
                     self.playback
-                        .seek(self.playback.frame as i64 + amount.round() as i64, true);
+                        .seek(self.playback.frame as i64 + amount.round() as i64, false);
                 } else if modifiers.ctrl {
                     let value = (self.playback.rate.value() + amount as f64)
                         .round()
@@ -786,10 +824,10 @@ impl Player {
         if self.fullscreen {
             self.fullscreen_previous_ui = self.show_ui;
             self.show_ui = false;
-            self.fit_view();
         } else {
             self.show_ui = self.fullscreen_previous_ui;
         }
+        self.fit_view();
         context.send_viewport_cmd(ViewportCommand::Fullscreen(self.fullscreen));
     }
 
@@ -818,6 +856,7 @@ impl Player {
                     Key::Q if !modifiers.shift => self.quit_requested = true,
                     Key::E if !modifiers.shift => self.hide_requested = true,
                     Key::W if !modifiers.shift => self.close(),
+                    Key::H if !modifiers.shift => self.hud = !self.hud,
                     Key::R if modifiers.shift => {
                         self.loader
                             .send(Request::ReloadFrame(self.generation, self.playback.frame));
@@ -830,10 +869,10 @@ impl Player {
                         }
                     }
                     Key::OpenBracket if !modifiers.shift => {
-                        self.playback.seek(self.playback.frame as i64 - 100, true)
+                        self.playback.seek(self.playback.frame as i64 - 100, false)
                     }
                     Key::CloseBracket if !modifiers.shift => {
-                        self.playback.seek(self.playback.frame as i64 + 100, true)
+                        self.playback.seek(self.playback.frame as i64 + 100, false)
                     }
                     _ => {}
                 }
@@ -856,7 +895,14 @@ impl Player {
             match key {
                 Key::J if !modifiers.shift => self.playback.set_direction(Direction::Reverse),
                 Key::K if !modifiers.shift => self.playback.set_direction(Direction::Stop),
-                Key::L if !modifiers.shift => self.playback.set_direction(Direction::Forward),
+                Key::ArrowLeft | Key::H if !modifiers.shift => {
+                    self.playback.set_direction(Direction::Stop);
+                    self.playback.seek(self.playback.frame as i64 - 1, false);
+                }
+                Key::ArrowRight | Key::L if !modifiers.shift => {
+                    self.playback.set_direction(Direction::Stop);
+                    self.playback.seek(self.playback.frame as i64 + 1, false);
+                }
                 Key::Space if !modifiers.shift => self.playback.toggle(),
                 Key::Home => self.playback.seek(self.playback.in_point as i64, true),
                 Key::End => self.playback.seek(self.playback.out_point as i64, true),
@@ -867,7 +913,7 @@ impl Player {
                         1
                     };
                     self.playback
-                        .seek(self.playback.frame as i64 - amount, true);
+                        .seek(self.playback.frame as i64 - amount, false);
                 }
                 Key::CloseBracket | Key::CloseCurlyBracket => {
                     let amount = if modifiers.shift || key == Key::CloseCurlyBracket {
@@ -876,18 +922,13 @@ impl Player {
                         1
                     };
                     self.playback
-                        .seek(self.playback.frame as i64 + amount, true);
+                        .seek(self.playback.frame as i64 + amount, false);
                 }
                 Key::Semicolon if !modifiers.shift => {
                     self.playback.set_loop(self.playback.loop_mode.next());
                 }
-                Key::I => {
-                    self.playback.in_point = if modifiers.shift {
-                        0
-                    } else {
-                        self.playback.frame
-                    }
-                }
+                Key::I if modifiers.shift => self.playback.in_point = 0,
+                Key::I => self.playback.in_point = self.playback.frame,
                 Key::O => {
                     self.playback.out_point = if modifiers.shift {
                         self.playback.count.saturating_sub(1)
@@ -914,9 +955,8 @@ impl Player {
                 }
                 Key::Num0 if !modifiers.shift => self.set_zoom(1.0, self.focus(context)),
                 Key::U if !modifiers.shift => self.fullscreen(context),
-                Key::F if !modifiers.shift => self.fit_window(context),
+                Key::F if !modifiers.shift => self.fit_view(),
                 Key::Backtick if !modifiers.shift => self.show_ui = !self.show_ui,
-                Key::H if !modifiers.shift => self.hud = !self.hud,
                 Key::R if !modifiers.shift => self.channel = 1,
                 Key::G if !modifiers.shift => self.channel = 2,
                 Key::B if !modifiers.shift => self.channel = 3,
