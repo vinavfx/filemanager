@@ -90,7 +90,10 @@ struct Settings {
     media_return_view: View,
     tree_sort: TreeSort,
     tree_descending: bool,
-    zoom: f32,
+    tree_zoom: f32,
+    #[serde(alias = "zoom")]
+    grid_zoom: f32,
+    media_zoom: f32,
     hidden: bool,
     sequences: bool,
     #[serde(skip)]
@@ -107,7 +110,9 @@ impl Default for Settings {
             media_return_view: View::Grid,
             tree_sort: TreeSort::Name,
             tree_descending: false,
-            zoom: 1.0,
+            tree_zoom: 1.0,
+            grid_zoom: 1.0,
+            media_zoom: 1.0,
             hidden: false,
             sequences: true,
             recursive_media: false,
@@ -117,6 +122,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn zoom(&self) -> f32 {
+        match self.view {
+            View::Tree => self.tree_zoom,
+            View::Grid => self.grid_zoom,
+            View::Media => self.media_zoom,
+        }
+    }
+
+    fn zoom_mut(&mut self) -> &mut f32 {
+        match self.view {
+            View::Tree => &mut self.tree_zoom,
+            View::Grid => &mut self.grid_zoom,
+            View::Media => &mut self.media_zoom,
+        }
+    }
+
     fn set_view(&mut self, view: View) {
         if view == View::Media && self.view != View::Media {
             self.media_return_view = self.view;
@@ -461,11 +482,17 @@ impl FileManager {
             .reload()
             .err()
             .map(|error| format!("Cannot read shared bookmarks: {error}"));
-        settings.zoom = if settings.zoom.is_finite() {
-            settings.zoom.clamp(0.65, 3.6)
-        } else {
-            1.0
-        };
+        for zoom in [
+            &mut settings.tree_zoom,
+            &mut settings.grid_zoom,
+            &mut settings.media_zoom,
+        ] {
+            *zoom = if zoom.is_finite() {
+                zoom.clamp(0.65, 3.6)
+            } else {
+                1.0
+            };
+        }
         let desktop = home_places
             .iter()
             .find(|place| matches!(place.kind, places::Kind::Desktop))
@@ -2005,9 +2032,9 @@ impl FileManager {
             }
         });
         if scroll != 0.0 {
-            let zoom = (self.settings.zoom * (scroll * 0.003).exp()).clamp(0.65, 3.6);
-            if self.settings.zoom != zoom {
-                self.settings.zoom = zoom;
+            let zoom = (self.settings.zoom() * (scroll * 0.003).exp()).clamp(0.65, 3.6);
+            if self.settings.zoom() != zoom {
+                *self.settings.zoom_mut() = zoom;
                 self.save();
             }
         }
@@ -2058,9 +2085,9 @@ impl FileManager {
                     input.modifiers.matches_exact(egui::Modifiers::NONE)
                         && input.consume_key(egui::Modifiers::NONE, key)
                 }) {
-                    let zoom = (self.settings.zoom + delta).clamp(0.65, 3.6);
-                    if self.settings.zoom != zoom {
-                        self.settings.zoom = zoom;
+                    let zoom = (self.settings.zoom() + delta).clamp(0.65, 3.6);
+                    if self.settings.zoom() != zoom {
+                        *self.settings.zoom_mut() = zoom;
                         self.save();
                     }
                 }
@@ -3562,7 +3589,7 @@ impl FileManager {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let response = ui.add(
-                                egui::Slider::new(&mut self.settings.zoom, 0.65..=3.6)
+                                egui::Slider::new(self.settings.zoom_mut(), 0.65..=3.6)
                                     .show_value(false),
                             );
                             if response.changed() {
@@ -3571,7 +3598,7 @@ impl FileManager {
                             ui.label(
                                 RichText::new(format!(
                                     "{}%",
-                                    (self.settings.zoom * 100.0).round() as u32
+                                    (self.settings.zoom() * 100.0).round() as u32
                                 ))
                                 .size(12.0)
                                 .color(MUTED),
@@ -4156,8 +4183,8 @@ impl FileManager {
 
     fn grid(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         let entries = self.display_entries();
-        let width = 116.0 * self.settings.zoom;
-        let height = 126.0 * self.settings.zoom;
+        let width = 116.0 * self.settings.grid_zoom;
+        let height = 126.0 * self.settings.grid_zoom;
         let gutter = self.number_width();
         let available = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
         let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
@@ -4265,12 +4292,12 @@ impl FileManager {
                                     }
                                     let icon_rect = egui::Rect::from_center_size(
                                         rect.center_top() + Vec2::new(0.0, height * 0.34),
-                                        Vec2::splat(64.0 * self.settings.zoom),
+                                        Vec2::splat(64.0 * self.settings.grid_zoom),
                                     );
                                     if !self.paint_thumbnail(ui, icon_rect, entry) {
                                         self.paint_entry_icon(
                                             ui,
-                                            icon_rect.shrink(8.0 * self.settings.zoom),
+                                            icon_rect.shrink(8.0 * self.settings.grid_zoom),
                                             entry,
                                         );
                                     }
@@ -4562,7 +4589,7 @@ impl FileManager {
         let mut offset =
             egui::scroll_area::State::load(context, scroll_id).map_or(0.0, |state| state.offset.y);
         let previous_items = Arc::clone(&self.media_layout.items);
-        self.prepare_media_layout(width, 192.0 * self.settings.zoom, context);
+        self.prepare_media_layout(width, 192.0 * self.settings.media_zoom, context);
         let items = Arc::clone(&self.media_layout.items);
         if !Arc::ptr_eq(&previous_items, &items) {
             let anchor = previous_items
@@ -4692,7 +4719,7 @@ impl FileManager {
                                 !self.sidebar_focused && self.selection.contains(&entry.path);
                             ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
                             if !self.paint_thumbnail(ui, rect, entry) {
-                                let edge = (64.0 * self.settings.zoom)
+                                let edge = (64.0 * self.settings.media_zoom)
                                     .min(rect.width().min(rect.height()) * 0.5);
                                 self.paint_entry_icon(
                                     ui,
@@ -4955,14 +4982,14 @@ impl FileManager {
     }
 
     fn tree_scale(&self) -> f32 {
-        self.settings.zoom / 0.65
+        self.settings.tree_zoom / 0.65
     }
 
     fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
         if let Some(layout) = &self.tree_layout {
             if layout.sort == self.settings.tree_sort
                 && layout.descending == self.settings.tree_descending
-                && layout.zoom == self.settings.zoom
+                && layout.zoom == self.settings.tree_zoom
                 && layout.expanded == self.expanded
             {
                 return Arc::clone(&layout.items);
@@ -4974,7 +5001,7 @@ impl FileManager {
         self.tree_layout = Some(TreeLayout {
             sort: self.settings.tree_sort,
             descending: self.settings.tree_descending,
-            zoom: self.settings.zoom,
+            zoom: self.settings.tree_zoom,
             expanded: self.expanded.clone(),
             items: Arc::clone(&items),
         });
