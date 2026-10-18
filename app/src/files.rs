@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -21,6 +21,7 @@ pub struct Entry {
     pub deletion_locked: bool,
     pub size: u64,
     pub item_count: Option<usize>,
+    pub has_contents: Option<bool>,
     pub modified: Option<SystemTime>,
     pub modified_label: String,
     pub sequence: Option<Arc<Vec<PathBuf>>>,
@@ -46,20 +47,34 @@ impl Entry {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct FolderContent {
+    pub has_contents: bool,
+    pub item_count: Option<usize>,
+}
+
+type FolderCountRequest = (u64, PathBuf, Option<SystemTime>);
+type FolderCountResult = (u64, PathBuf, Option<SystemTime>, FolderContent);
+
 pub struct FolderCounts {
-    sender: mpsc::Sender<(u64, PathBuf)>,
-    receiver: mpsc::Receiver<(u64, PathBuf, usize)>,
+    sender: mpsc::Sender<FolderCountRequest>,
+    receiver: mpsc::Receiver<FolderCountResult>,
     generation: Arc<AtomicU64>,
+    cache: HashMap<PathBuf, (Option<SystemTime>, usize)>,
+    order: VecDeque<PathBuf>,
 }
 
 impl FolderCounts {
     pub fn new(context: egui::Context) -> Self {
-        let (sender, requests) = mpsc::channel::<(u64, PathBuf)>();
+        let (sender, probes) = mpsc::channel::<FolderCountRequest>();
+        let (count_sender, requests) = mpsc::channel::<FolderCountRequest>();
         let (results, receiver) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
         let active = Arc::clone(&generation);
+        let count_results = results.clone();
+        let count_context = context.clone();
         std::thread::spawn(move || {
-            while let Ok((generation, path)) = requests.recv() {
+            while let Ok((generation, path, modified)) = requests.recv() {
                 if active.load(Ordering::Relaxed) != generation {
                     continue;
                 }
@@ -76,10 +91,46 @@ impl FolderCounts {
                     count += 1;
                 }
                 if complete {
-                    if results.send((generation, path, count)).is_err() {
+                    let content = FolderContent {
+                        has_contents: count > 0,
+                        item_count: Some(count),
+                    };
+                    if count_results
+                        .send((generation, path, modified, content))
+                        .is_err()
+                    {
                         break;
                     }
-                    context.request_repaint_after(std::time::Duration::from_millis(50));
+                    count_context.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+            }
+        });
+        let active = Arc::clone(&generation);
+        std::thread::spawn(move || {
+            while let Ok((generation, path, modified)) = probes.recv() {
+                if active.load(Ordering::Relaxed) != generation {
+                    continue;
+                }
+                let has_contents = fs::read_dir(&path)
+                    .ok()
+                    .and_then(|mut entries| entries.next())
+                    .is_some_and(|entry| entry.is_ok());
+                if active.load(Ordering::Relaxed) != generation {
+                    continue;
+                }
+                let content = FolderContent {
+                    has_contents,
+                    item_count: None,
+                };
+                if results
+                    .send((generation, path.clone(), modified, content))
+                    .is_err()
+                {
+                    break;
+                }
+                context.request_repaint();
+                if count_sender.send((generation, path, modified)).is_err() {
+                    break;
                 }
             }
         });
@@ -87,24 +138,54 @@ impl FolderCounts {
             sender,
             receiver,
             generation,
+            cache: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    pub fn restore(&self, entries: &mut [Entry]) {
+        for entry in entries.iter_mut().filter(|entry| entry.directory) {
+            if let Some((modified, count)) = self.cache.get(&entry.path) {
+                if modified.is_some() && *modified == entry.modified {
+                    entry.item_count = Some(*count);
+                    entry.has_contents = Some(*count > 0);
+                }
+            }
         }
     }
 
     pub fn request(&self, entries: &[Entry]) {
         let generation = self.generation.load(Ordering::Relaxed);
         for entry in entries.iter().filter(|entry| entry.directory) {
-            let _ = self.sender.send((generation, entry.path.clone()));
+            let _ = self
+                .sender
+                .send((generation, entry.path.clone(), entry.modified));
         }
     }
 
-    pub fn poll(&self) -> HashMap<PathBuf, usize> {
+    pub fn poll(&mut self) -> HashMap<PathBuf, FolderContent> {
         let generation = self.generation.load(Ordering::Relaxed);
-        self.receiver
-            .try_iter()
-            .filter_map(|(requested, path, count)| {
-                (requested == generation).then_some((path, count))
-            })
-            .collect()
+        let mut counts: HashMap<PathBuf, FolderContent> = HashMap::new();
+        for (requested, path, modified, mut content) in self.receiver.try_iter() {
+            if let Some(count) = content.item_count {
+                if !self.cache.contains_key(&path) {
+                    if self.cache.len() >= 16_384 {
+                        if let Some(oldest) = self.order.pop_front() {
+                            self.cache.remove(&oldest);
+                        }
+                    }
+                    self.order.push_back(path.clone());
+                }
+                self.cache.insert(path.clone(), (modified, count));
+            }
+            if requested == generation {
+                if content.item_count.is_none() {
+                    content.item_count = counts.get(&path).and_then(|previous| previous.item_count);
+                }
+                counts.insert(path, content);
+            }
+        }
+        counts
     }
 
     pub fn cancel(&self) {
@@ -351,6 +432,7 @@ fn trash_entries() -> io::Result<Vec<Entry>> {
             symlink: metadata.is_symlink(),
             size: metadata.len(),
             item_count: None,
+            has_contents: None,
             modified: metadata.modified().ok(),
             modified_label: "—".to_owned(),
             sequence: None,
@@ -404,6 +486,7 @@ fn read_entries(
             deletion_locked: deletion_locked(&item.path()),
             size: metadata.as_ref().map_or(0, |value| value.len()),
             item_count: None,
+            has_contents: None,
             modified: metadata.and_then(|value| value.modified().ok()),
             modified_label: "—".to_owned(),
             sequence: None,

@@ -749,6 +749,7 @@ impl FileManager {
             .insert(self.current.clone(), std::mem::take(&mut self.expanded));
         self.expanded = self.directory_expansions.remove(&path).unwrap_or_default();
         self.current = path;
+        self.folder_counts.restore(&mut entries);
         self.entries = Arc::new(entries);
         self.folder_counts.cancel();
         self.folder_counts.request(&self.entries);
@@ -1395,7 +1396,9 @@ impl FileManager {
                         .iter()
                         .chain(self.tree_cache.values().flatten())
                         .filter_map(|entry| {
-                            entry.item_count.map(|count| (entry.path.clone(), count))
+                            entry.has_contents.map(|has_contents| {
+                                (entry.path.clone(), (entry.item_count, has_contents))
+                            })
                         })
                         .collect();
                     self.entries = Arc::new(contents.entries);
@@ -1417,7 +1420,10 @@ impl FileManager {
                         .iter_mut()
                         .chain(self.tree_cache.values_mut().flatten())
                     {
-                        entry.item_count = counts.get(&entry.path).copied();
+                        if let Some((count, has_contents)) = counts.get(&entry.path) {
+                            entry.item_count = *count;
+                            entry.has_contents = Some(*has_contents);
+                        }
                     }
                     self.thumbnails.cancel();
                     self.retain_visible_selection(context);
@@ -1503,8 +1509,11 @@ impl FileManager {
                 .iter_mut()
                 .chain(self.tree_cache.values_mut().flatten())
             {
-                if let Some(count) = counts.get(&entry.path) {
-                    entry.item_count = Some(*count);
+                if let Some(content) = counts.get(&entry.path) {
+                    entry.has_contents = Some(content.has_contents);
+                    if let Some(count) = content.item_count {
+                        entry.item_count = Some(count);
+                    }
                 }
             }
         }
@@ -2364,7 +2373,8 @@ impl FileManager {
 
     fn expand_directory(&mut self, path: &Path) {
         match files::entries(path, self.settings.hidden, self.settings.sequences) {
-            Ok(children) => {
+            Ok(mut children) => {
+                self.folder_counts.restore(&mut children);
                 self.tree_layout = None;
                 self.folder_counts.request(&children);
                 self.tree_cache.insert(path.to_path_buf(), children);
@@ -2411,7 +2421,8 @@ impl FileManager {
                 self.settings.sequences,
                 &mut budget,
             ) {
-                Ok(children) => {
+                Ok(mut children) => {
+                    self.folder_counts.restore(&mut children);
                     pending.extend(
                         children
                             .iter()
@@ -3473,6 +3484,9 @@ impl FileManager {
             return;
         }
         self.prepared_view.push((entry.path.clone(), rect));
+        if entry.directory && entry.has_contents.is_none() && entry.item_count.is_none() {
+            self.directory_ready = false;
+        }
         let texture = if entry.directory {
             None
         } else {
@@ -5030,6 +5044,7 @@ impl FileManager {
             deletion_locked: false,
             size: 0,
             item_count: Some(0),
+            has_contents: Some(false),
             modified: None,
             modified_label: String::new(),
             sequence: None,
@@ -5607,11 +5622,10 @@ impl eframe::App for FileManager {
         self.submit_name_edit(context);
         self.empty_trash_window(context);
         if self.current != frame_directory
+            || !self.directory_ready
             || ((self.settings.view != View::Media || self.search.is_some())
-                && (!self.directory_ready
-                    || (self.preparing_directory
-                        && (self.directory_refresh.is_some()
-                            || self.prepared_view != previous_view))))
+                && self.preparing_directory
+                && (self.directory_refresh.is_some() || self.prepared_view != previous_view))
         {
             self.preparing_directory = true;
             if let Some(frame) = &self.directory_frame {
@@ -6087,7 +6101,10 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
     let painter = ui.painter();
     if entry.directory {
         paint_folder(ui, rect);
-        if entry.item_count.is_some_and(|count| count > 0) {
+        if entry
+            .has_contents
+            .unwrap_or_else(|| entry.item_count.is_some_and(|count| count > 0))
+        {
             for (left, top, right, bottom, color) in [
                 (0.3, 0.38, 0.62, 0.72, Color32::from_rgb(214, 225, 220)),
                 (0.4, 0.46, 0.72, 0.8, Color32::from_rgb(244, 248, 246)),
