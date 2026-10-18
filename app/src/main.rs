@@ -86,6 +86,7 @@ enum TreeSort {
 struct Settings {
     removed_places: Vec<PathBuf>,
     entry_order: HashMap<PathBuf, Vec<PathBuf>>,
+    media_players: HashMap<String, String>,
     view: View,
     media_return_view: View,
     tree_sort: TreeSort,
@@ -106,6 +107,7 @@ impl Default for Settings {
         Self {
             removed_places: Vec::new(),
             entry_order: HashMap::new(),
+            media_players: HashMap::new(),
             view: View::Tree,
             media_return_view: View::Tree,
             tree_sort: TreeSort::Name,
@@ -1201,7 +1203,28 @@ impl FileManager {
                 .iter()
                 .chain(self.tree_cache.values().flatten())
                 .any(|entry| entry.path == path && entry.sequence.is_some());
-        self.open_media(&path, if multimedia { "player" } else { "xdg-open" });
+        let application = if multimedia {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .and_then(|extension| self.settings.media_players.get(&extension.to_lowercase()))
+                .map(String::as_str)
+                .filter(|application| matches!(*application, "player" | "vlc" | "mpv"))
+                .unwrap_or("player")
+        } else {
+            "xdg-open"
+        }
+        .to_owned();
+        self.open_media(&path, &application);
+    }
+
+    fn choose_media_player(&mut self, path: &Path, application: &str) {
+        if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+            self.settings
+                .media_players
+                .insert(extension.to_lowercase(), application.to_owned());
+            self.save();
+        }
+        self.open_media(path, application);
     }
 
     fn open_media(&mut self, path: &Path, application: &str) {
@@ -3751,13 +3774,17 @@ impl FileManager {
                 )
                 .clicked()
             {
-                self.open(entry.path.clone(), context);
+                if multimedia {
+                    self.choose_media_player(&entry.path, "player");
+                } else {
+                    self.open(entry.path.clone(), context);
+                }
                 ui.close_menu();
             }
             if multimedia {
                 for (application, label) in [("vlc", "Open with VLC"), ("mpv", "Open with MPV")] {
                     if self.icons.button(ui, label, application, true).clicked() {
-                        self.open_media(&entry.path, application);
+                        self.choose_media_player(&entry.path, application);
                         ui.close_menu();
                     }
                 }
