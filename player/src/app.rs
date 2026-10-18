@@ -236,6 +236,9 @@ impl Player {
     }
 
     fn playback_toolbar(&mut self, context: &egui::Context) {
+        if self.playback.count < 2 {
+            return;
+        }
         egui::TopBottomPanel::bottom("playback_toolbar")
             .exact_height(36.0)
             .show(context, |ui| {
@@ -351,6 +354,10 @@ impl Player {
     }
 
     fn timeline(&mut self, context: &egui::Context) {
+        if self.playback.count < 2 {
+            self.timeline_rect = Rect::NOTHING;
+            return;
+        }
         egui::TopBottomPanel::bottom("timeline")
             .exact_height(48.0)
             .show(context, |ui| {
@@ -478,7 +485,7 @@ impl Player {
     }
 
     fn timeline_mouse(&mut self, context: &egui::Context) {
-        if !self.show_ui || self.playback.count == 0 {
+        if !self.show_ui || self.playback.count < 2 {
             self.timeline_dragging = false;
             return;
         }
@@ -565,7 +572,13 @@ impl Player {
             .unwrap_or(egui::vec2(1280.0, 800.0));
         let maximum = screen * 0.75;
         let size = self.image_size();
-        let chrome = if self.show_ui { 120.0 } else { 0.0 };
+        let chrome = if !self.show_ui {
+            0.0
+        } else if self.playback.count < 2 {
+            36.0
+        } else {
+            120.0
+        };
         let ratio = (maximum.x / size.x)
             .min((maximum.y - chrome) / size.y)
             .min(1.0);
@@ -617,7 +630,7 @@ impl Player {
                     ));
                 } else if (self.loading || self.media.is_some()) && self.error.is_none() {
                     let track =
-                        Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
+                        Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 1.0), rect.max);
                     let phase = context.input(|input| input.time) as f32;
                     let width = track.width() * 0.25;
                     let offset = (phase * 3.0).sin() * 0.5 + 0.5;
