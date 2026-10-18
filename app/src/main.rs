@@ -402,6 +402,7 @@ struct FileManager {
     trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
+    message_deadline: std::time::Instant,
 }
 
 impl FileManager {
@@ -522,9 +523,15 @@ impl FileManager {
             trash_focus: Some(false),
             compression_job: None,
             message: config_error.or(bookmark_error),
+            message_deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         };
         app.refresh(&context.egui_ctx);
         app
+    }
+
+    fn set_message(&mut self, message: Option<String>) {
+        self.message = message;
+        self.message_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     }
 
     fn save(&mut self) {
@@ -544,7 +551,7 @@ impl FileManager {
             Ok(())
         })();
         if let Err(error) = result {
-            self.message = Some(format!("Cannot save settings: {error}"));
+            self.set_message(Some(format!("Cannot save settings: {error}")));
         }
     }
 
@@ -850,7 +857,7 @@ impl FileManager {
         let path = match path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
-                self.message = Some(format!("Cannot open directory: {error}"));
+                self.set_message(Some(format!("Cannot open directory: {error}")));
                 return;
             }
         };
@@ -880,7 +887,7 @@ impl FileManager {
                 self.load_directory(path, entries, context);
                 self.refresh_disk(context);
             }
-            Err(error) => self.message = Some(format!("Cannot open directory: {error}")),
+            Err(error) => self.set_message(Some(format!("Cannot open directory: {error}"))),
         }
     }
 
@@ -926,7 +933,7 @@ impl FileManager {
                     self.load_directory(path, entries, context);
                     self.refresh_disk(context);
                 }
-                Err(error) => self.message = Some(format!("Cannot open directory: {error}")),
+                Err(error) => self.set_message(Some(format!("Cannot open directory: {error}"))),
             }
         }
     }
@@ -963,7 +970,7 @@ impl FileManager {
                             incomplete: false,
                         })
                     }
-                    Err(error) => self.message = Some(format!("Cannot read file size: {error}")),
+                    Err(error) => self.set_message(Some(format!("Cannot read file size: {error}"))),
                 }
             }
         }
@@ -1010,7 +1017,7 @@ impl FileManager {
             })
             .collect();
         self.exit_visual(context);
-        self.message = Some(format!("Yanked {} items.", selected.len()));
+        self.set_message(Some(format!("Yanked {} items.", selected.len())));
     }
 
     fn paste(&mut self, context: &egui::Context) {
@@ -1021,8 +1028,9 @@ impl FileManager {
             return;
         }
         if self.copied_files.is_empty() {
-            self.message =
-                Some("Nothing to paste. Select files and press yy, or y in Visual mode.".into());
+            self.set_message(Some(
+                "Nothing to paste. Select files and press yy, or y in Visual mode.".into(),
+            ));
             return;
         }
         let into_folder = self.settings.view == View::Tree
@@ -1119,7 +1127,7 @@ impl FileManager {
             self.save();
         }
         if let Err(error) = self.bookmarks.add(&path) {
-            self.message = Some(format!("Cannot save shared bookmarks: {error}"));
+            self.set_message(Some(format!("Cannot save shared bookmarks: {error}")));
         }
     }
 
@@ -1127,12 +1135,9 @@ impl FileManager {
         match self.selected.clone() {
             Some(path) if path.is_dir() => self.add_bookmark(path),
             None => self.add_bookmark(self.current.clone()),
-            Some(_) => {
-                self.message = Some(
-                    "Select a folder or clear the selection to bookmark the current directory."
-                        .into(),
-                )
-            }
+            Some(_) => self.set_message(Some(
+                "Select a folder or clear the selection to bookmark the current directory.".into(),
+            )),
         }
     }
 
@@ -1162,7 +1167,7 @@ impl FileManager {
                 })
         });
         if let Err(error) = result {
-            self.message = Some(format!("Cannot open file: {error}"));
+            self.set_message(Some(format!("Cannot open file: {error}")));
         }
     }
 
@@ -1178,7 +1183,7 @@ impl FileManager {
                 });
             })
         {
-            self.message = Some(format!("Cannot open Konsole: {error}"));
+            self.set_message(Some(format!("Cannot open Konsole: {error}")));
         }
     }
 
@@ -1212,7 +1217,7 @@ impl FileManager {
                 });
             })
         {
-            self.message = Some(format!("Cannot open Caja properties: {error}"));
+            self.set_message(Some(format!("Cannot open Caja properties: {error}")));
         }
     }
 
@@ -1373,7 +1378,7 @@ impl FileManager {
                     if restore {
                         self.refresh(context);
                     }
-                    self.message = Some("The file operation stopped unexpectedly.".into());
+                    self.set_message(Some("The file operation stopped unexpectedly.".into()));
                 }
             }
         }
@@ -1432,7 +1437,7 @@ impl FileManager {
                     self.entries = Arc::default();
                     self.tree_cache.clear();
                     self.tree_layout = None;
-                    self.message = Some(format!("Cannot read directory: {error}"));
+                    self.set_message(Some(format!("Cannot read directory: {error}")));
                 }
             }
         }
@@ -1483,15 +1488,15 @@ impl FileManager {
                         }
                     }
                     if result.complete && result.unreadable > 0 {
-                        self.message = Some(format!(
+                        self.set_message(Some(format!(
                             "Recursive media: {} unreadable directories skipped.",
                             result.unreadable
-                        ));
+                        )));
                     }
                 }
                 Err(error) => {
                     self.media_scan = None;
-                    self.message = Some(format!("Cannot scan media: {error}"));
+                    self.set_message(Some(format!("Cannot scan media: {error}")));
                 }
             }
         }
@@ -1527,7 +1532,9 @@ impl FileManager {
             if let Ok(result) = job.try_recv() {
                 match result {
                     Ok(disk) => self.disk = Some(disk),
-                    Err(error) => self.message = Some(format!("Cannot read disk usage: {error}")),
+                    Err(error) => {
+                        self.set_message(Some(format!("Cannot read disk usage: {error}")))
+                    }
                 }
                 self.disk_job = None;
             }
@@ -1544,9 +1551,9 @@ impl FileManager {
                     if path.parent() == Some(self.current.as_path()) {
                         self.refresh(context);
                     }
-                    self.message = Some(format!("Archive created: {}", path.display()));
+                    self.set_message(Some(format!("Archive created: {}", path.display())));
                 }
-                Err(error) => self.message = Some(format!("Cannot compress: {error}")),
+                Err(error) => self.set_message(Some(format!("Cannot compress: {error}"))),
             }
         }
     }
@@ -2380,7 +2387,7 @@ impl FileManager {
                 self.tree_cache.insert(path.to_path_buf(), children);
                 self.expanded.insert(path.to_path_buf());
             }
-            Err(error) => self.message = Some(format!("Cannot expand directory: {error}")),
+            Err(error) => self.set_message(Some(format!("Cannot expand directory: {error}"))),
         }
     }
 
@@ -2438,16 +2445,16 @@ impl FileManager {
                     limited = true;
                     break;
                 }
-                Err(error) => self.message = Some(format!("Cannot expand directory: {error}")),
+                Err(error) => self.set_message(Some(format!("Cannot expand directory: {error}"))),
             }
         }
         if limited {
-            self.message = Some(format!(
+            self.set_message(Some(format!(
                 "Recursive expansion limited to {RECURSIVE_MAX_DEPTH} levels, \
                  {RECURSIVE_MAX_FOLDERS} folders, {RECURSIVE_MAX_ENTRIES} scanned entries \
                  or {} ms. Open remaining folders manually.",
                 RECURSIVE_MAX_TIME.as_millis()
-            ));
+            )));
         }
     }
 
@@ -2611,7 +2618,7 @@ impl FileManager {
         let entries = match files::entries(&parent, self.settings.hidden, self.settings.sequences) {
             Ok(entries) => entries,
             Err(error) => {
-                self.message = Some(format!("Cannot open directory: {error}"));
+                self.set_message(Some(format!("Cannot open directory: {error}")));
                 return;
             }
         };
@@ -2979,7 +2986,7 @@ impl FileManager {
                     }
                     self.save();
                 } else if let Err(error) = self.bookmarks.remove(&bookmark.uri) {
-                    self.message = Some(format!("Cannot save shared bookmarks: {error}"));
+                    self.set_message(Some(format!("Cannot save shared bookmarks: {error}")));
                 }
                 ui.close_menu();
             }
@@ -2995,7 +3002,7 @@ impl FileManager {
             .arg(&bookmark.uri)
             .spawn()
         {
-            self.message = Some(format!("Cannot open bookmark: {error}"));
+            self.set_message(Some(format!("Cannot open bookmark: {error}")));
         }
     }
 
@@ -4990,7 +4997,7 @@ impl FileManager {
             self.scroll_to_selection = true;
         }
         if outcome.error.is_some() {
-            self.message = outcome.error;
+            self.set_message(outcome.error);
         }
     }
 
@@ -5140,7 +5147,7 @@ impl FileManager {
             return;
         };
         let Some(name) = name.to_str() else {
-            self.message = Some("Cannot edit a name that is not valid UTF-8.".into());
+            self.set_message(Some("Cannot edit a name that is not valid UTF-8.".into()));
             return;
         };
         let name = if !sources.is_empty() {
@@ -5396,10 +5403,10 @@ impl FileManager {
                         }
                         Err(error) => {
                             let error = format!("Cannot save name: {error}");
-                            self.message = Some(error.clone());
-                            folder.error = Some(error);
+                            folder.error = Some(error.clone());
                             folder.focus = true;
                             folder.submit = false;
+                            self.set_message(Some(error));
                         }
                     }
                     return;
@@ -5443,10 +5450,10 @@ impl FileManager {
                     }
                     Err(error) => {
                         let error = format!("Cannot save name: {error}");
-                        self.message = Some(error.clone());
                         folder.focus = true;
                         folder.submit = false;
-                        folder.error = Some(error);
+                        folder.error = Some(error.clone());
+                        self.set_message(Some(error));
                     }
                 }
             }
@@ -5489,7 +5496,7 @@ impl eframe::App for FileManager {
         });
         context.request_repaint_after(std::time::Duration::from_secs(1));
         if let Err(error) = self.bookmarks.poll() {
-            self.message = Some(format!("Cannot read shared bookmarks: {error}"));
+            self.set_message(Some(format!("Cannot read shared bookmarks: {error}")));
         }
         self.poll(context);
         if !self.confirm_empty_trash && self.pending_delete.is_empty() {
@@ -5498,6 +5505,16 @@ impl eframe::App for FileManager {
         self.toolbar(context);
         self.statusbar(context);
         self.sidebar(context);
+        if self.message.is_some() {
+            let remaining = self
+                .message_deadline
+                .saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                self.message = None;
+            } else {
+                context.request_repaint_after(remaining);
+            }
+        }
         if self.message.is_some() {
             egui::TopBottomPanel::bottom("messages")
                 .frame(egui::Frame::NONE.fill(context.style().visuals.panel_fill))
