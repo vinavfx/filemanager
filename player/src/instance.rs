@@ -8,6 +8,27 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+pub fn navigate_still(path: PathBuf, forward: bool) {
+    std::thread::spawn(move || {
+        use std::hash::{Hash, Hasher};
+        let mut display = std::collections::hash_map::DefaultHasher::new();
+        std::env::var_os("DISPLAY").hash(&mut display);
+        std::env::var_os("WAYLAND_DISPLAY").hash(&mut display);
+        let uid = rustix::process::getuid().as_raw();
+        let socket = std::env::var_os("XDG_RUNTIME_DIR")
+            .map_or_else(std::env::temp_dir, PathBuf::from)
+            .join(format!("still-files-{uid}/{:x}.sock", display.finish()));
+        let result = || -> io::Result<()> {
+            let mut stream = UnixStream::connect(socket)?;
+            stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+            stream.write_all(&[if forward { 3 } else { 2 }])?;
+            stream.write_all(path.as_os_str().as_bytes())?;
+            stream.shutdown(std::net::Shutdown::Write)
+        };
+        let _ = result();
+    });
+}
+
 pub enum Request {
     Open(Option<PathBuf>),
     Quit,

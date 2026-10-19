@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 pub enum Request {
     Open(Option<PathBuf>),
+    NavigateStill(PathBuf, bool),
     Quit,
 }
 
@@ -95,6 +96,10 @@ impl Instance {
                     stream.write_all(path.as_os_str().as_bytes())?;
                 }
             }
+            Request::NavigateStill(path, forward) => {
+                stream.write_all(&[if *forward { 3 } else { 2 }])?;
+                stream.write_all(path.as_os_str().as_bytes())?;
+            }
             Request::Quit => stream.write_all(&[1])?,
         }
         stream.shutdown(std::net::Shutdown::Write)?;
@@ -136,6 +141,10 @@ impl Instance {
                             bytes[1..].to_vec(),
                         )))
                     }),
+                    2 | 3 if bytes.len() > 1 => Request::NavigateStill(
+                        PathBuf::from(std::ffi::OsString::from_vec(bytes[1..].to_vec())),
+                        bytes[0] == 3,
+                    ),
                     1 if bytes.len() == 1 => Request::Quit,
                     _ => continue,
                 };

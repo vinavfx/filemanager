@@ -40,6 +40,7 @@ pub struct Player {
     stored: Option<Arc<Frame>>,
     preview: Option<Arc<Frame>>,
     preview_size: Option<Vec2>,
+    displayed_frame: Option<(Arc<Frame>, Vec2, Vec2)>,
     show_stored: bool,
     drag_origin: Vec2,
     pan_origin: Vec2,
@@ -90,6 +91,7 @@ impl Player {
             stored: None,
             preview: None,
             preview_size: None,
+            displayed_frame: None,
             show_stored: false,
             drag_origin: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
@@ -129,6 +131,7 @@ impl Player {
         self.media = None;
         self.preview = None;
         self.preview_size = None;
+        self.displayed_frame = None;
         self.auto_fit_window = true;
         self.path = None;
         self.loading = false;
@@ -662,12 +665,15 @@ impl Player {
                 }
                 let image_size = self.image_size() * self.zoom;
                 if let Some(frame) = frame.or_else(|| self.preview.clone()) {
+                    self.displayed_frame = Some((frame, self.origin, image_size));
+                }
+                if let Some((frame, origin, size)) = &self.displayed_frame {
                     ui.painter().add(Renderer::paint(
                         self.renderer.clone(),
-                        frame,
+                        frame.clone(),
                         rect,
-                        self.origin,
-                        image_size,
+                        *origin,
+                        *size,
                         self.channel,
                         self.rotation,
                     ));
@@ -995,6 +1001,13 @@ impl Player {
                         } else {
                             direction
                         });
+                }
+                Key::H | Key::L
+                    if !modifiers.shift && self.media.as_ref().is_some_and(Media::is_still) =>
+                {
+                    if let Some(path) = self.path.clone() {
+                        crate::instance::navigate_still(path, key == Key::L);
+                    }
                 }
                 Key::ArrowLeft | Key::H if !modifiers.shift => {
                     self.playback.set_direction(Direction::Stop);

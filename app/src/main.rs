@@ -1227,6 +1227,33 @@ impl FileManager {
         self.open_media(path, application);
     }
 
+    fn navigate_still(&mut self, path: &Path, forward: bool, context: &egui::Context) -> bool {
+        let Some(index) = self.visible_paths.iter().position(|item| item == path) else {
+            return false;
+        };
+        let candidates = if forward {
+            self.visible_paths[index + 1..].to_vec()
+        } else {
+            self.visible_paths[..index].iter().rev().cloned().collect()
+        };
+        let next = candidates.into_iter().find(|candidate| {
+            files::image_file(candidate)
+                && self
+                    .entries
+                    .iter()
+                    .chain(self.tree_cache.values().flatten())
+                    .any(|entry| {
+                        entry.path == *candidate && !entry.directory && entry.sequence.is_none()
+                    })
+        });
+        if let Some(next) = next {
+            self.select(Some(next.clone()), context);
+            self.scroll_to_selection = true;
+            self.open_media(&next, "player");
+        }
+        true
+    }
+
     fn open_media(&mut self, path: &Path, application: &str) {
         let executable = if application == "player" {
             let executable = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6989,6 +7016,15 @@ impl eframe::App for ResidentApp {
                     self.quitting = true;
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
+                }
+                instance::Request::NavigateStill(path, forward) => {
+                    if !self.root.navigate_still(&path, forward, context) {
+                        for (_, window) in &mut self.windows {
+                            if window.navigate_still(&path, forward, context) {
+                                break;
+                            }
+                        }
+                    }
                 }
                 instance::Request::Open(path) => {
                     if self.visible {

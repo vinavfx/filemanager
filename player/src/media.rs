@@ -46,6 +46,15 @@ pub struct Media {
 }
 
 impl Media {
+    pub fn is_still(&self) -> bool {
+        self.files.len() == 1
+            && image_extension(&self.path)
+            && !self
+                .path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains(['#', '%']))
+    }
+
     pub fn number(&self, index: usize) -> i64 {
         self.numbers.get(index).copied().unwrap_or(index as i64)
     }
