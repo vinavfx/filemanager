@@ -1904,7 +1904,9 @@ impl FileManager {
     }
 
     fn pane_shortcuts(&mut self, context: &egui::Context) {
-        if self.new_folder.is_some() || self.editing_path {
+        if self.new_folder.is_some()
+            || context.memory(|memory| memory.has_focus(egui::Id::new("path-input")))
+        {
             self.pending_window_command = false;
             return;
         }
@@ -2391,8 +2393,7 @@ impl FileManager {
     }
 
     fn text_input_focused(&self, context: &egui::Context) -> bool {
-        self.editing_path
-            || self.find_query.is_some()
+        self.find_query.is_some()
             || context
                 .memory(|memory| memory.focused())
                 .is_some_and(|id| egui::text_edit::TextEditState::load(context, id).is_some())
