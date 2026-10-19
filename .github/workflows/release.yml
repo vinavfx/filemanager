@@ -31,9 +31,10 @@ jobs:
       - name: Build and verify glibc 2.28 binaries
         run: |
           docker run --rm --volume "${PWD}:/work" still-files-release bash -euo pipefail -c '
-              cargo build --release --locked --manifest-path app/Cargo.toml
-              cargo build --release --locked --manifest-path player/Cargo.toml
+              cargo rustc --release --locked --manifest-path app/Cargo.toml -- -C relocation-model=static -C link-arg=-no-pie
+              cargo rustc --release --locked --manifest-path player/Cargo.toml -- -C relocation-model=static -C link-arg=-no-pie
               for binary in app/target/release/still-files player/target/release/player; do
+                  readelf --file-header "$binary" | grep -q "Type:.*EXEC"
                   required=$(readelf --version-info "$binary" | grep -oE "GLIBC_[0-9.]+" | sort -Vu | tail -n 1)
                   printf "%s requires %s\n" "$binary" "$required"
                   if [[ "$(printf "%s\n" GLIBC_2.28 "$required" | sort -V | tail -n 1)" != GLIBC_2.28 ]]; then
@@ -70,7 +71,7 @@ jobs:
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
               gh release create "$VERSION" --verify-tag --draft \
                   --title "Still Files ${VERSION}" \
-                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and run ./start.sh. The launcher does not compile or install anything. Keep start.sh, player, and still-files in the same directory. Built on Rocky Linux 8 and checked to require no newer than glibc 2.28, for compatibility with Rocky Linux 8 and other Linux systems with glibc 2.28 or newer. Requires an X11 or Wayland desktop and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
+                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and double-click still-files. The binaries use the ELF executable format instead of PIE so older file managers do not identify them as shared libraries. A start.sh launcher is also included; it does not compile or install anything. Keep start.sh, player, and still-files in the same directory. Built on Rocky Linux 8 and checked to require no newer than glibc 2.28, for compatibility with Rocky Linux 8 and other Linux systems with glibc 2.28 or newer. Requires an X11 or Wayland desktop and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
           fi
           gh release upload "$VERSION" dist/*.tar.gz dist/*.sha256 --clobber
           gh release edit "$VERSION" --draft=false --latest
