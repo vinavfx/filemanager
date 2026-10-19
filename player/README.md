@@ -69,7 +69,8 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Retroceder / avanzar 10                               | `{` / `}`                       |
 | Retroceder / avanzar 100                              | `Ctrl+[` / `Ctrl+]`             |
 | Cambiar bucle                                         | `;`                             |
-| Marcar entrada / salida                               | `I` / `O`                       |
+| Girar hacia −90° / +90°, pasando por 0°               | `Y` / `I`                       |
+| Marcar salida                                         | `O`                             |
 | Restablecer entrada / salida                          | `Mayús+I` / `Mayús+O`           |
 | Activar puntos de entrada/salida                      | `P`                             |
 | Centrar / ajustar imagen / restablecer vista          | `Insert` / `Retroceso` / `Supr` |

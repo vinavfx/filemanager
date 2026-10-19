@@ -1046,7 +1046,12 @@ impl Player {
                     self.playback.set_loop(self.playback.loop_mode.next());
                 }
                 Key::I if modifiers.shift => self.playback.in_point = 0,
-                Key::I => self.playback.in_point = self.playback.frame,
+                Key::Y if !modifiers.shift && !repeat => {
+                    self.set_rotation((self.rotation - 90).max(-90));
+                }
+                Key::I if !modifiers.shift && !repeat => {
+                    self.set_rotation((self.rotation + 90).min(90));
+                }
                 Key::O => {
                     self.playback.out_point = if modifiers.shift {
                         self.playback.count.saturating_sub(1)
