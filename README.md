@@ -2,6 +2,19 @@
 
 Gestor de archivos minimalista para Linux, escrito en Rust con egui, con Player integrado para imágenes, secuencias y vídeos.
 
+## Ejecutables para Linux
+
+Descarga el paquete `still-files-vX.Y.Z-linux-x86_64.tar.gz` desde
+[GitHub Releases](https://github.com/vinavfx/filemanager/releases/latest), extráelo y ejecuta `./still-files` desde la carpeta extraída. No
+necesitas Rust. Mantén el ejecutable `player` junto a `still-files` para abrir medios con el visor integrado.
+
+Requiere Linux x86_64, glibc 2.35 o posterior, un escritorio X11 o Wayland y OpenGL. Las herramientas opcionales se indican en «Arranque».
+Puedes verificar la descarga con `sha256sum -c still-files-vX.Y.Z-linux-x86_64.tar.gz.sha256`.
+
+La publicación es automática al subir una etiqueta nueva con formato `vX.Y.Z`: GitHub Actions compila ambos ejecutables en Ubuntu 22.04 con
+los archivos `Cargo.lock` y adjunta el paquete y su suma SHA-256 al release. El ejecutable es portable entre carpetas, no está enlazado
+estáticamente ni incluye todas las bibliotecas del sistema.
+
 ## Bloques independientes
 
 | Bloque                     | Fuentes y manifiesto                | Lanzador                      |
@@ -21,7 +34,8 @@ Para compilar ambos sin descargar dependencias:
 
 ## Arranque
 
-Requiere Rust 1.89 o superior, un escritorio X11 o Wayland y OpenGL. Herramientas utilizadas:
+Para compilar desde el código fuente se requiere Rust 1.89 o superior. La aplicación necesita un escritorio X11 o Wayland y OpenGL.
+Herramientas utilizadas:
 
 | Herramienta              | Función                                                                  |
 | ------------------------ | ------------------------------------------------------------------------ |

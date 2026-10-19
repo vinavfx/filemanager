@@ -1311,13 +1311,23 @@ impl FileManager {
 
     fn open_media(&mut self, path: &Path, application: &str) {
         let executable = if application == "player" {
-            let executable = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .map(|directory| directory.join("player/start.sh"))
-                .filter(|launcher| launcher.is_file());
+            let executable = std::env::current_exe()
+                .ok()
+                .and_then(|executable| {
+                    executable
+                        .parent()
+                        .map(|directory| directory.join("player"))
+                })
+                .filter(|executable| executable.is_file())
+                .or_else(|| {
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .map(|directory| directory.join("player/start.sh"))
+                        .filter(|launcher| launcher.is_file())
+                });
             let Some(executable) = executable else {
                 self.set_message(Some(
-                    "Cannot find the integrated Player launcher at player/start.sh.".into(),
+                    "Cannot find Player next to Still Files or at player/start.sh.".into(),
                 ));
                 return;
             };
