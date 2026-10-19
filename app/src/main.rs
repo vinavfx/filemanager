@@ -1,4 +1,5 @@
 mod bookmarks;
+mod conversion;
 mod drag;
 mod files;
 mod icons;
@@ -459,6 +460,7 @@ struct FileManager {
     pending_delete: Vec<PathBuf>,
     trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
+    conversion_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     message: Option<String>,
     message_deadline: std::time::Instant,
 }
@@ -597,6 +599,7 @@ impl FileManager {
             pending_delete: Vec::new(),
             trash_focus: Some(false),
             compression_job: None,
+            conversion_job: None,
             message: config_error.or(bookmark_error),
             message_deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         };
@@ -1515,7 +1518,35 @@ impl FileManager {
         });
     }
 
+    fn convert(&mut self, entry: Entry, format: conversion::Format, context: &egui::Context) {
+        if self.conversion_job.is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let context = context.clone();
+        self.conversion_job = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(conversion::convert(&entry, format));
+            context.request_repaint();
+        });
+    }
+
     fn poll(&mut self, context: &egui::Context) {
+        if let Some(result) = self
+            .conversion_job
+            .as_ref()
+            .and_then(|job| job.try_recv().ok())
+        {
+            self.conversion_job = None;
+            self.media_cache.clear();
+            self.refresh(context);
+            match result {
+                Ok(path) => {
+                    self.set_message(Some(format!("Conversion created: {}", path.display())))
+                }
+                Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
+            }
+        }
         if let Some(job) = &mut self.operation_job {
             let mut hidden = Vec::new();
             job.pending_visibility
@@ -3768,6 +3799,12 @@ impl FileManager {
                         });
                     },
                 );
+                if self.conversion_job.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Converting media…");
+                    });
+                }
                 if self.compression_job.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -3874,6 +3911,31 @@ impl FileManager {
                         ui.close_menu();
                     }
                 }
+            }
+            if !entry.directory && !files::is_trash(&self.current) {
+                ui.separator();
+                for format in [
+                    conversion::Format::Png,
+                    conversion::Format::Mp4,
+                    conversion::Format::Mov,
+                ] {
+                    let response = self.icons.button(
+                        ui,
+                        format.label(),
+                        "media-record",
+                        self.conversion_job.is_none(),
+                    );
+                    let response = if format == conversion::Format::Mov {
+                        response.on_hover_text("Apple ProRes 422 HQ")
+                    } else {
+                        response
+                    };
+                    if response.clicked() {
+                        self.convert(entry.clone(), format, context);
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
             }
             if entry.directory {
                 if self
