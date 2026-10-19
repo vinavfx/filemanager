@@ -59,29 +59,35 @@ imagen.
 
 Los atajos se desactivan al editar texto para no interceptar la escritura.
 
-| Acción                                                | Teclas                          |
-| ----------------------------------------------------- | ------------------------------- |
-| Parada / reversa                                      | `K` / `J`                       |
-| Alternar reproducción y recuperar el sentido anterior | `Espacio`                       |
-| Entrada / salida                                      | `Inicio` / `Fin`                |
-| Fotograma anterior / siguiente (pausa)                | `←` o `H` / `→` o `L`           |
-| Anterior / siguiente                                  | `[` / `]`                       |
-| Retroceder / avanzar 10                               | `{` / `}`                       |
-| Retroceder / avanzar 100                              | `Ctrl+[` / `Ctrl+]`             |
-| Cambiar bucle                                         | `;`                             |
-| Girar hacia −90° / +90°, pasando por 0°               | `Y` / `I`                       |
-| Marcar salida                                         | `O`                             |
-| Restablecer entrada / salida                          | `Mayús+I` / `Mayús+O`           |
-| Activar puntos de entrada/salida                      | `P`                             |
-| Centrar / ajustar imagen / restablecer vista          | `Insert` / `Retroceso` / `Supr` |
-| Duplicar / reducir a la mitad / restablecer zoom      | `=` / `-` / `0`                 |
-| Pantalla completa / ajustar imagen al visor           | `U` / `F`                       |
-| Mostrar u ocultar interfaz / HUD                      | Acento grave / `Ctrl+H`         |
-| Canal rojo / verde / azul / alfa / predeterminado     | `R` / `G` / `B` / `A` / `C`     |
-| Guardar / mostrar fotograma de referencia             | `Mayús+E` / `E`                 |
-| Abrir / cerrar archivo / salir                        | `Ctrl+O` / `Ctrl+W` / `Ctrl+Q`  |
-| Cerrar ventana y permanecer en segundo plano          | `Ctrl+E`                        |
-| Recargar archivo / fotograma                          | `Ctrl+R` / `Ctrl+Mayús+R`       |
+| Acción                                                | Teclas                            |
+| ----------------------------------------------------- | --------------------------------- |
+| Parada / reversa                                      | `K` / `J`                         |
+| Alternar reproducción y recuperar el sentido anterior | `Espacio`                         |
+| Entrada / salida                                      | `Inicio` / `Fin`                  |
+| Fotograma anterior / siguiente (pausa)                | `←` o `H` / `→` o `L`             |
+| Anterior / siguiente                                  | `[` / `]`                         |
+| Retroceder / avanzar 10                               | `Mayús+H` / `Mayús+L` o `{` / `}` |
+| Retroceder / avanzar 100                              | `Ctrl+[` / `Ctrl+]`               |
+| Cambiar bucle                                         | `;`                               |
+| Girar hacia −90° / +90°, pasando por 0°               | `Y` / `I`                         |
+| Marcar salida                                         | `O`                               |
+| Restablecer entrada / salida                          | `Mayús+I` / `Mayús+O`             |
+| Activar puntos de entrada/salida                      | `P`                               |
+| Centrar / ajustar imagen / restablecer vista          | `Insert` / `Retroceso` / `Supr`   |
+| Duplicar / reducir a la mitad / restablecer zoom      | `=` / `-` / `0`                   |
+| Pantalla completa / ajustar imagen al visor           | `U` / `F`                         |
+| Pantalla completa sin franjas (recorta sin deformar)  | `Ctrl+U`                          |
+| Llenar el visor sin franjas (recorta sin deformar)    | `Ctrl+F`                          |
+| Mostrar u ocultar interfaz / HUD                      | Acento grave / `Ctrl+H`           |
+| Canal rojo / verde / azul / alfa / predeterminado     | `R` / `G` / `B` / `A` / `C`       |
+| Guardar / mostrar fotograma de referencia             | `Mayús+E` / `E`                   |
+| Abrir / cerrar archivo / salir                        | `Ctrl+O` / `Ctrl+W` / `Ctrl+Q`    |
+| Cerrar ventana y permanecer en segundo plano          | `Ctrl+E`                          |
+| Recargar archivo / fotograma                          | `Ctrl+R` / `Ctrl+Mayús+R`         |
+
+`U` muestra la imagen completa; `Ctrl+U` llena la pantalla conservando las proporciones y recortando los bordes que sobresalen. Repetir el
+atajo activo sale de pantalla completa; el otro cambia de modo. `F` muestra toda la imagen dentro del visor y `Ctrl+F` lo llena sin cambiar
+el estado de pantalla completa. `Ctrl+D` queda libre.
 
 El avance manual de fotogramas ignora las marcas de entrada/salida; la reproducción sigue respetándolas cuando están activadas.
 

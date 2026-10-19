@@ -33,6 +33,7 @@ pub struct Player {
     auto_fit_window: bool,
     viewer: Rect,
     fullscreen: bool,
+    fit_fill: bool,
     show_ui: bool,
     fullscreen_previous_ui: bool,
     hud: bool,
@@ -84,6 +85,7 @@ impl Player {
             auto_fit_window: true,
             viewer: Rect::NOTHING,
             fullscreen: false,
+            fit_fill: false,
             show_ui: true,
             fullscreen_previous_ui: true,
             hud: false,
@@ -587,9 +589,14 @@ impl Player {
 
     fn fit_view(&mut self) {
         let size = self.image_size();
-        self.zoom = (self.viewer.width() / size.x)
-            .min(self.viewer.height() / size.y)
-            .max(0.0001);
+        let width_ratio = self.viewer.width() / size.x;
+        let height_ratio = self.viewer.height() / size.y;
+        self.zoom = if self.fit_fill {
+            width_ratio.max(height_ratio)
+        } else {
+            width_ratio.min(height_ratio)
+        }
+        .max(0.0001);
         self.origin = (self.viewer.size() - size * self.zoom) / 2.0;
         self.fit = true;
     }
@@ -624,7 +631,7 @@ impl Player {
             }
         });
         if self.fullscreen {
-            self.fullscreen(context);
+            self.fullscreen(context, self.fit_fill);
         }
         context.send_viewport_cmd(ViewportCommand::Maximized(false));
         context.send_viewport_cmd(ViewportCommand::InnerSize(target));
@@ -896,12 +903,14 @@ impl Player {
         }
     }
 
-    fn fullscreen(&mut self, context: &egui::Context) {
-        self.fullscreen = !self.fullscreen;
-        if self.fullscreen {
+    fn fullscreen(&mut self, context: &egui::Context, fill: bool) {
+        let was_fullscreen = self.fullscreen;
+        self.fullscreen = !was_fullscreen || self.fit_fill != fill;
+        self.fit_fill = self.fullscreen && fill;
+        if !was_fullscreen {
             self.fullscreen_previous_ui = self.show_ui;
             self.show_ui = false;
-        } else {
+        } else if !self.fullscreen {
             self.show_ui = self.fullscreen_previous_ui;
         }
         self.fit_view();
@@ -945,11 +954,10 @@ impl Player {
                     Key::E if !modifiers.shift => self.hide_requested = true,
                     Key::W if !modifiers.shift => self.close(),
                     Key::H if !modifiers.shift => self.hud = !self.hud,
-                    Key::D if !modifiers.shift => {
-                        self.playback.seek(self.playback.frame as i64 - 10, false)
-                    }
-                    Key::U if !modifiers.shift => {
-                        self.playback.seek(self.playback.frame as i64 + 10, false)
+                    Key::U if !modifiers.shift => self.fullscreen(context, true),
+                    Key::F if !modifiers.shift => {
+                        self.fit_fill = true;
+                        self.fit_view();
                     }
                     Key::R if modifiers.shift => {
                         self.loader
@@ -975,7 +983,9 @@ impl Player {
             if modifiers.shift
                 && !matches!(
                     key,
-                    Key::I
+                    Key::H
+                        | Key::L
+                        | Key::I
                         | Key::O
                         | Key::E
                         | Key::OpenBracket
@@ -1008,6 +1018,12 @@ impl Player {
                     if let Some(path) = self.path.clone() {
                         crate::instance::navigate_still(path, key == Key::L);
                     }
+                }
+                Key::H if modifiers.shift => {
+                    self.playback.seek(self.playback.frame as i64 - 10, false);
+                }
+                Key::L if modifiers.shift => {
+                    self.playback.seek(self.playback.frame as i64 + 10, false);
                 }
                 Key::ArrowLeft | Key::H if !modifiers.shift => {
                     self.playback.set_direction(Direction::Stop);
@@ -1077,8 +1093,11 @@ impl Player {
                     self.set_zoom(self.zoom * 0.5, self.focus(context))
                 }
                 Key::Num0 if !modifiers.shift => self.set_zoom(1.0, self.focus(context)),
-                Key::U if !modifiers.shift => self.fullscreen(context),
-                Key::F if !modifiers.shift => self.fit_view(),
+                Key::U if !modifiers.shift => self.fullscreen(context, false),
+                Key::F if !modifiers.shift => {
+                    self.fit_fill = false;
+                    self.fit_view();
+                }
                 Key::Backtick if !modifiers.shift => self.show_ui = !self.show_ui,
                 Key::R | Key::G | Key::B | Key::A if !modifiers.shift && !repeat => {
                     let channel = match key {
