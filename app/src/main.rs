@@ -2467,7 +2467,12 @@ impl FileManager {
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            row.abs_diff(current).to_string(),
+            if row == current {
+                row + 1
+            } else {
+                row.abs_diff(current)
+            }
+            .to_string(),
             egui::FontId::monospace(10.0),
             if row == current {
                 visual_accent(ui.visuals().dark_mode)
