@@ -76,7 +76,6 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Centrar / ajustar imagen / restablecer vista          | `Insert` / `Retroceso` / `Supr`   |
 | Duplicar / reducir a la mitad / restablecer zoom      | `=` / `-` / `0`                   |
 | Pantalla completa / ajustar imagen al visor           | `U` / `F`                         |
-| Pantalla completa sin franjas (recorta sin deformar)  | `Ctrl+U`                          |
 | Llenar el visor sin franjas (recorta sin deformar)    | `Ctrl+F`                          |
 | Mostrar u ocultar interfaz / HUD                      | Acento grave / `Ctrl+H`           |
 | Canal rojo / verde / azul / alfa / predeterminado     | `R` / `G` / `B` / `A` / `C`       |
@@ -85,9 +84,9 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Cerrar ventana y permanecer en segundo plano          | `Ctrl+E`                          |
 | Recargar archivo / fotograma                          | `Ctrl+R` / `Ctrl+Mayús+R`         |
 
-`U` muestra la imagen completa; `Ctrl+U` llena la pantalla conservando las proporciones y recortando los bordes que sobresalen. Repetir el
-atajo activo sale de pantalla completa; el otro cambia de modo. `F` muestra toda la imagen dentro del visor y `Ctrl+F` lo llena sin cambiar
-el estado de pantalla completa. `Ctrl+D` queda libre.
+`U` alterna la pantalla completa conservando el modo de ajuste elegido. `F` muestra toda la imagen y `Ctrl+F` llena el visor sin franjas,
+conservando las proporciones y recortando lo que sobresale. El botón `Fit` de la barra superior alterna entre ambos ajustes y aparece
+activado al rellenar el visor. `Ctrl+U` y `Ctrl+D` quedan libres.
 
 El avance manual de fotogramas ignora las marcas de entrada/salida; la reproducción sigue respetándolas cuando están activadas.
 

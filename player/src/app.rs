@@ -367,6 +367,14 @@ impl Player {
                             self.set_zoom(value, self.viewer.center());
                         }
                     }
+                    if ui
+                        .selectable_label(self.fit && self.fit_fill, "Fit")
+                        .on_hover_text("Fill the viewer without black bars (Ctrl+F)")
+                        .clicked()
+                    {
+                        self.fit_fill = !(self.fit && self.fit_fill);
+                        self.fit_view();
+                    }
                     ui.separator();
                     for (rotation, label) in [(-90, "−90°"), (0, "0°"), (90, "+90°")] {
                         if ui
@@ -631,7 +639,7 @@ impl Player {
             }
         });
         if self.fullscreen {
-            self.fullscreen(context, self.fit_fill);
+            self.fullscreen(context);
         }
         context.send_viewport_cmd(ViewportCommand::Maximized(false));
         context.send_viewport_cmd(ViewportCommand::InnerSize(target));
@@ -903,14 +911,12 @@ impl Player {
         }
     }
 
-    fn fullscreen(&mut self, context: &egui::Context, fill: bool) {
-        let was_fullscreen = self.fullscreen;
-        self.fullscreen = !was_fullscreen || self.fit_fill != fill;
-        self.fit_fill = self.fullscreen && fill;
-        if !was_fullscreen {
+    fn fullscreen(&mut self, context: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        if self.fullscreen {
             self.fullscreen_previous_ui = self.show_ui;
             self.show_ui = false;
-        } else if !self.fullscreen {
+        } else {
             self.show_ui = self.fullscreen_previous_ui;
         }
         self.fit_view();
@@ -954,7 +960,6 @@ impl Player {
                     Key::E if !modifiers.shift => self.hide_requested = true,
                     Key::W if !modifiers.shift => self.close(),
                     Key::H if !modifiers.shift => self.hud = !self.hud,
-                    Key::U if !modifiers.shift => self.fullscreen(context, true),
                     Key::F if !modifiers.shift => {
                         self.fit_fill = true;
                         self.fit_view();
@@ -1093,7 +1098,7 @@ impl Player {
                     self.set_zoom(self.zoom * 0.5, self.focus(context))
                 }
                 Key::Num0 if !modifiers.shift => self.set_zoom(1.0, self.focus(context)),
-                Key::U if !modifiers.shift => self.fullscreen(context, false),
+                Key::U if !modifiers.shift => self.fullscreen(context),
                 Key::F if !modifiers.shift => {
                     self.fit_fill = false;
                     self.fit_view();
