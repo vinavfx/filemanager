@@ -98,6 +98,10 @@ struct Settings {
     hidden: bool,
     sequences: bool,
     #[serde(skip)]
+    recursive_tree: bool,
+    #[serde(skip)]
+    recursive_grid: bool,
+    #[serde(skip)]
     recursive_media: bool,
     dark_mode: bool,
 }
@@ -117,6 +121,8 @@ impl Default for Settings {
             media_zoom: 1.0,
             hidden: false,
             sequences: true,
+            recursive_tree: false,
+            recursive_grid: false,
             recursive_media: false,
             dark_mode: true,
         }
@@ -140,23 +146,27 @@ impl Settings {
         }
     }
 
+    fn recursive(&self) -> bool {
+        match self.view {
+            View::Tree => self.recursive_tree,
+            View::Grid => self.recursive_grid,
+            View::Media => self.recursive_media,
+        }
+    }
+
+    fn recursive_mut(&mut self) -> &mut bool {
+        match self.view {
+            View::Tree => &mut self.recursive_tree,
+            View::Grid => &mut self.recursive_grid,
+            View::Media => &mut self.recursive_media,
+        }
+    }
+
     fn set_view(&mut self, view: View) {
         if view == View::Media && self.view != View::Media {
             self.media_return_view = self.view;
         }
         self.view = view;
-    }
-
-    fn toggle_media(&mut self) {
-        let view = if self.view == View::Media {
-            match self.media_return_view {
-                View::Tree => View::Tree,
-                _ => View::Grid,
-            }
-        } else {
-            View::Media
-        };
-        self.set_view(view);
     }
 }
 
@@ -336,6 +346,12 @@ struct DirectoryContents {
     tree_cache: HashMap<PathBuf, Vec<Entry>>,
 }
 
+struct CachedViewContents {
+    entries: Arc<Vec<Entry>>,
+    tree_cache: HashMap<PathBuf, Vec<Entry>>,
+    media_layout: MediaLayout,
+}
+
 struct CachedMediaDirectory {
     path: PathBuf,
     hidden: bool,
@@ -369,6 +385,7 @@ struct MarqueeSelection {
 struct FileManager {
     external_drag: drag::ExternalDrag,
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
+    cached_view: Option<CachedViewContents>,
     directory_frame: Option<DirectoryFrame>,
     preparing_directory: bool,
     wait_for_thumbnails: bool,
@@ -506,6 +523,7 @@ impl FileManager {
         let mut app = Self {
             external_drag,
             directory_refresh: None,
+            cached_view: None,
             directory_frame: None,
             preparing_directory: false,
             wait_for_thumbnails: false,
@@ -637,14 +655,45 @@ impl FileManager {
         self.retain_visible_selection(context);
     }
 
+    fn set_view(&mut self, view: View, context: &egui::Context) {
+        let recursive = self.settings.recursive();
+        self.settings.set_view(view);
+        if self.settings.recursive() != recursive {
+            let cached = self.cached_view.take();
+            let previous = self
+                .directory_refresh
+                .is_none()
+                .then(|| CachedViewContents {
+                    entries: Arc::clone(&self.entries),
+                    tree_cache: std::mem::take(&mut self.tree_cache),
+                    media_layout: std::mem::take(&mut self.media_layout),
+                });
+            let contents = cached.unwrap_or_else(|| CachedViewContents {
+                entries: Arc::default(),
+                tree_cache: HashMap::new(),
+                media_layout: MediaLayout::default(),
+            });
+            self.entries = contents.entries;
+            self.tree_cache = contents.tree_cache;
+            self.media_layout = contents.media_layout;
+            self.tree_layout = None;
+            self.directory_frame = None;
+            self.preparing_directory = false;
+            self.refresh(context);
+            self.cached_view = previous;
+        }
+        self.save();
+    }
+
     fn refresh(&mut self, context: &egui::Context) {
+        self.cached_view = None;
         self.media_cache.clear();
         self.media_directories = Arc::default();
         self.media_watch = None;
         self.wait_for_thumbnails = false;
         self.media_scan = None;
         self.directory_refresh = None;
-        if self.settings.recursive_media && !files::is_trash(&self.current) {
+        if self.settings.recursive() && !files::is_trash(&self.current) {
             self.start_media_scan(context);
         } else {
             let current = self.current.clone();
@@ -780,6 +829,7 @@ impl FileManager {
     }
 
     fn load_directory(&mut self, path: PathBuf, mut entries: Vec<Entry>, context: &egui::Context) {
+        self.cached_view = None;
         if let Some(order) = self.settings.entry_order.get(&path) {
             order_entries(&mut entries, order);
         }
@@ -826,7 +876,7 @@ impl FileManager {
             self.media_scan = None;
             self.select(None, context);
             self.refresh(context);
-        } else if self.settings.recursive_media {
+        } else if self.settings.recursive() {
             self.select(None, context);
             if let Some(index) = self.media_cache.iter().position(|cached| {
                 cached.path == self.current
@@ -927,7 +977,7 @@ impl FileManager {
             }
             return;
         }
-        let entries = if self.settings.recursive_media {
+        let entries = if self.settings.recursive() {
             std::fs::read_dir(&path).map(|_| Vec::new())
         } else {
             files::entries(&path, self.settings.hidden, self.settings.sequences)
@@ -975,7 +1025,7 @@ impl FileManager {
                 self.load_directory(path, Vec::new(), context);
                 return;
             }
-            let entries = if self.settings.recursive_media {
+            let entries = if self.settings.recursive() {
                 std::fs::read_dir(&path).map(|_| Vec::new())
             } else {
                 files::entries(&path, self.settings.hidden, self.settings.sequences)
@@ -1766,7 +1816,7 @@ impl FileManager {
     }
 
     fn watch_media_directories(&mut self, context: &egui::Context) {
-        if !self.settings.recursive_media
+        if !self.settings.recursive()
             || self.media_scan.is_some()
             || self.media_directories.is_empty()
             || self.operation_job.is_some()
@@ -2013,13 +2063,20 @@ impl FileManager {
             if !self.text_input_focused(context)
                 && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::M))
             {
-                self.settings.toggle_media();
-                self.save();
+                let view = if self.settings.view == View::Media {
+                    match self.settings.media_return_view {
+                        View::Tree => View::Tree,
+                        _ => View::Grid,
+                    }
+                } else {
+                    View::Media
+                };
+                self.set_view(view, context);
             }
             if !self.text_input_focused(context)
                 && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::R))
             {
-                self.settings.recursive_media = !self.settings.recursive_media;
+                *self.settings.recursive_mut() = !self.settings.recursive();
                 self.refresh(context);
                 self.save();
             }
@@ -2066,8 +2123,7 @@ impl FileManager {
                 if context.input_mut(|input| input.consume_key(modifiers, key))
                     && self.settings.view != view
                 {
-                    self.settings.set_view(view);
-                    self.save();
+                    self.set_view(view, context);
                 }
             }
         }
@@ -2825,8 +2881,8 @@ impl FileManager {
                             self.refresh(context);
                             self.save();
                         }
-                        if recursive_media_button(ui, self.settings.recursive_media).clicked() {
-                            self.settings.recursive_media = !self.settings.recursive_media;
+                        if recursive_media_button(ui, self.settings.recursive()).clicked() {
+                            *self.settings.recursive_mut() = !self.settings.recursive();
                             self.refresh(context);
                             self.save();
                         }
@@ -2842,8 +2898,7 @@ impl FileManager {
                         ui.add_space(8.0);
                         for view in [View::Media, View::Grid, View::Tree] {
                             if view_button(ui, view, self.settings.view == view).clicked() {
-                                self.settings.set_view(view);
-                                self.save();
+                                self.set_view(view, context);
                             }
                         }
                     },
@@ -2911,7 +2966,6 @@ impl FileManager {
             .map(|entry| entry.path.clone());
         self.search = None;
         self.sidebar_focused = false;
-        self.settings.recursive_media = false;
         if self.settings.view == View::Media
             && !path.is_dir()
             && !files::image_file(&path)
@@ -2919,6 +2973,7 @@ impl FileManager {
         {
             self.settings.set_view(View::Grid);
         }
+        *self.settings.recursive_mut() = false;
         self.thumbnails.cancel();
         if parent != self.current {
             self.history.truncate(self.position + 1);
@@ -5309,7 +5364,7 @@ impl FileManager {
                     continue;
                 };
                 let target = if parent == self.current
-                    || (self.settings.recursive_media && entry.path.starts_with(&self.current))
+                    || (self.settings.recursive() && entry.path.starts_with(&self.current))
                 {
                     Arc::make_mut(&mut self.entries)
                 } else if let Some(entries) = self.tree_cache.get_mut(parent) {
@@ -5723,7 +5778,7 @@ impl FileManager {
             let selected = selected
                 .filter(|path| {
                     path.parent() == Some(self.current.as_path())
-                        || ((self.settings.view == View::Tree || self.settings.recursive_media)
+                        || ((self.settings.view == View::Tree || self.settings.recursive())
                             && path != &self.current
                             && path.starts_with(&self.current))
                 })
@@ -6347,7 +6402,7 @@ impl eframe::App for FileManager {
                             "Loading folder…"
                         } else if files::is_trash(&self.current) {
                             "Trash is empty"
-                        } else if self.settings.recursive_media {
+                        } else if self.settings.recursive() {
                             "No media found"
                         } else {
                             "This folder is empty"
