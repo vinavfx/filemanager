@@ -54,6 +54,7 @@ jobs:
           mkdir -p "dist/${package}"
           install -m 755 app/target/release/still-files "dist/${package}/still-files"
           install -m 755 player/target/release/player "dist/${package}/player"
+          install -m 755 packaging/start.sh "dist/${package}/start.sh"
           install -m 644 README.md "dist/${package}/README.md"
           install -m 644 player/README.md "dist/${package}/PLAYER.md"
           install -m 644 player/LICENSE "dist/${package}/PLAYER-LICENSE"
@@ -69,7 +70,7 @@ jobs:
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
               gh release create "$VERSION" --verify-tag --draft \
                   --title "Still Files ${VERSION}" \
-                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and run ./still-files. Keep player alongside still-files. Built on Rocky Linux 8 and checked to require no newer than glibc 2.28, for compatibility with Rocky Linux 8 and other Linux systems with glibc 2.28 or newer. Requires an X11 or Wayland desktop and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
+                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and run ./start.sh. The launcher does not compile or install anything. Keep start.sh, player, and still-files in the same directory. Built on Rocky Linux 8 and checked to require no newer than glibc 2.28, for compatibility with Rocky Linux 8 and other Linux systems with glibc 2.28 or newer. Requires an X11 or Wayland desktop and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
           fi
           gh release upload "$VERSION" dist/*.tar.gz dist/*.sha256 --clobber
           gh release edit "$VERSION" --draft=false --latest

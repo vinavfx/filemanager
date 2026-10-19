@@ -4,9 +4,13 @@ Gestor de archivos minimalista para Linux, escrito en Rust con egui, con Player 
 
 ## Ejecutables para Linux
 
-Descarga el paquete `still-files-vX.Y.Z-linux-x86_64.tar.gz` desde
-[GitHub Releases](https://github.com/vinavfx/filemanager/releases/latest), extráelo y ejecuta `./still-files` desde la carpeta extraída. No
-necesitas Rust. Mantén el ejecutable `player` junto a `still-files` para abrir medios con el visor integrado.
+Descarga el paquete `still-files-vX.Y.Z-linux-x86_64.tar.gz` desde [GitHub Releases](https://github.com/vinavfx/filemanager/releases/latest)
+y extráelo. Los paquetes que incluyen `start.sh` se abren con ese lanzador: ejecuta `./start.sh` o utiliza «Ejecutar como un programa» en su
+menú contextual, si el escritorio ofrece esa opción. Si el doble clic abre un editor, el gestor de archivos está configurado para mostrar
+los scripts en lugar de ejecutarlos.
+
+El lanzador no compila ni instala nada y funciona aunque la ruta contenga espacios. No necesitas Rust. Mantén `start.sh`, `still-files` y
+`player` en la misma carpeta. En los paquetes anteriores sin lanzador, ejecuta `./still-files` desde una terminal.
 
 Desde `v0.1.2`, requiere Linux x86_64 con glibc 2.28 o posterior, como Rocky Linux 8, un escritorio X11 o Wayland y OpenGL. El paquete
 `v0.1.1` requiere glibc 2.35 o posterior. Las herramientas opcionales se indican en «Arranque». Puedes verificar la descarga con
