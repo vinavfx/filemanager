@@ -1,4 +1,5 @@
 use crate::playback::Rate;
+use crate::thumbnail_cache::{cache_directory, fingerprint, thumbnail_path};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -7,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 pub const CACHE_LIMIT: usize = 24 * 1024 * 1024 * 1024;
 const PRELOAD_FRAMES: usize = 4;
@@ -422,25 +423,7 @@ fn cached_preview(path: &Path) -> Option<(Frame, (u32, u32))> {
     if !image_extension(&path) {
         return None;
     }
-    let metadata = path.metadata().ok()?;
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    metadata.len().hash(&mut hasher);
-    metadata
-        .modified()
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-        .hash(&mut hasher);
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".cache")
-        });
-    let cached = base
-        .join("still-files/thumbnails")
-        .join(format!("{:016x}-192-v4.webp", hasher.finish()));
+    let cached = thumbnail_path(&cache_directory(), fingerprint(&path).ok()?, false);
     let image = image::open(cached).ok()?.into_rgba8();
     let dimensions = image::ImageReader::open(&path)
         .ok()

@@ -10,6 +10,8 @@ mod mounts;
 mod operations;
 mod places;
 mod search;
+#[path = "../../shared/thumbnail_cache.rs"]
+mod thumbnail_cache;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
 use files::{Entry, SizeJob, SizeResult};

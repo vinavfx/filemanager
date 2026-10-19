@@ -4,6 +4,8 @@ mod media;
 mod playback;
 mod renderer;
 mod resident;
+#[path = "../../shared/thumbnail_cache.rs"]
+mod thumbnail_cache;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

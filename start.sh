@@ -9,7 +9,8 @@ fi
 
 if [[ -x "$BINARY" ]] && [[ -z "$(
     find "${PROJECT_DIR}/app/src" "${PROJECT_DIR}/app/Cargo.toml" \
-        "${PROJECT_DIR}/app/Cargo.lock" -newer "$BINARY" -print -quit
+        "${PROJECT_DIR}/app/Cargo.lock" "${PROJECT_DIR}/shared" \
+        -newer "$BINARY" -print -quit
 )" ]]; then
     exec "$BINARY" "$@"
 fi

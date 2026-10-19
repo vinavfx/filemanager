@@ -1,15 +1,15 @@
+pub use crate::thumbnail_cache::fingerprint;
+use crate::thumbnail_cache::{
+    cache_directory, metadata_fingerprint, thumbnail_path, THUMBNAIL_EDGE,
+};
 use eframe::egui;
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
-
-const THUMBNAIL_EDGE: u32 = 192;
-const THUMBNAIL_VERSION: u32 = 4;
+use std::time::{Duration, Instant};
 const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_PENDING: usize = 48;
 const MAX_UPLOADS_PER_FRAME: usize = 2;
@@ -191,41 +191,6 @@ struct CachedImage {
     key: u64,
     image: Option<egui::ColorImage>,
     warning: Option<String>,
-}
-
-fn cache_directory() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".cache")
-        });
-    base.join("still-files/thumbnails")
-}
-
-pub fn fingerprint(path: &Path) -> Result<u64, String> {
-    let metadata = path.metadata().map_err(|error| error.to_string())?;
-    Ok(metadata_fingerprint(path, &metadata))
-}
-
-fn metadata_fingerprint(path: &Path, metadata: &std::fs::Metadata) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    metadata.len().hash(&mut hasher);
-    metadata
-        .modified()
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-        .hash(&mut hasher);
-    hasher.finish()
-}
-
-fn thumbnail_path(directory: &Path, key: u64, video: bool) -> PathBuf {
-    let suffix = if video { "-video-v3-8-4" } else { "" };
-    directory.join(format!(
-        "{key:016x}-{THUMBNAIL_EDGE}-v{THUMBNAIL_VERSION}{suffix}.webp"
-    ))
 }
 
 pub fn copy_cached_thumbnails(from: &Path, to: &Path) {
