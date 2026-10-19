@@ -12,8 +12,9 @@ Requiere Linux x86_64, glibc 2.35 o posterior, un escritorio X11 o Wayland y Ope
 Puedes verificar la descarga con `sha256sum -c still-files-vX.Y.Z-linux-x86_64.tar.gz.sha256`.
 
 La publicación es automática al subir una etiqueta nueva con formato `vX.Y.Z`: GitHub Actions compila ambos ejecutables en Ubuntu 22.04 con
-los archivos `Cargo.lock` y adjunta el paquete y su suma SHA-256 al release. El ejecutable es portable entre carpetas, no está enlazado
-estáticamente ni incluye todas las bibliotecas del sistema.
+los archivos `Cargo.lock` y adjunta el paquete y su suma SHA-256 al release. También puedes ejecutar el flujo «Linux release» manualmente
+desde GitHub Actions indicando una etiqueta existente. El ejecutable es portable entre carpetas, no está enlazado estáticamente ni incluye
+todas las bibliotecas del sistema.
 
 ## Bloques independientes
 
