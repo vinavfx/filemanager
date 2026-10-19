@@ -160,7 +160,7 @@ fn image_key(path: &Path) -> Option<u64> {
 }
 
 pub enum Request {
-    Open(u64, PathBuf),
+    Open(u64, PathBuf, bool),
     Seek(u64, usize),
     ReloadFrame(u64, usize),
     Close(u64),
@@ -226,7 +226,7 @@ fn worker(
         requests.extend(receiver.try_iter());
         for request in requests {
             match request {
-                Request::Open(id, path) => {
+                Request::Open(id, path, still) => {
                     generation = id;
                     decoder = None;
                     failed.clear();
@@ -247,7 +247,7 @@ fn worker(
                             events.send(Event::Preview(generation, Arc::new(frame), dimensions));
                         context.request_repaint();
                     }
-                    match inspect(&path) {
+                    match inspect(&path, still) {
                         Ok(media) => {
                             if let Some(key) = media.files.first().and_then(|path| image_key(path))
                                 && let Some(frame) = images.get(key)
@@ -562,13 +562,15 @@ fn probe(path: &Path) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid ffprobe response: {e}"))
 }
 
-pub fn inspect(path: &Path) -> Result<Media, String> {
+pub fn inspect(path: &Path, still: bool) -> Result<Media, String> {
     let path = std::path::absolute(path).map_err(|e| e.to_string())?;
     let is_sequence = image_extension(&path)
         || path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().contains(['#', '%']));
-    let pairs = if is_sequence {
+    let pairs = if still && image_extension(&path) {
+        vec![(number_parts(&path).map_or(0, |parts| parts.3), path.clone())]
+    } else if is_sequence {
         sequence(&path)?
     } else {
         Vec::new()
@@ -816,7 +818,7 @@ fn decode_image(path: &Path) -> Result<Frame, String> {
 }
 
 pub fn check_media(path: &Path) -> Result<(), String> {
-    let media = inspect(path)?;
+    let media = inspect(path, false)?;
     println!(
         "{}: {}x{}, {} frames, {} FPS",
         media.path.display(),

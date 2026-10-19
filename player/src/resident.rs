@@ -26,9 +26,9 @@ impl eframe::App for ResidentPlayer {
         while let Ok(request) = self.requests.try_recv() {
             match request {
                 Request::Quit => self.player.quit_requested = true,
-                Request::Open(path) => {
+                Request::Open(path, still) => {
                     if let Some(path) = path {
-                        self.player.open(path);
+                        self.player.open_with_mode(path, still);
                     }
                     self.visible = true;
                     context.send_viewport_cmd(ViewportCommand::Visible(true));

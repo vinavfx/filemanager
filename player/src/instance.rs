@@ -30,7 +30,7 @@ pub fn navigate_still(path: PathBuf, forward: bool) {
 }
 
 pub enum Request {
-    Open(Option<PathBuf>),
+    Open(Option<PathBuf>, bool),
     Quit,
 }
 
@@ -110,8 +110,8 @@ impl Instance {
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         match request {
-            Request::Open(path) => {
-                stream.write_all(&[0])?;
+            Request::Open(path, still) => {
+                stream.write_all(&[if *still { 2 } else { 0 }])?;
                 if let Some(path) = path {
                     stream.write_all(path.as_os_str().as_bytes())?;
                 }
@@ -150,13 +150,16 @@ impl Instance {
                     continue;
                 }
                 let request = match bytes[0] {
-                    0 => Request::Open(if bytes.len() == 1 {
-                        None
-                    } else {
-                        Some(PathBuf::from(std::ffi::OsString::from_vec(
-                            bytes[1..].to_vec(),
-                        )))
-                    }),
+                    0 | 2 => Request::Open(
+                        if bytes.len() == 1 {
+                            None
+                        } else {
+                            Some(PathBuf::from(std::ffi::OsString::from_vec(
+                                bytes[1..].to_vec(),
+                            )))
+                        },
+                        bytes[0] == 2,
+                    ),
                     1 if bytes.len() == 1 => Request::Quit,
                     _ => continue,
                 };

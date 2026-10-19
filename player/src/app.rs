@@ -58,6 +58,7 @@ impl Player {
     pub fn new(
         context: &eframe::CreationContext<'_>,
         path: Option<PathBuf>,
+        still: bool,
     ) -> Result<Self, String> {
         let gl = context.gl.as_ref().ok_or("OpenGL is unavailable")?;
         let renderer = Arc::new(Mutex::new(Renderer::new(gl)?));
@@ -106,12 +107,16 @@ impl Player {
             actual_rate: 0.0,
         };
         if let Some(path) = path {
-            player.open(path);
+            player.open_with_mode(path, still);
         }
         Ok(player)
     }
 
     pub fn open(&mut self, path: PathBuf) {
+        self.open_with_mode(path, false);
+    }
+
+    pub fn open_with_mode(&mut self, path: PathBuf, still: bool) {
         self.generation += 1;
         self.path = Some(path.clone());
         self.preview = None;
@@ -124,7 +129,8 @@ impl Player {
         self.loading = true;
         self.error = None;
         self.requested = None;
-        self.loader.send(Request::Open(self.generation, path));
+        self.loader
+            .send(Request::Open(self.generation, path, still));
     }
 
     pub fn close(&mut self) {

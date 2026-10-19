@@ -1326,6 +1326,16 @@ impl FileManager {
             PathBuf::from(application)
         };
         let mut command = std::process::Command::new(executable);
+        if application == "player"
+            && files::image_file(path)
+            && !self
+                .entries
+                .iter()
+                .chain(self.tree_cache.values().flatten())
+                .any(|entry| entry.path == path && entry.sequence.is_some())
+        {
+            command.arg("--still");
+        }
         if matches!(application, "vlc" | "mpv") {
             command.arg("--");
             let frames = self

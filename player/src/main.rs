@@ -13,12 +13,18 @@ use std::process::ExitCode;
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
+    let still = first.as_deref().is_some_and(|arg| arg == "--still");
+    let first = if still {
+        Some(args.next().ok_or("Missing media path")?)
+    } else {
+        first
+    };
     if first
         .as_deref()
         .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
         println!(
-            "Usage: player [FILE | SEQUENCE_PATTERN]\n       player --check-media FILE\n       player --quit\n\nClose to keep Player in the background. Quit completely: Ctrl+Q or --quit."
+            "Usage: player [FILE | SEQUENCE_PATTERN]\n       player --still FILE\n       player --check-media FILE\n       player --quit\n\nClose to keep Player in the background. Quit completely: Ctrl+Q or --quit."
         );
         return Ok(());
     }
@@ -42,13 +48,14 @@ fn run() -> Result<(), String> {
                 .map(std::path::absolute)
                 .transpose()
                 .map_err(|error| error.to_string())?,
+            still,
         )
     };
     let Some(instance) = instance::Instance::start(&request).map_err(|error| error.to_string())?
     else {
         return Ok(());
     };
-    let instance::Request::Open(path) = request else {
+    let instance::Request::Open(path, still) = request else {
         return Ok(());
     };
     initialize_decoder_threads()?;
@@ -68,7 +75,7 @@ fn run() -> Result<(), String> {
         options,
         Box::new(move |context| {
             let requests = instance.listen(context.egui_ctx.clone())?;
-            let player = app::Player::new(context, path)?;
+            let player = app::Player::new(context, path, still)?;
             Ok(Box::new(resident::ResidentPlayer::new(
                 player, instance, requests,
             )))
