@@ -26,11 +26,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@1.89.0
-      - name: Build locked release binaries
+      - name: Build Rocky Linux 8 toolchain
+        run: docker build -t still-files-release -f .github/release.Dockerfile .github
+      - name: Build and verify glibc 2.28 binaries
         run: |
-          cargo build --release --locked --manifest-path app/Cargo.toml
-          cargo build --release --locked --manifest-path player/Cargo.toml
+          docker run --rm --volume "${PWD}:/work" still-files-release bash -euo pipefail -c '
+              cargo build --release --locked --manifest-path app/Cargo.toml
+              cargo build --release --locked --manifest-path player/Cargo.toml
+              for binary in app/target/release/still-files player/target/release/player; do
+                  required=$(readelf --version-info "$binary" | grep -oE "GLIBC_[0-9.]+" | sort -Vu | tail -n 1)
+                  printf "%s requires %s\n" "$binary" "$required"
+                  if [[ "$(printf "%s\n" GLIBC_2.28 "$required" | sort -V | tail -n 1)" != GLIBC_2.28 ]]; then
+                      exit 1
+                  fi
+                  ldd "$binary" | tee "$binary.libraries.txt"
+                  if grep -q "not found" "$binary.libraries.txt"; then
+                      exit 1
+                  fi
+              done
+              player/target/release/player --help
+          '
       - name: Package Linux executables
         env:
           VERSION: ${{ inputs.tag || github.ref_name }}
@@ -42,11 +57,6 @@ jobs:
           install -m 644 README.md "dist/${package}/README.md"
           install -m 644 player/README.md "dist/${package}/PLAYER.md"
           install -m 644 player/LICENSE "dist/${package}/PLAYER-LICENSE"
-          ldd "dist/${package}/still-files" | tee dist/still-files-libraries.txt
-          ldd "dist/${package}/player" | tee dist/player-libraries.txt
-          if grep -q 'not found' dist/*-libraries.txt; then
-              exit 1
-          fi
           tar -czf "dist/${package}.tar.gz" -C dist "${package}"
           cd dist
           sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
@@ -59,7 +69,7 @@ jobs:
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
               gh release create "$VERSION" --verify-tag --draft \
                   --title "Still Files ${VERSION}" \
-                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and run ./still-files. Keep player alongside still-files. Requires glibc 2.35 or newer, an X11 or Wayland desktop, and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
+                  --notes "Linux x86_64 binaries for Still Files and its integrated Player. Extract the archive and run ./still-files. Keep player alongside still-files. Built on Rocky Linux 8 and checked to require no newer than glibc 2.28, for compatibility with Rocky Linux 8 and other Linux systems with glibc 2.28 or newer. Requires an X11 or Wayland desktop and OpenGL. Install ffmpeg and ffprobe for video playback and thumbnails. See the bundled README for optional tools. Verify the archive with the attached SHA-256 checksum."
           fi
           gh release upload "$VERSION" dist/*.tar.gz dist/*.sha256 --clobber
           gh release edit "$VERSION" --draft=false --latest
