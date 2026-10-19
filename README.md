@@ -107,6 +107,10 @@ esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo
 | `Mayús+O`           | Desplegar o plegar recursivamente | Solo en árbol; mantiene abierta la carpeta seleccionada.                                   |
 | `Alt+P`             | Seleccionar el padre visible      | Solo en árbol; no cambia de directorio ni pliega carpetas.                                 |
 
+`Alt+O` abre el menú contextual del archivo seleccionado. Dentro del menú, `h/j/k/l`, flechas, `w/e/b`, números con movimiento, `Home/End`,
+`gg/G` y `Ctrl+D/U` navegan entre las opciones habilitadas; `o`, `Enter` o `Espacio` ejecutan la opción y `Esc` cierra el menú sin quitar la
+selección. También funciona al abrirlo con clic derecho.
+
 ### Navegación entre carpetas y paneles
 
 | Atajo                       | Acción                       | Detalle                                                      |

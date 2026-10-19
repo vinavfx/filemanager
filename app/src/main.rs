@@ -385,6 +385,16 @@ struct MarqueeSelection {
     initial: HashSet<PathBuf>,
 }
 
+struct EntryMenu {
+    root: egui::menu::MenuRootManager,
+    entry: Entry,
+    cursor: usize,
+    items: usize,
+    activate: bool,
+    count: usize,
+    pending_g: bool,
+}
+
 struct FileManager {
     external_drag: drag::ExternalDrag,
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
@@ -416,6 +426,7 @@ struct FileManager {
     selected: Option<PathBuf>,
     last_selected: Option<PathBuf>,
     selection: HashSet<PathBuf>,
+    entry_menu: Option<EntryMenu>,
     marquee_selection: Option<MarqueeSelection>,
     copied_files: Vec<operations::YankedFile>,
     paste_placement: Option<PastePlacement>,
@@ -556,6 +567,7 @@ impl FileManager {
             selected: None,
             last_selected: None,
             selection: HashSet::new(),
+            entry_menu: None,
             marquee_selection: None,
             copied_files: Vec::new(),
             paste_placement: None,
@@ -2113,6 +2125,29 @@ impl FileManager {
     }
 
     fn shortcuts(&mut self, context: &egui::Context) {
+        if self.new_folder.is_none()
+            && !self.sidebar_focused
+            && !self.text_input_focused(context)
+            && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::O))
+        {
+            if let Some(entry) = self.selected.as_ref().and_then(|path| {
+                self.entries
+                    .iter()
+                    .chain(self.tree_cache.values().flatten())
+                    .find(|entry| &entry.path == path)
+                    .cloned()
+            }) {
+                let position = self
+                    .prepared_view
+                    .iter()
+                    .find(|(path, _)| path == &entry.path)
+                    .map_or(context.screen_rect().center(), |(_, rect)| {
+                        rect.left_bottom()
+                    });
+                self.open_entry_menu(entry, position);
+            }
+            return;
+        }
         self.pane_shortcuts(context);
         if self.new_folder.is_none() {
             if !self.text_input_focused(context)
@@ -3898,128 +3933,298 @@ impl FileManager {
         if response.double_clicked() && !context.input(|input| input.modifiers.shift) {
             self.open(entry.path.clone(), context);
         }
-        response.context_menu(|ui| {
-            let multimedia = entry.sequence.is_some()
-                || files::image_file(&entry.path)
-                || files::video_file(&entry.path);
-            if self
-                .icons
-                .button(
-                    ui,
-                    if multimedia {
-                        "Open with Player"
-                    } else {
-                        "Open"
-                    },
-                    if multimedia {
-                        "media-playback-start"
-                    } else {
-                        "document-open"
-                    },
-                    true,
-                )
-                .clicked()
-            {
-                if multimedia {
-                    self.choose_media_player(&entry.path, "player");
-                } else {
-                    self.open(entry.path.clone(), context);
+        if response.secondary_clicked() {
+            self.open_entry_menu(
+                entry.clone(),
+                response
+                    .interact_pointer_pos()
+                    .unwrap_or(response.rect.center()),
+            );
+        }
+    }
+
+    fn open_entry_menu(&mut self, entry: Entry, position: egui::Pos2) {
+        let mut root = egui::menu::MenuRootManager::default();
+        *root = Some(egui::menu::MenuRoot::new(
+            position,
+            egui::Id::new("entry-menu"),
+        ));
+        self.entry_menu = Some(EntryMenu {
+            root,
+            entry,
+            cursor: 0,
+            items: 0,
+            activate: false,
+            count: 0,
+            pending_g: false,
+        });
+        self.motion_count = 0;
+        self.pending_g = false;
+        self.pending_z = false;
+        self.pending_y = false;
+        self.pending_d = false;
+        self.pending_window_command = false;
+    }
+
+    fn entry_menu_shortcuts(&mut self, context: &egui::Context) {
+        let Some(menu) = &mut self.entry_menu else {
+            return;
+        };
+        let events = context.input_mut(|input| std::mem::take(&mut input.events));
+        let mut close = false;
+        for event in events {
+            match event {
+                egui::Event::Text(text) if text.bytes().all(|byte| byte.is_ascii_digit()) => {
+                    for digit in text.bytes() {
+                        menu.count = menu
+                            .count
+                            .saturating_mul(10)
+                            .saturating_add((digit - b'0') as usize);
+                    }
                 }
-                ui.close_menu();
+                egui::Event::Text(text) if text == "_" => menu.cursor = 0,
+                egui::Event::Text(text) if text == "$" => {
+                    menu.cursor = menu.items.saturating_sub(1);
+                }
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    let last = menu.items.saturating_sub(1);
+                    let count = menu.count.max(1).min(menu.items.max(1));
+                    if modifiers.matches_exact(egui::Modifiers::NONE)
+                        || modifiers.matches_exact(egui::Modifiers::SHIFT)
+                            && matches!(
+                                key,
+                                Key::H
+                                    | Key::J
+                                    | Key::K
+                                    | Key::L
+                                    | Key::O
+                                    | Key::ArrowUp
+                                    | Key::ArrowDown
+                                    | Key::ArrowLeft
+                                    | Key::ArrowRight
+                            )
+                    {
+                        match key {
+                            Key::Escape => close = true,
+                            Key::O | Key::Enter | Key::Space => menu.activate = true,
+                            Key::G if menu.pending_g => {
+                                menu.cursor = menu.count.saturating_sub(1).min(last);
+                                menu.pending_g = false;
+                                menu.count = 0;
+                            }
+                            Key::G => menu.pending_g = true,
+                            Key::Home | Key::Minus => menu.cursor = 0,
+                            Key::End => menu.cursor = last,
+                            Key::J
+                            | Key::L
+                            | Key::ArrowDown
+                            | Key::ArrowRight
+                            | Key::W
+                            | Key::E
+                            | Key::Tab => {
+                                menu.cursor = menu.cursor.saturating_add(count).min(last);
+                                menu.count = 0;
+                                menu.pending_g = false;
+                            }
+                            Key::K | Key::H | Key::ArrowUp | Key::ArrowLeft | Key::B => {
+                                menu.cursor = menu.cursor.saturating_sub(count);
+                                menu.count = 0;
+                                menu.pending_g = false;
+                            }
+                            _ => {}
+                        }
+                    } else if modifiers.matches_exact(egui::Modifiers::SHIFT) {
+                        match key {
+                            Key::G => {
+                                menu.cursor = if menu.count == 0 {
+                                    last
+                                } else {
+                                    menu.count.saturating_sub(1).min(last)
+                                };
+                                menu.count = 0;
+                                menu.pending_g = false;
+                            }
+                            Key::Tab => menu.cursor = menu.cursor.saturating_sub(1),
+                            _ => {}
+                        }
+                    } else if modifiers.matches_exact(egui::Modifiers::CTRL) {
+                        match key {
+                            Key::D => {
+                                menu.cursor =
+                                    menu.cursor.saturating_add(menu.items.div_ceil(2)).min(last)
+                            }
+                            Key::U => {
+                                menu.cursor = menu.cursor.saturating_sub(menu.items.div_ceil(2))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                egui::Event::Key { .. } | egui::Event::Text(_) => {}
+                event => context.input_mut(|input| input.events.push(event)),
             }
+        }
+        if close {
+            self.entry_menu = None;
+        }
+    }
+
+    fn show_entry_menu(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let Some(menu) = &mut self.entry_menu else {
+            return;
+        };
+        let response = ui.interact(
+            egui::Rect::NOTHING,
+            egui::Id::new("entry-menu"),
+            egui::Sense::hover(),
+        );
+        let mut root = std::mem::take(&mut menu.root);
+        egui::menu::MenuRoot::context_click_interaction(&response, &mut root);
+        let entry = menu.entry.clone();
+        menu.cursor = menu.cursor.min(menu.items.saturating_sub(1));
+        menu.items = 0;
+        root.show(&response, |ui| {
+            self.entry_menu_contents(ui, &entry, context)
+        });
+        if root.is_none() {
+            self.entry_menu = None;
+        } else if let Some(menu) = &mut self.entry_menu {
+            menu.root = root;
+            menu.activate = false;
+        }
+    }
+
+    fn entry_menu_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        icon: &str,
+        enabled: bool,
+        tooltip: Option<&str>,
+    ) -> bool {
+        let Some(menu) = &mut self.entry_menu else {
+            return false;
+        };
+        let selected = enabled && menu.items == menu.cursor;
+        let response = ui
+            .scope(|ui| {
+                if selected {
+                    ui.visuals_mut().widgets.inactive = ui.visuals().widgets.hovered;
+                }
+                self.icons.button(ui, label, icon, enabled)
+            })
+            .inner;
+        let response = if let Some(tooltip) = tooltip {
+            response.on_hover_text(tooltip)
+        } else {
+            response
+        };
+        if enabled {
+            if response.hovered() && ui.input(|input| input.pointer.delta() != Vec2::ZERO) {
+                menu.cursor = menu.items;
+            }
+            menu.items += 1;
+        }
+        response.clicked() || (selected && menu.activate)
+    }
+
+    fn entry_menu_contents(&mut self, ui: &mut egui::Ui, entry: &Entry, context: &egui::Context) {
+        let multimedia = entry.sequence.is_some()
+            || files::image_file(&entry.path)
+            || files::video_file(&entry.path);
+        if self.entry_menu_button(
+            ui,
             if multimedia {
-                for (application, label) in [("vlc", "Open with VLC"), ("mpv", "Open with MPV")] {
-                    if self.icons.button(ui, label, application, true).clicked() {
-                        self.choose_media_player(&entry.path, application);
-                        ui.close_menu();
-                    }
-                }
+                "Open with Player"
+            } else {
+                "Open"
+            },
+            if multimedia {
+                "media-playback-start"
+            } else {
+                "document-open"
+            },
+            true,
+            None,
+        ) {
+            if multimedia {
+                self.choose_media_player(&entry.path, "player");
+            } else {
+                self.open(entry.path.clone(), context);
             }
-            if !entry.directory && !files::is_trash(&self.current) {
-                ui.separator();
-                for format in [
-                    conversion::Format::Png,
-                    conversion::Format::Mp4,
-                    conversion::Format::Mov,
-                ] {
-                    let response = self.icons.button(
-                        ui,
-                        format.label(),
-                        "media-record",
-                        self.conversion_job.is_none(),
-                    );
-                    let response = if format == conversion::Format::Mov {
-                        response.on_hover_text("Apple ProRes 422 HQ")
-                    } else {
-                        response
-                    };
-                    if response.clicked() {
-                        self.convert(entry.clone(), format, context);
-                        ui.close_menu();
-                    }
-                }
-                ui.separator();
-            }
-            if entry.directory {
-                if self
-                    .icons
-                    .button(ui, "Open Konsole here", "utilities-terminal", true)
-                    .clicked()
-                {
-                    self.open_terminal(&entry.path);
-                    ui.close_menu();
-                }
-                if self
-                    .icons
-                    .button(ui, "Add bookmark", "bookmark-new", true)
-                    .clicked()
-                {
-                    self.add_bookmark(entry.path.clone());
+            ui.close_menu();
+        }
+        if multimedia {
+            for (application, label) in [("vlc", "Open with VLC"), ("mpv", "Open with MPV")] {
+                if self.entry_menu_button(ui, label, application, true, None) {
+                    self.choose_media_player(&entry.path, application);
                     ui.close_menu();
                 }
             }
-            if entry.sequence.is_none()
-                && (entry.directory || files::image_file(&entry.path))
-                && self
-                    .icons
-                    .button(
-                        ui,
-                        "Compress to ZIP",
-                        "package-x-generic",
-                        self.compression_job.is_none(),
-                    )
-                    .clicked()
-            {
-                self.compress(entry.path.clone(), context);
-                ui.close_menu();
-            }
-            if self
-                .icons
-                .button(ui, "Copy path", "edit-copy", true)
-                .clicked()
-            {
-                context.copy_text(entry.path.to_string_lossy().into_owned());
-                ui.close_menu();
+        }
+        if !entry.directory && !files::is_trash(&self.current) {
+            ui.separator();
+            for format in [
+                conversion::Format::Png,
+                conversion::Format::Mp4,
+                conversion::Format::Mov,
+            ] {
+                if self.entry_menu_button(
+                    ui,
+                    format.label(),
+                    "media-record",
+                    self.conversion_job.is_none(),
+                    (format == conversion::Format::Mov).then_some("Apple ProRes 422 HQ"),
+                ) {
+                    self.convert(entry.clone(), format, context);
+                    ui.close_menu();
+                }
             }
             ui.separator();
-            if !files::is_trash(&self.current)
-                && self
-                    .icons
-                    .button(ui, "Move to Trash · Delete", "user-trash", true)
-                    .clicked()
-            {
-                self.trash_selection(context);
+        }
+        if entry.directory {
+            if self.entry_menu_button(ui, "Open Konsole here", "utilities-terminal", true, None) {
+                self.open_terminal(&entry.path);
                 ui.close_menu();
             }
-            if self
-                .icons
-                .button(ui, "Properties", "document-properties", true)
-                .clicked()
-            {
-                self.show_properties(&entry.path);
+            if self.entry_menu_button(ui, "Add bookmark", "bookmark-new", true, None) {
+                self.add_bookmark(entry.path.clone());
                 ui.close_menu();
             }
-        });
+        }
+        if entry.sequence.is_none()
+            && (entry.directory || files::image_file(&entry.path))
+            && self.entry_menu_button(
+                ui,
+                "Compress to ZIP",
+                "package-x-generic",
+                self.compression_job.is_none(),
+                None,
+            )
+        {
+            self.compress(entry.path.clone(), context);
+            ui.close_menu();
+        }
+        if self.entry_menu_button(ui, "Copy path", "edit-copy", true, None) {
+            context.copy_text(entry.path.to_string_lossy().into_owned());
+            ui.close_menu();
+        }
+        ui.separator();
+        if !files::is_trash(&self.current)
+            && self.entry_menu_button(ui, "Move to Trash · Delete", "user-trash", true, None)
+        {
+            self.trash_selection(context);
+            ui.close_menu();
+        }
+        if self.entry_menu_button(ui, "Properties", "document-properties", true, None) {
+            self.show_properties(&entry.path);
+            ui.close_menu();
+        }
     }
 
     fn paint_entry_icon(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
@@ -6395,7 +6600,6 @@ impl eframe::App for FileManager {
             self.media_scroll_target = None;
             self.media_scrolling_until = 0.0;
         }
-        let previous_view = std::mem::take(&mut self.prepared_view);
         self.directory_ready = true;
         if self.settings.view == View::Media && self.search.is_none() {
             self.preparing_directory = false;
@@ -6430,9 +6634,12 @@ impl eframe::App for FileManager {
             self.set_message(Some(format!("Cannot read shared bookmarks: {error}")));
         }
         self.poll(context);
-        if !self.confirm_empty_trash && self.pending_delete.is_empty() {
+        if self.entry_menu.is_some() {
+            self.entry_menu_shortcuts(context);
+        } else if !self.confirm_empty_trash && self.pending_delete.is_empty() {
             self.shortcuts(context);
         }
+        let previous_view = std::mem::take(&mut self.prepared_view);
         if self.search.is_some()
             || self.settings.view == View::Media
             || self.current != frame_directory
@@ -6602,6 +6809,7 @@ impl eframe::App for FileManager {
                     self.move_paths(&paths, &self.current.clone(), context);
                 }
                 background.context_menu(|ui| self.directory_menu(ui, context));
+                self.show_entry_menu(ui, context);
             });
         if !context.input(|input| input.pointer.primary_down()) {
             self.marquee_selection = None;
