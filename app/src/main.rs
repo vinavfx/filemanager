@@ -3439,8 +3439,10 @@ impl FileManager {
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
                 if let Some((bookmark, kind)) = entries.get(cursor) {
-                    self.remove_bookmark(bookmark, *kind);
-                    if !matches!(kind, Some(places::Kind::Trash)) {
+                    if matches!(kind, Some(places::Kind::Trash)) {
+                        self.confirm_empty_trash = true;
+                    } else {
+                        self.remove_bookmark(bookmark, *kind);
                         entries.remove(cursor);
                         cursor = cursor.min(entries.len().saturating_sub(1));
                     }
