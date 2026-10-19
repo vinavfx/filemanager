@@ -2740,6 +2740,8 @@ impl FileManager {
                     .inner_margin(egui::Margin::symmetric(8, 8)),
             )
             .show(context, |ui| {
+                ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+                ui.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
                 let (row, _) = ui.allocate_exact_size(
                     Vec2::new(ui.available_width(), 32.0),
                     egui::Sense::hover(),
