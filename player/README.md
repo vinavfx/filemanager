@@ -84,9 +84,10 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Cerrar ventana y permanecer en segundo plano          | `Ctrl+E`                          |
 | Recargar archivo / fotograma                          | `Ctrl+R` / `Ctrl+Mayús+R`         |
 
-`U` alterna la pantalla completa conservando el modo de ajuste elegido. `F` muestra toda la imagen y `Ctrl+F` llena el visor sin franjas,
-conservando las proporciones y recortando lo que sobresale. El botón `Fit` de la barra superior alterna entre ambos ajustes y aparece
-activado al rellenar el visor. `Ctrl+U` y `Ctrl+D` quedan libres.
+`U` alterna la pantalla completa sin activar Fit: conserva la ocupación relativa y el encuadre de la imagen al cambiar el tamaño del visor,
+también al volver a ventana. `F` muestra toda la imagen y `Ctrl+F` llena el visor sin franjas, conservando las proporciones y recortando lo
+que sobresale. El botón `Fit` de la barra superior alterna entre ambos ajustes y aparece activado al rellenar el visor. `Ctrl+U` y `Ctrl+D`
+quedan libres.
 
 El avance manual de fotogramas ignora las marcas de entrada/salida; la reproducción sigue respetándolas cuando están activadas.
 

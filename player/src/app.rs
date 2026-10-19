@@ -663,13 +663,20 @@ impl Player {
             .show(context, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
-                let previous_height = self.viewer.height();
-                let resized = self.viewer.size() != rect.size();
+                let previous_size = self.viewer.size();
                 self.viewer = rect;
                 if self.fit {
                     self.fit_view();
-                } else if resized && previous_height.is_finite() {
-                    self.origin.y += rect.height() - previous_height;
+                } else if previous_size != rect.size()
+                    && previous_size.is_finite()
+                    && previous_size.min_elem() > 0.0
+                    && rect.size().min_elem() > 0.0
+                {
+                    let image_size = self.image_size();
+                    let previous_scale = (previous_size / image_size).min_elem();
+                    let scale = (rect.size() / image_size).min_elem() / previous_scale;
+                    self.origin = rect.size() / 2.0 + (self.origin - previous_size / 2.0) * scale;
+                    self.zoom *= scale;
                 }
                 if self.auto_fit_window {
                     self.fit_window(context);
@@ -939,7 +946,7 @@ impl Player {
         } else {
             self.show_ui = self.fullscreen_previous_ui;
         }
-        self.fit_view();
+        self.fit = false;
         context.send_viewport_cmd(ViewportCommand::Fullscreen(self.fullscreen));
     }
 
