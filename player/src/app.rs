@@ -46,6 +46,7 @@ pub struct Player {
     drag_origin: Vec2,
     pan_origin: Vec2,
     drag_frame: usize,
+    drag_zoom: f32,
     drag_mode: u8,
     timeline_dragging: bool,
     timeline_rect: Rect,
@@ -99,6 +100,7 @@ impl Player {
             drag_origin: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
             drag_frame: 0,
+            drag_zoom: 1.0,
             drag_mode: 0,
             timeline_dragging: false,
             timeline_rect: Rect::NOTHING,
@@ -844,6 +846,9 @@ impl Player {
             });
             if modifiers.ctrl && (middle || right) {
                 self.set_zoom(self.zoom * if middle { 2.0 } else { 0.5 }, position);
+            } else if middle && modifiers.alt {
+                self.drag_mode = 3;
+                self.drag_zoom = self.zoom;
             } else if (middle && !modifiers.ctrl) || (left && (modifiers.shift || modifiers.alt)) {
                 self.drag_mode = 1;
                 self.pan_origin = self.origin;
@@ -871,6 +876,15 @@ impl Player {
             {
                 let offset = ((position.x - self.drag_origin.x) / 5.0).trunc() as i64;
                 self.playback.seek(self.drag_frame as i64 + offset, false);
+                context.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            } else if self.drag_mode == 3
+                && let Some(position) = position
+            {
+                let offset = ((position.x - self.drag_origin.x) / 200.0).clamp(-32.0, 32.0);
+                self.set_zoom(
+                    self.drag_zoom * 2.0_f32.powf(offset),
+                    self.drag_origin.to_pos2(),
+                );
                 context.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
         } else {

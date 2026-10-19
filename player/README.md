@@ -90,9 +90,10 @@ activado al rellenar el visor. `Ctrl+U` y `Ctrl+D` quedan libres.
 
 El avance manual de fotogramas ignora las marcas de entrada/salida; la reproducción sigue respetándolas cuando están activadas.
 
-En el visor: botón central, `Alt` o `Mayús` + arrastre izquierdo para mover; `Ctrl` + arrastre izquierdo para desplazar un fotograma por
-cada cinco píxeles; `Ctrl` + clic central/derecho para duplicar/reducir el zoom. Rueda para zoom, `Mayús` + rueda para fotogramas y `Ctrl` +
-rueda para velocidad. El zoom se ancla al puntero dentro del visor y al centro fuera de él.
+En el visor: botón central, `Alt` o `Mayús` + arrastre izquierdo para mover; `Alt` + arrastre central horizontal para ampliar hacia la
+derecha y reducir hacia la izquierda, manteniendo fijo el punto inicial bajo el cursor; `Ctrl` + arrastre izquierdo para desplazar un
+fotograma por cada cinco píxeles; `Ctrl` + clic central/derecho para duplicar/reducir el zoom. Rueda para zoom, `Mayús` + rueda para
+fotogramas y `Ctrl` + rueda para velocidad. El zoom se ancla al puntero dentro del visor y al centro fuera de él.
 
 En el timeline, cualquier botón permite buscar y arrastrar. El arrastre pausa temporalmente el reloj, permite salir del rango de
 entrada/salida y conserva el estado de reproducción al soltar, como el widget original. No se han inventado atajos de flechas ni
