@@ -440,7 +440,7 @@ fn cached_preview(path: &Path) -> Option<(Frame, (u32, u32))> {
         });
     let cached = base
         .join("still-files/thumbnails")
-        .join(format!("{:016x}-192-v3.webp", hasher.finish()));
+        .join(format!("{:016x}-192-v4.webp", hasher.finish()));
     let image = image::open(cached).ok()?.into_rgba8();
     let dimensions = image::ImageReader::open(&path)
         .ok()
