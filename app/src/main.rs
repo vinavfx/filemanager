@@ -7378,6 +7378,7 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
 
 struct ResidentApp {
     root: FileManager,
+    icon: Arc<egui::IconData>,
     visible: bool,
     quitting: bool,
     windows: Vec<(egui::ViewportId, FileManager)>,
@@ -7452,7 +7453,8 @@ impl eframe::App for ResidentApp {
                 egui::ViewportBuilder::default()
                     .with_title("Still Files")
                     .with_inner_size([1120.0, 740.0])
-                    .with_min_inner_size([760.0, 460.0]),
+                    .with_min_inner_size([760.0, 460.0])
+                    .with_icon(self.icon.clone()),
                 |context, _| {
                     closed = context.input(|input| input.viewport().close_requested());
                     if !closed {
@@ -7488,10 +7490,15 @@ fn main() -> eframe::Result {
     let instance::Request::Open(path) = request else {
         return Ok(());
     };
+    let icon = Arc::new(
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+            .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?,
+    );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 740.0])
-            .with_min_inner_size([760.0, 460.0]),
+            .with_min_inner_size([760.0, 460.0])
+            .with_icon(icon.clone()),
         ..Default::default()
     };
     eframe::run_native(
@@ -7502,6 +7509,7 @@ fn main() -> eframe::Result {
             let root = FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
             Ok(Box::new(ResidentApp {
                 root,
+                icon,
                 visible: true,
                 quitting: false,
                 windows: Vec::new(),
