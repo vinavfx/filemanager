@@ -7,6 +7,24 @@ APPLICATIONS_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/applications"
 FILEMANAGER="${PROJECT_DIR}/still-files"
 PLAYER="${PROJECT_DIR}/player"
 
+stop_applications() {
+    local user_id signal attempt
+    user_id="$(id -u)"
+    for signal in TERM KILL; do
+        pkill "-$signal" -u "$user_id" -x 'still-files|still_files|player' \
+            || [[ $? -eq 1 ]]
+        for attempt in {1..30}; do
+            if ! pgrep -u "$user_id" -x 'still-files|still_files|player' \
+                >/dev/null; then
+                return 0
+            fi
+            sleep 0.1
+        done
+    done
+    printf '%s\n' 'Could not stop Still Files and Player.' >&2
+    return 1
+}
+
 install_binaries() {
     if [[ ! -f "$FILEMANAGER" ]]; then
         FILEMANAGER="${PROJECT_DIR}/app/target/release/still-files"
@@ -24,6 +42,7 @@ install_binaries() {
     trap 'rm -rf -- "$STAGING_DIR"' EXIT
     install -m 755 -- "$FILEMANAGER" "${STAGING_DIR}/still-files"
     install -m 755 -- "$PLAYER" "${STAGING_DIR}/player"
+    stop_applications
     mv -fT -- "${STAGING_DIR}/still-files" "${BIN_DIR}/still-files"
     mv -fT -- "${STAGING_DIR}/player" "${BIN_DIR}/player"
 }
@@ -62,7 +81,7 @@ main() {
     printf 'Installed Still Files and Player in %s\n' "$BIN_DIR"
     printf 'Created desktop entry in %s\n' "$APPLICATIONS_DIR"
     printf '%s\n' 'Open Still Files from your application menu.'
-    printf '%s\n' 'Restart Still Files and Player to use the new binaries.'
+    printf '%s\n' 'Still Files and Player were stopped. Reopen them to continue.'
 }
 
 main "$@"
