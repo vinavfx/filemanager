@@ -172,6 +172,9 @@ impl Settings {
     fn set_view(&mut self, view: View) {
         if view == View::Media && self.view != View::Media {
             self.media_return_view = self.view;
+            if self.recursive() {
+                self.recursive_media = true;
+            }
         }
         self.view = view;
     }
