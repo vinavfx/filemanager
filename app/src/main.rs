@@ -2033,6 +2033,7 @@ impl FileManager {
                 None
             };
             self.sidebar_focused = sidebar;
+            self.motion_count = 0;
             self.pending_g = false;
             self.pending_z = false;
             self.pending_y = false;
@@ -2530,6 +2531,25 @@ impl FileManager {
         })
     }
 
+    fn collect_motion_count(&mut self, context: &egui::Context) {
+        context.input_mut(|input| {
+            input.events.retain(|event| {
+                if let egui::Event::Text(text) = event {
+                    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
+                        for digit in text.bytes() {
+                            self.motion_count = self
+                                .motion_count
+                                .saturating_mul(10)
+                                .saturating_add((digit - b'0') as usize);
+                        }
+                        return false;
+                    }
+                }
+                true
+            });
+        });
+    }
+
     fn number_width(&self) -> f32 {
         28.0
     }
@@ -2618,22 +2638,7 @@ impl FileManager {
                 self.center_selection = false;
             }
         }
-        context.input_mut(|input| {
-            input.events.retain(|event| {
-                if let egui::Event::Text(text) = event {
-                    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
-                        for digit in text.bytes() {
-                            self.motion_count = self
-                                .motion_count
-                                .saturating_mul(10)
-                                .saturating_add((digit - b'0') as usize);
-                        }
-                        return false;
-                    }
-                }
-                true
-            });
-        });
+        self.collect_motion_count(context);
         if context.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, Key::A)) {
             if !self
                 .selected
@@ -3469,6 +3474,10 @@ impl FileManager {
     ) {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
+        let gutter =
+            egui::Rect::from_min_size(rect.min, Vec2::new(self.number_width(), rect.height()));
+        self.paint_relative_number(ui, gutter, index, self.sidebar_cursor.unwrap_or(0));
+        let rect = egui::Rect::from_min_max(gutter.right_top() + Vec2::new(8.0, 0.0), rect.max);
         let current = bookmark.path.as_ref() == Some(&self.current)
             || (bookmark.uri == "trash:///" && files::is_trash(&self.current));
         if current {
@@ -3676,33 +3685,38 @@ impl FileManager {
                 .cloned()
                 .map(|bookmark| (bookmark, None)),
         );
+        let mut cursor = self
+            .sidebar_cursor
+            .unwrap_or_else(|| {
+                entries
+                    .iter()
+                    .position(|(bookmark, _)| bookmark.path.as_ref() == Some(&self.current))
+                    .unwrap_or(0)
+            })
+            .min(entries.len().saturating_sub(1));
         if self.sidebar_focused
             && self.new_folder.is_none()
             && !self.confirm_empty_trash
             && self.pending_delete.is_empty()
             && !self.text_input_focused(context)
         {
-            let mut cursor = self
-                .sidebar_cursor
-                .unwrap_or_else(|| {
-                    entries
-                        .iter()
-                        .position(|(bookmark, _)| bookmark.path.as_ref() == Some(&self.current))
-                        .unwrap_or(0)
-                })
-                .min(entries.len().saturating_sub(1));
+            self.collect_motion_count(context);
             let previous = cursor;
             if context.input_mut(|input| {
                 input.consume_key(egui::Modifiers::NONE, Key::ArrowDown)
                     || input.consume_key(egui::Modifiers::NONE, Key::J)
             }) {
-                cursor = (cursor + 1).min(entries.len().saturating_sub(1));
+                let count = std::mem::take(&mut self.motion_count).max(1);
+                cursor = cursor
+                    .saturating_add(count)
+                    .min(entries.len().saturating_sub(1));
             }
             if context.input_mut(|input| {
                 input.consume_key(egui::Modifiers::NONE, Key::ArrowUp)
                     || input.consume_key(egui::Modifiers::NONE, Key::K)
             }) {
-                cursor = cursor.saturating_sub(1);
+                let count = std::mem::take(&mut self.motion_count).max(1);
+                cursor = cursor.saturating_sub(count);
             }
             if let Some(index) = self.navigation_jump(entries.len(), context) {
                 cursor = index;
@@ -3744,7 +3758,6 @@ impl FileManager {
                     }
                 }
             }
-            self.sidebar_cursor = Some(cursor);
             if context.input_mut(|input| {
                 input.consume_key(egui::Modifiers::NONE, Key::Enter)
                     || input.consume_key(egui::Modifiers::NONE, Key::Space)
@@ -3755,7 +3768,11 @@ impl FileManager {
                 }
             }
         }
+        self.sidebar_cursor = Some(cursor);
+        let mut frame = egui::Frame::side_top_panel(&context.style());
+        frame.inner_margin.left = 0;
         egui::SidePanel::left(egui::Id::new(("bookmarks", context.viewport_id())))
+            .frame(frame)
             .default_width(180.0)
             .width_range(140.0..=280.0)
             .show(context, |ui| {
@@ -3764,42 +3781,58 @@ impl FileManager {
                     ui.id().with("bookmark-drop"),
                     egui::Sense::hover(),
                 );
-                ui.add_space(16.0);
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().interact_size = Vec2::splat(24.0);
+                    ui.spacing_mut().button_padding = Vec2::new(6.0, 4.0);
+                    ui.add_space(12.0);
                     ui.label(RichText::new("BOOKMARKS").size(11.0).color(MUTED));
-                    if ui.small_button("+").clicked() {
-                        self.bookmark();
-                    }
-                    ui.menu_button("...", |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.menu_button("…", |ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.settings.removed_places.is_empty(),
+                                    egui::Button::new("Restore default folders"),
+                                )
+                                .clicked()
+                            {
+                                self.settings.removed_places.clear();
+                                self.save();
+                                ui.close_menu();
+                            }
+                        })
+                        .response
+                        .on_hover_text("Bookmark options");
                         if ui
-                            .add_enabled(
-                                !self.settings.removed_places.is_empty(),
-                                egui::Button::new("Restore default folders"),
-                            )
+                            .add(egui::Button::new("+").min_size(Vec2::splat(24.0)))
+                            .on_hover_text("Add bookmark")
                             .clicked()
                         {
-                            self.settings.removed_places.clear();
-                            self.save();
-                            ui.close_menu();
+                            self.bookmark();
                         }
                     });
                 });
-                ui.add_space(12.0);
+                ui.add_space(8.0);
                 with_scrollbar_color(ui, |ui, content_style| {
                     self.entry_scroll_area(ui, "bookmark-list")
+                        .auto_shrink([false, false])
                         .drag_to_scroll(false)
                         .show(ui, |ui| {
                             ui.set_style(content_style);
+                            let divider_x = ui.max_rect().left() + self.number_width();
+                            let viewport = ui.clip_rect();
                             for (index, (bookmark, kind)) in entries.iter().enumerate() {
                                 if index == default_count {
                                     ui.separator();
                                 }
                                 self.bookmark_row(ui, bookmark, *kind, index, context);
                             }
-                            ui.label(
-                                RichText::new("Drag folders here\nto bookmark")
-                                    .size(12.0)
-                                    .color(MUTED),
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(divider_x, viewport.top()),
+                                    egui::pos2(divider_x, viewport.bottom()),
+                                ],
+                                ui.visuals().widgets.noninteractive.bg_stroke,
                             );
                         });
                 });
