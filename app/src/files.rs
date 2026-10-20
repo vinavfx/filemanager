@@ -193,7 +193,7 @@ impl Drop for FolderCounts {
 
 #[derive(Clone)]
 pub struct MediaDirectory {
-    path: PathBuf,
+    pub path: PathBuf,
     modified: Option<SystemTime>,
 }
 

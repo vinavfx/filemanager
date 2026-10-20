@@ -13,6 +13,7 @@ mod properties;
 mod search;
 #[path = "../../shared/thumbnail_cache.rs"]
 mod thumbnail_cache;
+mod watch;
 
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
 use files::{Entry, SizeJob, SizeResult};
@@ -420,8 +421,7 @@ struct FileManager {
     media_scan: Option<files::MediaScan>,
     media_cache: Vec<CachedMediaDirectory>,
     media_directories: Arc<Vec<files::MediaDirectory>>,
-    media_watch: Option<mpsc::Receiver<bool>>,
-    media_checked_at: std::time::Instant,
+    directory_watch: Option<watch::DirectoryWatch>,
     history: Vec<PathBuf>,
     operations: operations::History,
     operation_job: Option<OperationJob>,
@@ -569,8 +569,13 @@ impl FileManager {
             media_scan: None,
             media_cache: Vec::new(),
             media_directories: Arc::default(),
-            media_watch: None,
-            media_checked_at: std::time::Instant::now(),
+            directory_watch: match watch::DirectoryWatch::new(context.clone()) {
+                Ok(watch) => Some(watch),
+                Err(error) => {
+                    eprintln!("Cannot monitor directory changes: {error}");
+                    None
+                }
+            },
             position: 0,
             selected: None,
             last_selected: None,
@@ -661,7 +666,6 @@ impl FileManager {
 
     fn start_media_scan(&mut self, context: &egui::Context) {
         self.media_directories = Arc::default();
-        self.media_watch = None;
         self.media_layout.complete = false;
         self.directory_refresh = None;
         self.media_scan = None;
@@ -718,7 +722,6 @@ impl FileManager {
         self.cached_view = None;
         self.media_cache.clear();
         self.media_directories = Arc::default();
-        self.media_watch = None;
         self.wait_for_thumbnails = false;
         self.media_scan = None;
         self.directory_refresh = None;
@@ -875,7 +878,6 @@ impl FileManager {
         self.media_scroll_target = None;
         self.media_scrolling_until = 0.0;
         self.media_directories = Arc::default();
-        self.media_watch = None;
         self.wait_for_thumbnails = false;
         self.directory_refresh = None;
         self.directory_selections.insert(
@@ -1148,6 +1150,42 @@ impl FileManager {
             .collect();
         self.exit_visual(context);
         self.set_message(Some(format!("Yanked {} items.", selected.len())));
+    }
+
+    fn receive_external_files(&mut self, context: &egui::Context) {
+        let dropped = context.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
+        if dropped.is_empty() {
+            return;
+        }
+        if self.operation_job.is_some() || self.new_folder.is_some() {
+            self.set_message(Some(
+                "Finish the current operation before dropping files.".into(),
+            ));
+            return;
+        }
+        if files::is_trash(&self.current) {
+            self.set_message(Some("Open a folder before dropping files.".into()));
+            return;
+        }
+        let paths: Vec<_> = dropped.into_iter().filter_map(|file| file.path).collect();
+        if paths.is_empty() {
+            self.set_message(Some(
+                "Only local files and folders can be dropped here.".into(),
+            ));
+            return;
+        }
+        let items = paths
+            .iter()
+            .filter(|path| {
+                !path
+                    .ancestors()
+                    .skip(1)
+                    .any(|parent| paths.iter().any(|other| other == parent))
+            })
+            .cloned()
+            .map(operations::YankedFile::from)
+            .collect();
+        self.start_operation(FileOperation::Copy(items, self.current.clone()), context);
     }
 
     fn paste(&mut self, context: &egui::Context) {
@@ -1837,7 +1875,7 @@ impl FileManager {
                 }
             }
         }
-        self.watch_media_directories(context);
+        self.watch_directories(context);
         if let Some(search) = &mut self.search {
             search.poll();
         }
@@ -1901,39 +1939,33 @@ impl FileManager {
         }
     }
 
-    fn watch_media_directories(&mut self, context: &egui::Context) {
-        if !self.settings.recursive()
-            || self.media_scan.is_some()
-            || self.media_directories.is_empty()
-            || self.operation_job.is_some()
-        {
+    fn watch_directories(&mut self, context: &egui::Context) {
+        let Some(watch) = &mut self.directory_watch else {
             return;
-        }
-        if let Some(changed) = self
-            .media_watch
-            .as_ref()
-            .and_then(|receiver| receiver.try_recv().ok())
-        {
-            self.media_watch = None;
-            if changed {
-                self.refresh(context);
-                return;
+        };
+        let mut paths = HashSet::new();
+        if !files::is_trash(&self.current) {
+            paths.insert(self.current.clone());
+            if self.settings.recursive() {
+                paths.extend(
+                    self.media_directories
+                        .iter()
+                        .map(|directory| directory.path.clone()),
+                );
+            } else if self.settings.view == View::Tree {
+                paths.extend(self.expanded.iter().cloned());
             }
         }
-        if self.media_watch.is_none()
-            && self.media_checked_at.elapsed() >= std::time::Duration::from_secs(1)
-        {
-            self.media_checked_at = std::time::Instant::now();
-            let directories = Arc::clone(&self.media_directories);
-            let context = context.clone();
-            let (sender, receiver) = mpsc::channel();
-            self.media_watch = Some(receiver);
-            std::thread::spawn(move || {
-                let _ = sender.send(files::media_directories_changed(&directories));
-                context.request_repaint();
-            });
+        watch.synchronize(&self.current, paths, self.media_scan.is_some());
+        let busy = self.operation_job.is_some()
+            || self.new_folder.is_some()
+            || self.directory_refresh.is_some()
+            || self.media_scan.is_some()
+            || self.compression_job.is_some()
+            || self.conversion_job.is_some();
+        if watch.ready(context, busy) {
+            self.refresh(context);
         }
-        context.request_repaint_after(std::time::Duration::from_secs(1));
     }
 
     fn pane_shortcuts(&mut self, context: &egui::Context) {
@@ -6746,6 +6778,7 @@ impl eframe::App for FileManager {
             self.set_message(Some(format!("Cannot read shared bookmarks: {error}")));
         }
         self.poll(context);
+        self.receive_external_files(context);
         if self.entry_menu.is_some() {
             self.entry_menu_shortcuts(context);
         } else if !self.confirm_empty_trash && self.pending_delete.is_empty() {
