@@ -483,7 +483,7 @@ struct FileManager {
     pending_delete: Vec<PathBuf>,
     trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
-    conversion_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
+    conversion_job: Option<conversion::Job>,
     message: Option<String>,
     message_deadline: std::time::Instant,
 }
@@ -1639,28 +1639,41 @@ impl FileManager {
         if self.conversion_job.is_some() {
             return;
         }
-        let (sender, receiver) = mpsc::channel();
-        let context = context.clone();
-        self.conversion_job = Some(receiver);
-        std::thread::spawn(move || {
-            let _ = sender.send(conversion::convert(&entry, format));
-            context.request_repaint();
-        });
+        match conversion::start(entry, format, context.clone()) {
+            Ok(job) => {
+                self.conversion_job = Some(job);
+                self.media_cache.clear();
+                self.refresh(context);
+            }
+            Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
+        }
     }
 
     fn poll(&mut self, context: &egui::Context) {
         if let Some(result) = self
             .conversion_job
             .as_ref()
-            .and_then(|job| job.try_recv().ok())
+            .and_then(|job| job.receiver.try_recv().ok())
         {
-            self.conversion_job = None;
+            if let Some(job) = self.conversion_job.take() {
+                if !matches!(result, Ok(Some(_))) && !job.destination.exists() {
+                    self.update_operation_visibility(
+                        std::slice::from_ref(&job.destination),
+                        false,
+                        context,
+                    );
+                    self.removed_entries
+                        .retain(|path, _| !path.starts_with(&job.destination));
+                }
+            }
+            self.thumbnails.cancel();
             self.media_cache.clear();
             self.refresh(context);
             match result {
-                Ok(path) => {
+                Ok(Some(path)) => {
                     self.set_message(Some(format!("Conversion created: {}", path.display())))
                 }
+                Ok(None) => {}
                 Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
             }
         }
@@ -3915,6 +3928,7 @@ impl FileManager {
     }
 
     fn statusbar(&mut self, context: &egui::Context) {
+        let mut reveal_conversion = None;
         egui::TopBottomPanel::bottom("status")
             .frame(
                 egui::Frame::side_top_panel(&context.style())
@@ -4006,7 +4020,47 @@ impl FileManager {
                                     .color(ACCENT),
                                 );
                             }
-                            if let Some(job) = &self.operation_job {
+                            if let Some(job) = &self.conversion_job {
+                                context
+                                    .request_repaint_after(std::time::Duration::from_millis(100));
+                                let progress = job.progress();
+                                let label = if job.is_cancelled() {
+                                    "Cancelling…".to_owned()
+                                } else {
+                                    progress.map_or_else(
+                                        || "Converting media…".to_owned(),
+                                        |fraction| {
+                                            format!("Converting media · {:.0}%", fraction * 100.0)
+                                        },
+                                    )
+                                };
+                                ui.add(
+                                    egui::ProgressBar::new(progress.unwrap_or(0.0))
+                                        .animate(progress.is_none() && !job.is_cancelled())
+                                        .desired_width(ui.available_width().min(240.0))
+                                        .desired_height(16.0)
+                                        .text(RichText::new(label).size(12.0)),
+                                )
+                                .on_hover_text(job.destination.to_string_lossy());
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().button_padding = Vec2::new(8.0, 3.0);
+                                    ui.spacing_mut().interact_size.y = 24.0;
+                                    if self
+                                        .icons
+                                        .button(ui, "Show file", "folder-open", true)
+                                        .clicked()
+                                    {
+                                        reveal_conversion = Some(job.destination.clone());
+                                    }
+                                    if self
+                                        .icons
+                                        .button(ui, "Cancel", "process-stop", !job.is_cancelled())
+                                        .clicked()
+                                    {
+                                        job.cancel();
+                                    }
+                                });
+                            } else if let Some(job) = &self.operation_job {
                                 let fraction = job.completed as f32 / job.total.max(1) as f32;
                                 ui.add(
                                     egui::ProgressBar::new(fraction)
@@ -4050,12 +4104,6 @@ impl FileManager {
                         });
                     },
                 );
-                if self.conversion_job.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Converting media…");
-                    });
-                }
                 if self.compression_job.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -4063,9 +4111,27 @@ impl FileManager {
                     });
                 }
             });
+        if let Some(path) = reveal_conversion {
+            self.reveal_search_result(path, context);
+        }
     }
 
     fn entry_response(&mut self, response: egui::Response, entry: &Entry, context: &egui::Context) {
+        if let Some(job) = self
+            .conversion_job
+            .as_ref()
+            .filter(|job| job.destination == entry.path)
+        {
+            response
+                .on_hover_text("Converting media… Right-click to cancel")
+                .context_menu(|ui| {
+                    if ui.button("Cancel conversion").clicked() {
+                        job.cancel();
+                        ui.close_menu();
+                    }
+                });
+            return;
+        }
         if self.new_folder.as_ref().is_some_and(|dialog| {
             dialog.editing_path() == Some(&entry.path) || dialog.sources.contains(&entry.path)
         }) {
@@ -4438,8 +4504,18 @@ impl FileManager {
             ui.close_menu();
         }
         ui.separator();
+        let conversion_protected = self
+            .conversion_job
+            .as_ref()
+            .is_some_and(|job| job.protects(&entry.path));
         if !files::is_trash(&self.current)
-            && self.entry_menu_button(ui, "Move to Trash · Delete", "user-trash", true, None)
+            && self.entry_menu_button(
+                ui,
+                "Move to Trash · Delete",
+                "user-trash",
+                !conversion_protected,
+                conversion_protected.then_some("Cancel the conversion before deleting this item"),
+            )
         {
             if self
                 .entry_menu
@@ -4458,8 +4534,20 @@ impl FileManager {
         }
     }
 
+    fn paint_conversion(&self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) -> bool {
+        if self
+            .conversion_job
+            .as_ref()
+            .is_some_and(|job| job.destination == entry.path)
+        {
+            egui::Spinner::new().paint_at(ui, rect);
+            return true;
+        }
+        false
+    }
+
     fn paint_entry_icon(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
-        if !ui.is_rect_visible(rect) {
+        if self.paint_conversion(ui, rect, entry) || !ui.is_rect_visible(rect) {
             return;
         }
         self.prepared_view.push((entry.path.clone(), rect));
@@ -4497,6 +4585,10 @@ impl FileManager {
     }
 
     fn paint_thumbnail(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) -> bool {
+        if self.paint_conversion(ui, rect, entry) {
+            self.prepared_view.push((entry.path.clone(), rect));
+            return true;
+        }
         let video = entry.animated();
         if entry.directory
             || (!files::image_file(&entry.path) && !video)
@@ -5997,6 +6089,24 @@ impl FileManager {
 
     fn start_operation(&mut self, mut operation: FileOperation, context: &egui::Context) {
         if self.new_folder.is_some() {
+            return;
+        }
+        if self
+            .conversion_job
+            .as_ref()
+            .is_some_and(|job| match &operation {
+                FileOperation::Trash(paths) | FileOperation::Delete(paths) => {
+                    paths.iter().any(|path| job.protects(path))
+                }
+                FileOperation::Rename(paths) | FileOperation::Move(paths) => paths
+                    .iter()
+                    .any(|(from, to)| job.protects(from) || job.protects(to)),
+                _ => false,
+            })
+        {
+            self.set_message(Some(
+                "Cancel the conversion before deleting, moving or renaming its files.".into(),
+            ));
             return;
         }
         if let FileOperation::Trash(paths) = &mut operation {
