@@ -390,6 +390,7 @@ struct MarqueeSelection {
 struct EntryMenu {
     root: egui::menu::MenuRootManager,
     entry: Entry,
+    use_selection: bool,
     cursor: usize,
     items: usize,
     activate: bool,
@@ -2160,7 +2161,7 @@ impl FileManager {
                     .map_or(context.screen_rect().center(), |(_, rect)| {
                         rect.left_bottom()
                     });
-                self.open_entry_menu(entry, position);
+                self.open_entry_menu(entry, position, true);
             }
             return;
         }
@@ -3360,15 +3361,40 @@ impl FileManager {
                         for component in trail.components() {
                             path.push(component);
                             let label = component.as_os_str().to_string_lossy();
-                            if ui
-                                .add(
-                                    egui::Button::new(label.as_ref())
-                                        .selected(path == self.current)
-                                        .min_size(Vec2::new(0.0, 32.0)),
-                                )
-                                .clicked()
-                            {
+                            let response = ui.add(
+                                egui::Button::new(label.as_ref())
+                                    .selected(path == self.current)
+                                    .min_size(Vec2::new(0.0, 32.0)),
+                            );
+                            if response.clicked() {
                                 self.navigate_breadcrumb(path.clone(), context);
+                            }
+                            if response.secondary_clicked() {
+                                let metadata = std::fs::symlink_metadata(&path).ok();
+                                self.open_entry_menu(
+                                    Entry {
+                                        path: path.clone(),
+                                        name: label.into_owned(),
+                                        directory: true,
+                                        symlink: metadata
+                                            .as_ref()
+                                            .is_some_and(|metadata| metadata.is_symlink()),
+                                        deletion_locked: files::deletion_locked(&path),
+                                        size: metadata
+                                            .as_ref()
+                                            .map_or(0, |metadata| metadata.len()),
+                                        item_count: None,
+                                        has_contents: None,
+                                        modified: metadata
+                                            .and_then(|metadata| metadata.modified().ok()),
+                                        modified_label: String::new(),
+                                        sequence: None,
+                                    },
+                                    response
+                                        .interact_pointer_pos()
+                                        .unwrap_or(response.rect.center()),
+                                    false,
+                                );
                             }
                         }
                     });
@@ -4006,11 +4032,12 @@ impl FileManager {
                 response
                     .interact_pointer_pos()
                     .unwrap_or(response.rect.center()),
+                true,
             );
         }
     }
 
-    fn open_entry_menu(&mut self, entry: Entry, position: egui::Pos2) {
+    fn open_entry_menu(&mut self, entry: Entry, position: egui::Pos2, use_selection: bool) {
         let mut root = egui::menu::MenuRootManager::default();
         *root = Some(egui::menu::MenuRoot::new(
             position,
@@ -4019,6 +4046,7 @@ impl FileManager {
         self.entry_menu = Some(EntryMenu {
             root,
             entry,
+            use_selection,
             cursor: 0,
             items: 0,
             activate: false,
@@ -4285,7 +4313,15 @@ impl FileManager {
         if !files::is_trash(&self.current)
             && self.entry_menu_button(ui, "Move to Trash · Delete", "user-trash", true, None)
         {
-            self.trash_selection(context);
+            if self
+                .entry_menu
+                .as_ref()
+                .is_some_and(|menu| menu.use_selection)
+            {
+                self.trash_selection(context);
+            } else {
+                self.start_operation(FileOperation::Trash(vec![entry.path.clone()]), context);
+            }
             ui.close_menu();
         }
         if self.entry_menu_button(ui, "Properties", "document-properties", true, None) {
