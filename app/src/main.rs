@@ -1446,7 +1446,7 @@ impl FileManager {
         if files::is_trash(&self.current) {
             if self
                 .icons
-                .button(ui, "Refresh · F5", "view-refresh", true)
+                .button(ui, "Refresh · Ctrl+Shift+R / F5", "view-refresh", true)
                 .clicked()
             {
                 self.refresh(context);
@@ -1520,7 +1520,7 @@ impl FileManager {
         ui.separator();
         if self
             .icons
-            .button(ui, "Refresh · Ctrl+R / F5", "view-refresh", true)
+            .button(ui, "Refresh · Ctrl+Shift+R / F5", "view-refresh", true)
             .clicked()
         {
             self.refresh(context);
@@ -2157,6 +2157,13 @@ impl FileManager {
         }
         self.pane_shortcuts(context);
         if self.new_folder.is_none() {
+            if !self.text_input_focused(context)
+                && context.input_mut(|input| {
+                    input.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, Key::R)
+                })
+            {
+                self.refresh(context);
+            }
             if !self.text_input_focused(context)
                 && context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::M))
             {

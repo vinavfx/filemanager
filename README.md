@@ -77,17 +77,17 @@ esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo
 
 ### Vistas y visualización
 
-| Atajo        | Acción                             | Detalle                                                                                                 |
-| ------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `m`          | Alternar vista multimedia          | Cambia entre `Media` y la vista anterior, sin cambiar el modo recursivo.                                |
-| `t`          | Mostrar árbol                      | Activa `Tree`, con carpetas desplegables y columnas.                                                    |
-| `Ctrl+G`     | Mostrar cuadrícula                 | Activa `Grid`, con iconos de todos los archivos.                                                        |
-| `r`          | Alternar multimedia recursiva      | Muestra imágenes, vídeos y secuencias de la carpeta actual y sus subcarpetas.                           |
-| `s`          | Agrupar o separar secuencias       | Alterna entre grupos de imágenes numeradas y archivos individuales.                                     |
-| `Ctrl+H`     | Mostrar u ocultar archivos ocultos | Durante una búsqueda tiene otra función; consulta su tabla.                                             |
-| `F5`         | Actualizar                         | Recarga el contenido, los recuentos y el espacio del disco; en búsqueda vuelve a recorrer las carpetas. |
-| `=` / `-`    | Aumentar / reducir tamaño          | Cambia el tamaño de iconos y miniaturas, no el de la letra.                                             |
-| `Ctrl+rueda` | Ajustar tamaño                     | Alternativa con el ratón al ajuste de tamaño.                                                           |
+| Atajo                 | Acción                             | Detalle                                                                                                                                      |
+| --------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `m`                   | Alternar vista multimedia          | Cambia entre `Media` y la vista anterior, sin cambiar el modo recursivo.                                                                     |
+| `t`                   | Mostrar árbol                      | Activa `Tree`, con carpetas desplegables y columnas.                                                                                         |
+| `Ctrl+G`              | Mostrar cuadrícula                 | Activa `Grid`, con iconos de todos los archivos.                                                                                             |
+| `r`                   | Alternar multimedia recursiva      | Muestra imágenes, vídeos y secuencias de la carpeta actual y sus subcarpetas.                                                                |
+| `s`                   | Agrupar o separar secuencias       | Alterna entre grupos de imágenes numeradas y archivos individuales.                                                                          |
+| `Ctrl+H`              | Mostrar u ocultar archivos ocultos | Durante una búsqueda tiene otra función; consulta su tabla.                                                                                  |
+| `Ctrl+Shift+R` / `F5` | Actualizar                         | Recarga el contenido, los recuentos y el espacio del disco sin perder las expansiones del árbol; en búsqueda vuelve a recorrer las carpetas. |
+| `=` / `-`             | Aumentar / reducir tamaño          | Cambia el tamaño de iconos y miniaturas, no el de la letra.                                                                                  |
+| `Ctrl+rueda`          | Ajustar tamaño                     | Alternativa con el ratón al ajuste de tamaño.                                                                                                |
 
 ### Movimiento y apertura
 
