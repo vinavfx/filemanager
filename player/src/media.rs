@@ -300,12 +300,15 @@ fn worker(
                 Request::Close(id) => {
                     generation = id;
                     decoder = None;
+                    images = ImageCache::default();
+                    failed = HashSet::new();
                     if let Ok(mut cache) = cache.lock() {
                         *cache = Cache {
                             generation,
                             ..Cache::default()
                         };
                     }
+                    context.request_repaint();
                 }
                 _ => {}
             }

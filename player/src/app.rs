@@ -119,6 +119,9 @@ impl Player {
     }
 
     pub fn open_with_mode(&mut self, path: PathBuf, still: bool) {
+        if let Ok(mut renderer) = self.renderer.lock() {
+            renderer.active = true;
+        }
         self.generation += 1;
         self.path = Some(path.clone());
         self.preview = None;
@@ -135,7 +138,11 @@ impl Player {
             .send(Request::Open(self.generation, path, still));
     }
 
-    pub fn close(&mut self) {
+    pub fn close(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let Ok(mut renderer) = self.renderer.lock() {
+            renderer.clear(gl);
+        }
+        self.picker = None;
         self.generation += 1;
         self.loader.send(Request::Close(self.generation));
         self.media = None;
@@ -177,7 +184,7 @@ impl Player {
         });
     }
 
-    fn poll(&mut self, context: &egui::Context) {
+    pub fn poll(&mut self, context: &egui::Context) {
         if let Some(receiver) = &self.picker
             && let Ok(result) = receiver.try_recv()
         {
@@ -950,7 +957,7 @@ impl Player {
         context.send_viewport_cmd(ViewportCommand::Fullscreen(self.fullscreen));
     }
 
-    fn shortcuts(&mut self, context: &egui::Context) {
+    fn shortcuts(&mut self, context: &egui::Context, gl: Option<&eframe::glow::Context>) {
         if context.wants_keyboard_input() {
             return;
         }
@@ -985,7 +992,7 @@ impl Player {
                     Key::O if !modifiers.shift => self.pick_file(),
                     Key::Q if !modifiers.shift => self.quit_requested = true,
                     Key::E if !modifiers.shift => self.hide_requested = true,
-                    Key::W if !modifiers.shift => self.close(),
+                    Key::W if !modifiers.shift => self.close(gl),
                     Key::H if !modifiers.shift => self.hud = !self.hud,
                     Key::F if !modifiers.shift => {
                         self.fit_fill = true;
@@ -1152,7 +1159,7 @@ impl Player {
 }
 
 impl eframe::App for Player {
-    fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         self.poll(context);
         if let Some(path) = context.input(|input| {
             input
@@ -1173,7 +1180,7 @@ impl eframe::App for Player {
             self.timeline_dragging = false;
         }
         self.viewer(context);
-        self.shortcuts(context);
+        self.shortcuts(context, frame.gl().map(AsRef::as_ref));
         if self.media.is_some()
             && self
                 .loader

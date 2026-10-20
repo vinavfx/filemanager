@@ -43,6 +43,8 @@ impl eframe::App for ResidentPlayer {
         }
         if self.visible {
             self.player.update(context, frame);
+        } else {
+            self.player.poll(context);
         }
         if self.player.quit_requested {
             context.send_viewport_cmd(ViewportCommand::Close);
@@ -52,7 +54,7 @@ impl eframe::App for ResidentPlayer {
             context.send_viewport_cmd(ViewportCommand::CancelClose);
             context.send_viewport_cmd(ViewportCommand::Visible(false));
             context.send_viewport_cmd(ViewportCommand::Title("Player".into()));
-            self.player.close();
+            self.player.close(frame.gl().map(AsRef::as_ref));
             self.player.hide_requested = false;
             self.visible = false;
         }

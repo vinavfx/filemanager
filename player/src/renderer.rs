@@ -8,6 +8,7 @@ pub struct Renderer {
     vertex_array: glow::VertexArray,
     texture: glow::Texture,
     frame: Option<Arc<Frame>>,
+    pub active: bool,
     pub error: Option<String>,
 }
 
@@ -66,6 +67,7 @@ impl Renderer {
                 vertex_array,
                 texture,
                 frame: None,
+                active: true,
                 error: None,
             })
         }
@@ -170,15 +172,42 @@ impl Renderer {
     ) -> egui::PaintCallback {
         let size = size / rect.size();
         let origin = origin / rect.size();
+        let frame = Arc::downgrade(&frame);
         egui::PaintCallback {
             rect,
             callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |_info, painter| {
-                if let Ok(mut renderer) = renderer.lock() {
+                if let Ok(mut renderer) = renderer.lock()
+                    && renderer.active
+                    && let Some(frame) = frame.upgrade()
+                {
                     renderer.error = renderer
-                        .draw(painter.gl(), frame.clone(), origin, size, channel, rotation)
+                        .draw(painter.gl(), frame, origin, size, channel, rotation)
                         .err();
                 }
             })),
+        }
+    }
+
+    pub fn clear(&mut self, gl: Option<&glow::Context>) {
+        self.active = false;
+        self.frame = None;
+        self.error = None;
+        if let Some(gl) = gl {
+            unsafe {
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    0,
+                    0,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
         }
     }
 
