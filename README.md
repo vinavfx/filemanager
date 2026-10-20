@@ -22,6 +22,19 @@ Rocky Linux 8 con Rust 1.89 y los archivos `Cargo.lock`, comprueba que no requie
 SHA-256 al release. También puedes ejecutar el flujo «Linux release» manualmente desde GitHub Actions indicando una etiqueta existente. El
 ejecutable es portable entre carpetas, no está enlazado estáticamente ni incluye todas las bibliotecas del sistema.
 
+## Instalación en la carpeta de usuario
+
+Ejecuta `./install.sh` desde el repositorio con ambos binarios de producción ya compilados, o desde el paquete de una release que incluya el
+instalador. No compila, descarga dependencias ni requiere `sudo`.
+
+Copia `still-files` y `player` juntos a `~/.local/bin/`, con permisos de ejecución, y añade esa carpeta al `PATH` en `~/.profile` y
+`~/.bashrc`. Abre una terminal nueva y ejecuta `still-files /ruta/a/una/carpeta`. En otros intérpretes, configura también su `PATH` si es
+necesario. NukeTool busca primero `~/.local/bin/still-files` y después el `PATH`, sin depender de la ubicación del repositorio.
+
+Puedes mover o eliminar la carpeta original después de instalar. Para actualizar, vuelve a ejecutar `./install.sh` con los binarios nuevos y
+cierra los procesos residentes de ambas aplicaciones antes de abrirlas otra vez. Para desinstalar, elimina `~/.local/bin/still-files` y
+`~/.local/bin/player`; las preferencias se conservan.
+
 ## Bloques independientes
 
 | Bloque                     | Fuentes y manifiesto                | Lanzador                      |

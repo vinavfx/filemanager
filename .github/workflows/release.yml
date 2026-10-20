@@ -56,6 +56,7 @@ jobs:
           install -m 755 app/target/release/still-files "dist/${package}/still-files"
           install -m 755 player/target/release/player "dist/${package}/player"
           install -m 755 packaging/start.sh "dist/${package}/start.sh"
+          install -m 755 install.sh "dist/${package}/install.sh"
           install -m 644 README.md "dist/${package}/README.md"
           install -m 644 player/README.md "dist/${package}/PLAYER.md"
           install -m 644 player/LICENSE "dist/${package}/PLAYER-LICENSE"
