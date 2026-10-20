@@ -18,7 +18,7 @@ mod watch;
 use eframe::egui::{self, Color32, Key, RichText, Stroke, Vec2};
 use files::{Entry, SizeJob, SizeResult};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
@@ -436,7 +436,7 @@ struct FileManager {
     selection: HashSet<PathBuf>,
     entry_menu: Option<EntryMenu>,
     marquee_selection: Option<MarqueeSelection>,
-    copied_files: Vec<operations::YankedFile>,
+    copied_files: Arc<egui::mutex::Mutex<Vec<operations::YankedFile>>>,
     paste_placement: Option<PastePlacement>,
     selection_anchor: Option<PathBuf>,
     directory_selections: HashMap<PathBuf, DirectorySelection>,
@@ -484,6 +484,7 @@ struct FileManager {
     trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     conversion_job: Option<conversion::Job>,
+    conversion_queue: VecDeque<(Entry, conversion::Format)>,
     message: Option<String>,
     message_deadline: std::time::Instant,
 }
@@ -587,7 +588,7 @@ impl FileManager {
             selection: HashSet::new(),
             entry_menu: None,
             marquee_selection: None,
-            copied_files: Vec::new(),
+            copied_files: Arc::new(egui::mutex::Mutex::new(Vec::new())),
             paste_placement: None,
             selection_anchor: None,
             directory_selections: HashMap::new(),
@@ -634,6 +635,7 @@ impl FileManager {
             trash_focus: Some(false),
             compression_job: None,
             conversion_job: None,
+            conversion_queue: VecDeque::new(),
             message: config_error.or(bookmark_error),
             message_deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         };
@@ -1141,7 +1143,7 @@ impl FileManager {
         if selected.is_empty() {
             return;
         }
-        self.copied_files = selected
+        *self.copied_files.lock() = selected
             .iter()
             .flat_map(|path| {
                 self.entries
@@ -1200,7 +1202,8 @@ impl FileManager {
         {
             return;
         }
-        if self.copied_files.is_empty() {
+        let copied_files = self.copied_files.lock().clone();
+        if copied_files.is_empty() {
             self.set_message(Some(
                 "Nothing to paste. Select files and press yy, or y in Visual mode.".into(),
             ));
@@ -1256,10 +1259,7 @@ impl FileManager {
             order: siblings,
         });
         self.visual_line = false;
-        self.start_operation(
-            FileOperation::Copy(self.copied_files.clone(), directory),
-            context,
-        );
+        self.start_operation(FileOperation::Copy(copied_files, directory), context);
     }
 
     fn select_entry(&mut self, path: PathBuf, context: &egui::Context) {
@@ -1639,14 +1639,60 @@ impl FileManager {
         if self.conversion_job.is_some() {
             return;
         }
-        match conversion::start(entry, format, context.clone()) {
-            Ok(job) => {
-                self.conversion_job = Some(job);
-                self.media_cache.clear();
-                self.refresh(context);
+        let use_selection = self
+            .entry_menu
+            .as_ref()
+            .is_some_and(|menu| menu.use_selection);
+        if use_selection {
+            for path in &self.visible_paths {
+                if !self.selection.contains(path) {
+                    continue;
+                }
+                if let Some(entry) = self
+                    .entries
+                    .iter()
+                    .chain(self.tree_cache.values().flatten())
+                    .find(|entry| &entry.path == path)
+                    .filter(|entry| {
+                        entry.sequence.is_some()
+                            || files::image_file(&entry.path)
+                            || files::video_file(&entry.path)
+                    })
+                {
+                    self.conversion_queue.push_back((entry.clone(), format));
+                }
             }
-            Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
+        } else {
+            self.conversion_queue.push_back((entry, format));
         }
+        self.start_next_conversion(context);
+    }
+
+    fn start_next_conversion(&mut self, context: &egui::Context) {
+        while let Some((entry, format)) = self.conversion_queue.pop_front() {
+            match conversion::start(entry, format, context.clone()) {
+                Ok(job) => {
+                    self.conversion_job = Some(job);
+                    self.media_cache.clear();
+                    self.refresh(context);
+                    break;
+                }
+                Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
+            }
+        }
+    }
+
+    fn conversion_protects(&self, path: &Path) -> bool {
+        self.conversion_job
+            .as_ref()
+            .is_some_and(|job| job.protects(path))
+            || self.conversion_queue.iter().any(|(entry, _)| {
+                entry.path.starts_with(path)
+                    || entry
+                        .sequence
+                        .as_ref()
+                        .is_some_and(|frames| frames.iter().any(|frame| frame.starts_with(path)))
+            })
     }
 
     fn poll(&mut self, context: &egui::Context) {
@@ -1656,6 +1702,9 @@ impl FileManager {
             .and_then(|job| job.receiver.try_recv().ok())
         {
             if let Some(job) = self.conversion_job.take() {
+                if job.is_cancelled() {
+                    self.conversion_queue.clear();
+                }
                 if !matches!(result, Ok(Some(_))) && !job.destination.exists() {
                     self.update_operation_visibility(
                         std::slice::from_ref(&job.destination),
@@ -1676,6 +1725,7 @@ impl FileManager {
                 Ok(None) => {}
                 Err(error) => self.set_message(Some(format!("Cannot convert: {error}"))),
             }
+            self.start_next_conversion(context);
         }
         if let Some(job) = &mut self.operation_job {
             let mut hidden = Vec::new();
@@ -1745,7 +1795,7 @@ impl FileManager {
                     let restored_paths = std::mem::take(&mut job.restored_paths);
                     let mut outcome = std::mem::take(&mut job.outcome);
                     if !job.trash_paths.is_empty() && !outcome.trashed.is_empty() {
-                        self.copied_files = std::mem::take(&mut outcome.trashed);
+                        *self.copied_files.lock() = std::mem::take(&mut outcome.trashed);
                     }
                     self.pending_delete.append(&mut outcome.pending_delete);
                     let previous_selection = job.previous_selection.take();
@@ -4504,10 +4554,7 @@ impl FileManager {
             ui.close_menu();
         }
         ui.separator();
-        let conversion_protected = self
-            .conversion_job
-            .as_ref()
-            .is_some_and(|job| job.protects(&entry.path));
+        let conversion_protected = self.conversion_protects(&entry.path);
         if !files::is_trash(&self.current)
             && self.entry_menu_button(
                 ui,
@@ -6091,19 +6138,15 @@ impl FileManager {
         if self.new_folder.is_some() {
             return;
         }
-        if self
-            .conversion_job
-            .as_ref()
-            .is_some_and(|job| match &operation {
-                FileOperation::Trash(paths) | FileOperation::Delete(paths) => {
-                    paths.iter().any(|path| job.protects(path))
-                }
-                FileOperation::Rename(paths) | FileOperation::Move(paths) => paths
-                    .iter()
-                    .any(|(from, to)| job.protects(from) || job.protects(to)),
-                _ => false,
-            })
-        {
+        if match &operation {
+            FileOperation::Trash(paths) | FileOperation::Delete(paths) => {
+                paths.iter().any(|path| self.conversion_protects(path))
+            }
+            FileOperation::Rename(paths) | FileOperation::Move(paths) => paths
+                .iter()
+                .any(|(from, to)| self.conversion_protects(from) || self.conversion_protects(to)),
+            _ => false,
+        } {
             self.set_message(Some(
                 "Cancel the conversion before deleting, moving or renaming its files.".into(),
             ));
@@ -6347,14 +6390,14 @@ impl FileManager {
         context: &egui::Context,
     ) {
         for trashed in &outcome.trashed {
-            for item in &mut self.copied_files {
+            for item in self.copied_files.lock().iter_mut() {
                 if item.path == trashed.path {
                     item.clone_from(trashed);
                 }
             }
         }
         for (from, to) in &outcome.copied {
-            for item in &mut self.copied_files {
+            for item in self.copied_files.lock().iter_mut() {
                 item.pasted(from, to);
             }
         }
@@ -7742,8 +7785,9 @@ impl eframe::App for ResidentApp {
                     if self.visible {
                         let id = egui::ViewportId::from_hash_of(("file-manager", self.next_window));
                         self.next_window += 1;
-                        let window =
+                        let mut window =
                             FileManager::new(context, self.root.external_drag.sibling(), path);
+                        window.copied_files = self.root.copied_files.clone();
                         self.windows.push((id, window));
                     } else {
                         let directory = path

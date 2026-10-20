@@ -9,9 +9,8 @@ y extráelo. Abre `still-files` con doble clic. Desde `v0.1.3`, los binarios se 
 archivos antiguos no los confundan con bibliotecas compartidas. Conserva sus permisos de ejecución al extraerlos; el escritorio debe
 permitir ejecutar aplicaciones locales.
 
-También se incluye `start.sh` como alternativa. No compila ni instala nada y funciona aunque la ruta contenga espacios. Su apertura con
-doble clic depende de la configuración del gestor de archivos. No necesitas Rust. Mantén `start.sh`, `still-files` y `player` en la misma
-carpeta. En los paquetes anteriores a `v0.1.3`, ejecuta `./still-files` desde una terminal.
+No necesitas Rust para usar los binarios. Mantén `still-files` y `player` en la misma carpeta. También puedes ejecutar `./still-files` desde
+una terminal.
 
 Desde `v0.1.2`, requiere Linux x86_64 con glibc 2.28 o posterior, como Rocky Linux 8, un escritorio X11 o Wayland y OpenGL. El paquete
 `v0.1.1` requiere glibc 2.35 o posterior. Las herramientas opcionales se indican en «Arranque». Puedes verificar la descarga con
@@ -37,13 +36,13 @@ cierra los procesos residentes de ambas aplicaciones antes de abrirlas otra vez.
 
 ## Bloques independientes
 
-| Bloque                     | Fuentes y manifiesto                | Lanzador                      |
-| -------------------------- | ----------------------------------- | ----------------------------- |
-| Filemanager                | `app/src/` y `app/Cargo.toml`       | `./start.sh`                  |
-| [Player](player/README.md) | `player/src/` y `player/Cargo.toml` | `./player/start.sh [archivo]` |
+| Bloque                     | Fuentes y manifiesto                | Ejecutable compilado                       |
+| -------------------------- | ----------------------------------- | ------------------------------------------ |
+| Filemanager                | `app/src/` y `app/Cargo.toml`       | `./app/target/release/still-files`         |
+| [Player](player/README.md) | `player/src/` y `player/Cargo.toml` | `./player/target/release/player [archivo]` |
 
 Cada bloque conserva sus dependencias, `Cargo.lock`, compilaciones en `target/` y proceso residente. No comparten módulos ni requieren el
-repositorio externo de player. Filemanager abre los medios mediante `player/start.sh`; los demás archivos usan su aplicación asociada.
+repositorio externo de player. Filemanager abre los medios con el ejecutable `player`; los demás archivos usan su aplicación asociada.
 
 Para compilar ambos sin descargar dependencias:
 
@@ -71,16 +70,16 @@ Herramientas utilizadas:
 Desde la raíz del repositorio:
 
 ```bash
-./start.sh
-./start.sh /ruta/a/una/carpeta
+./app/target/release/still-files
+./app/target/release/still-files /ruta/a/una/carpeta
 ```
 
-El lanzador ejecuta directamente la compilación actualizada más reciente, de desarrollo o de producción; si no existe, compila en modo de
-producción y puede descargar dependencias. La interfaz está en inglés.
+Compila antes con `cd app && cargo build --release --offline`. Si está instalado, también puedes ejecutar `still-files` desde cualquier
+carpeta. La interfaz está en inglés.
 
 La primera apertura deja un proceso residente por sesión gráfica. Las siguientes abren ventanas en ese mismo proceso, sin reiniciar el motor
 gráfico. Al cerrar todas las ventanas, permanece en segundo plano para acelerar la reapertura; el contenido y las miniaturas de cada carpeta
-siguen cargándose según sea necesario. Para terminar también el proceso residente, ejecuta `./start.sh --quit`. Después de recompilar, usa
+siguen cargándose según sea necesario. Para terminar también el proceso residente, ejecuta `still-files --quit`. Después de recompilar, usa
 esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo.
 
 ## Atajos de teclado

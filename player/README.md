@@ -6,18 +6,18 @@ menús, audio, paneles ni herramientas adicionales.
 
 ## Ubicación en el repositorio
 
-Este bloque es independiente de filemanager (`../app/`): conserva su manifiesto, dependencias, fuentes, documentación, licencia y lanzador.
-Filemanager lo abre mediante `player/start.sh`, sin necesitar una copia externa. Los comandos siguientes se ejecutan desde `player/`.
+Este bloque es independiente de filemanager (`../app/`): conserva su manifiesto, dependencias, fuentes, documentación y licencia.
+Filemanager lo abre mediante el ejecutable `player`, sin necesitar una copia externa. Los comandos siguientes se ejecutan desde `player/`.
 
 ## Ejecución
 
 Requiere Rust 1.89 o posterior, OpenGL 3.3, FFmpeg y FFprobe en `PATH`. `Ctrl+O` utiliza Zenity; también se puede abrir por argumento o
 arrastrando un archivo.
 
-Ejecuta `./start.sh` para usar el binario actualizado sin pasar por Cargo. Al cerrar la ventana o pulsar `Ctrl+E`, Player permanece en
-segundo plano y libera el medio abierto; la siguiente ejecución reutiliza el proceso y muestra la ventana. Si ya está visible, una nueva
-apertura reutiliza esa misma ventana. `Ctrl+Q` o `./start.sh --quit` terminan el proceso por completo. No se inicia automáticamente con la
-sesión ni guarda fotogramas en disco.
+Ejecuta `./target/release/player` tras compilar con `cargo build --release --offline`, o `player` si está instalado. Al cerrar la ventana o
+pulsar `Ctrl+E`, Player permanece en segundo plano y libera el medio abierto; la siguiente ejecución reutiliza el proceso y muestra la
+ventana. Si ya está visible, una nueva apertura reutiliza esa misma ventana. `Ctrl+Q` o `player --quit` terminan el proceso por completo. No
+se inicia automáticamente con la sesión ni guarda fotogramas en disco.
 
 ```console
 cargo run --release -- /ruta/video.mov
