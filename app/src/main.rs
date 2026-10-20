@@ -2147,6 +2147,8 @@ impl FileManager {
             return;
         }
         let mut directory_steps = Vec::new();
+        let row_deletion =
+            !self.sidebar_focused && matches!(self.settings.view, View::Grid | View::Media);
         context.input_mut(|input| {
             input.events.retain_mut(|event| {
                 if matches!(
@@ -2161,6 +2163,18 @@ impl FileManager {
                     self.motion_count = 0;
                 }
                 if let egui::Event::Text(text) = event {
+                    if row_deletion && matches!(text.as_str(), "_" | "$") {
+                        if self.pending_d && !self.pending_g {
+                            let motion = if text == "_" { Key::Minus } else { Key::Num4 };
+                            self.delete_motion = Some((motion, 0));
+                            self.pending_d = false;
+                            self.motion_count = 0;
+                            return false;
+                        }
+                        if matches!(self.delete_motion, Some((Key::Minus | Key::Num4, _))) {
+                            return false;
+                        }
+                    }
                     if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
                         for digit in text.bytes() {
                             self.motion_count = self
@@ -2209,6 +2223,9 @@ impl FileManager {
                     let plain = modifiers.matches_exact(egui::Modifiers::NONE);
                     let shifted = modifiers.matches_exact(egui::Modifiers::SHIFT);
                     let motion = match *key {
+                        Key::Minus | Key::Num4 if shifted && row_deletion && !self.pending_g => {
+                            Some(*key)
+                        }
                         Key::G if plain && !self.pending_g => {
                             self.pending_g = true;
                             self.pending_d = true;
@@ -2305,7 +2322,8 @@ impl FileManager {
                 true
             });
         });
-        if !self.sidebar_focused {
+        if !self.sidebar_focused && !matches!(self.delete_motion, Some((Key::Minus | Key::Num4, _)))
+        {
             if let Some((motion, count)) = self.delete_motion.take() {
                 if let Some(current) = self
                     .visible_paths
@@ -2777,6 +2795,30 @@ impl FileManager {
             || self.text_input_focused(context)
             || items.is_empty()
         {
+            return;
+        }
+        if let Some((motion @ (Key::Minus | Key::Num4), _)) = self.delete_motion {
+            self.delete_motion = None;
+            if let Some(current) = items
+                .iter()
+                .position(|(entry, _, _)| self.selected.as_ref() == Some(&entry.path))
+            {
+                let row = items[current].1.y;
+                let target = if motion == Key::Minus {
+                    items.iter().position(|(_, position, _)| position.y == row)
+                } else {
+                    items.iter().rposition(|(_, position, _)| position.y == row)
+                }
+                .unwrap_or(current);
+                if !files::is_trash(&self.current) {
+                    let paths = self.resolve_trash_paths(
+                        items[current.min(target)..=current.max(target)]
+                            .iter()
+                            .map(|(entry, _, _)| &entry.path),
+                    );
+                    self.start_operation(FileOperation::Trash(paths), context);
+                }
+            }
             return;
         }
         if let Some(y) = self.pane_selection_y.take() {

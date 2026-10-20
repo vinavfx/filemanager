@@ -162,14 +162,16 @@ eliminado por pulsación.
 Pulsa las teclas en secuencia; `G` significa `Mayús+G`. Los rangos incluyen ambos extremos y siguen el orden visible, también en cuadrícula;
 `j/k` en estas operaciones cuentan elementos, no filas de iconos.
 
-| Secuencia      | Rango enviado a la papelera                                         |
-| -------------- | ------------------------------------------------------------------- |
-| `dG`           | Desde el actual hasta el último.                                    |
-| `dgg`          | Desde el primero hasta el actual.                                   |
-| `d3j` / `d3k`  | Actual y tres elementos hacia abajo / arriba: cuatro en total.      |
-| `3dd` / `d3d`  | Tres elementos desde el actual hacia abajo.                         |
-| `d3G` / `d3gg` | Desde el actual hasta el elemento número 3 (posición absoluta).     |
-| `2d3j`         | Actual y seis elementos hacia abajo: los contadores se multiplican. |
+| Secuencia                     | Rango enviado a la papelera                                          |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `dG`                          | Desde el actual hasta el último.                                     |
+| `dgg`                         | Desde el primero hasta el actual.                                    |
+| `d$` (`d`, después `Mayús+4`) | Desde el actual hasta el final de su fila, solo en Grid y Media.     |
+| `d_`                          | Desde el principio de su fila hasta el actual, solo en Grid y Media. |
+| `d3j` / `d3k`                 | Actual y tres elementos hacia abajo / arriba: cuatro en total.       |
+| `3dd` / `d3d`                 | Tres elementos desde el actual hacia abajo.                          |
+| `d3G` / `d3gg`                | Desde el actual hasta el elemento número 3 (posición absoluta).      |
+| `2d3j`                        | Actual y seis elementos hacia abajo: los contadores se multiplican.  |
 
 También se admiten `↑/↓` y `Home/End` después de `d`. `Esc` cancela la secuencia; `u` deshace la eliminación de archivos. Una carpeta
 incluida en el rango se envía a la papelera con todo su contenido, aunque esté plegada. `D` (`Mayús+D`) no significa eliminar hasta el
