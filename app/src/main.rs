@@ -87,6 +87,7 @@ enum TreeSort {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    last_directory: Option<PathBuf>,
     removed_places: Vec<PathBuf>,
     entry_order: HashMap<PathBuf, Vec<PathBuf>>,
     media_players: HashMap<String, String>,
@@ -112,6 +113,7 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            last_directory: None,
             removed_places: Vec::new(),
             entry_order: HashMap::new(),
             media_players: HashMap::new(),
@@ -528,13 +530,15 @@ impl FileManager {
                 1.0
             };
         }
-        let desktop = home_places
-            .iter()
-            .find(|place| matches!(place.kind, places::Kind::Desktop))
-            .map_or_else(|| home.clone(), |place| place.path.clone());
-        let requested = requested.unwrap_or_else(|| desktop.clone());
+        let requested = requested
+            .or_else(|| settings.last_directory.clone())
+            .unwrap_or_else(|| home.clone());
         let current = requested.canonicalize().unwrap_or(requested);
-        let current = if current.is_dir() { current } else { desktop };
+        let current = if current.is_dir() || files::is_trash(&current) {
+            current
+        } else {
+            home
+        };
         let mut app = Self {
             external_drag,
             directory_refresh: None,
@@ -618,6 +622,7 @@ impl FileManager {
             message_deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         };
         app.refresh(context);
+        app.save();
         app
     }
 
@@ -627,6 +632,7 @@ impl FileManager {
     }
 
     fn save(&mut self) {
+        self.settings.last_directory = Some(self.current.clone());
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             if let Some(parent) = self.config.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -882,6 +888,7 @@ impl FileManager {
             .insert(self.current.clone(), std::mem::take(&mut self.expanded));
         self.expanded = self.directory_expansions.remove(&path).unwrap_or_default();
         self.current = path;
+        self.save();
         self.folder_counts.restore(&mut entries);
         self.entries = Arc::new(entries);
         self.folder_counts.cancel();
@@ -3338,12 +3345,23 @@ impl FileManager {
     ) {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
-        paint_selection(
-            ui,
-            rect,
-            self.sidebar_focused && self.sidebar_cursor == Some(index),
-            false,
-        );
+        let current = bookmark.path.as_ref() == Some(&self.current)
+            || (bookmark.uri == "trash:///" && files::is_trash(&self.current));
+        if current {
+            ui.painter().rect_filled(
+                rect.shrink(2.0),
+                5.0,
+                Color32::from_rgba_unmultiplied(128, 128, 128, 100),
+            );
+        }
+        if self.sidebar_focused && self.sidebar_cursor == Some(index) {
+            ui.painter().rect_stroke(
+                rect.shrink(2.0),
+                5.0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
         if self.sidebar_focused && self.sidebar_cursor == Some(index) && self.scroll_to_bookmark {
             ui.scroll_to_rect(rect, None);
             self.scroll_to_bookmark = false;
@@ -3610,7 +3628,7 @@ impl FileManager {
                 }
             }
         }
-        egui::SidePanel::left("bookmarks")
+        egui::SidePanel::left(egui::Id::new(("bookmarks", context.viewport_id())))
             .default_width(180.0)
             .width_range(140.0..=280.0)
             .show(context, |ui| {
@@ -7391,15 +7409,16 @@ impl eframe::App for ResidentApp {
                             FileManager::new(context, self.root.external_drag.sibling(), path);
                         self.windows.push((id, window));
                     } else {
-                        let home = std::env::var_os("HOME")
-                            .map_or_else(|| PathBuf::from("/"), PathBuf::from);
-                        let directory = path.unwrap_or_else(|| {
-                            self.root
-                                .home_places
-                                .iter()
-                                .find(|place| matches!(place.kind, places::Kind::Desktop))
-                                .map_or(home, |place| place.path.clone())
-                        });
+                        let directory = path
+                            .or_else(|| {
+                                std::fs::read(&self.root.config)
+                                    .ok()
+                                    .and_then(|bytes| {
+                                        serde_json::from_slice::<Settings>(&bytes).ok()
+                                    })
+                                    .and_then(|settings| settings.last_directory)
+                            })
+                            .unwrap_or_else(|| self.root.current.clone());
                         self.root.navigate(directory, context);
                         self.root.refresh(context);
                         self.visible = true;
