@@ -420,7 +420,7 @@ impl Icons {
         } else {
             egui::Button::new(format!("   {label}"))
         };
-        ui.add_enabled(enabled, button)
+        ui.add_enabled(enabled, button.wrap_mode(egui::TextWrapMode::Extend))
     }
 
     pub fn get(&mut self, path: &Path) -> Option<&egui::TextureHandle> {

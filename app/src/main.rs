@@ -498,6 +498,7 @@ impl FileManager {
         style.spacing.item_spacing = Vec2::new(8.0, 8.0);
         style.spacing.button_padding = Vec2::new(10.0, 7.0);
         style.spacing.scroll = egui::style::ScrollStyle::solid();
+        style.spacing.menu_margin = egui::Margin::same(10);
         context.set_style(style);
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let config = std::env::var_os("XDG_CONFIG_HOME")
@@ -1381,11 +1382,15 @@ impl FileManager {
             let executable = std::env::current_exe()
                 .ok()
                 .and_then(|executable| {
-                    executable
-                        .parent()
-                        .map(|directory| directory.join("player"))
+                    let directory = executable.parent()?;
+                    std::iter::once(directory.join("player"))
+                        .chain(
+                            directory
+                                .ancestors()
+                                .map(|directory| directory.join("player/start.sh")),
+                        )
+                        .find(|candidate| candidate.is_file())
                 })
-                .filter(|executable| executable.is_file())
                 .or_else(|| {
                     Path::new(env!("CARGO_MANIFEST_DIR"))
                         .parent()
