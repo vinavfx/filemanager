@@ -1125,7 +1125,7 @@ impl FileManager {
         self.select(first, context);
     }
 
-    fn yank(&mut self, context: &egui::Context) {
+    fn yank(&mut self) {
         let selected: Vec<_> = self
             .visible_paths
             .iter()
@@ -1153,7 +1153,7 @@ impl FileManager {
             })
             .map(operations::YankedFile::from)
             .collect();
-        self.exit_visual(context);
+        self.visual_line = false;
         self.set_message(Some(format!("Yanked {} items.", selected.len())));
     }
 
@@ -1255,6 +1255,7 @@ impl FileManager {
             anchor,
             order: siblings,
         });
+        self.visual_line = false;
         self.start_operation(
             FileOperation::Copy(self.copied_files.clone(), directory),
             context,
@@ -1315,6 +1316,7 @@ impl FileManager {
     }
 
     fn open(&mut self, path: PathBuf, context: &egui::Context) {
+        self.visual_line = false;
         if path.is_dir() {
             self.navigate(path, context);
             return;
@@ -2445,7 +2447,7 @@ impl FileManager {
             }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Y)) {
-            self.yank(context);
+            self.yank();
         }
         if self.settings.view == View::Tree
             && context.input_mut(|input| input.consume_key(egui::Modifiers::ALT, Key::P))
@@ -2475,6 +2477,7 @@ impl FileManager {
         if context.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, Key::O))
             && self.settings.view == View::Tree
         {
+            self.visual_line = false;
             let paths: Vec<_> = self
                 .selection
                 .iter()
@@ -2493,6 +2496,7 @@ impl FileManager {
             }
         }
         if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::O)) {
+            self.visual_line = false;
             if self.settings.view == View::Tree {
                 for path in self.selection.clone() {
                     if path.is_dir() && !path.is_symlink() && !self.expanded.remove(&path) {
@@ -4134,6 +4138,7 @@ impl FileManager {
     }
 
     fn open_entry_menu(&mut self, entry: Entry, position: egui::Pos2, use_selection: bool) {
+        self.visual_line = false;
         let mut root = egui::menu::MenuRootManager::default();
         *root = Some(egui::menu::MenuRoot::new(
             position,
@@ -4330,7 +4335,11 @@ impl FileManager {
             }
             menu.items += 1;
         }
-        response.clicked() || (selected && menu.activate)
+        let activated = response.clicked() || (selected && menu.activate);
+        if activated {
+            self.visual_line = false;
+        }
+        activated
     }
 
     fn entry_menu_contents(&mut self, ui: &mut egui::Ui, entry: &Entry, context: &egui::Context) {
@@ -6171,6 +6180,7 @@ impl FileManager {
 
     fn trash_selection(&mut self, context: &egui::Context) {
         if !files::is_trash(&self.current) {
+            self.visual_line = false;
             self.start_operation(FileOperation::Trash(self.selected_trash_paths()), context);
         }
     }
@@ -6515,6 +6525,7 @@ impl FileManager {
                 .and_then(|_| files::sequence_rename_name(&source))
                 .unwrap_or_else(|| name.to_owned())
         };
+        self.visual_line = false;
         self.new_folder = Some(NameDialog {
             preview: None,
             previous_selection: None,
