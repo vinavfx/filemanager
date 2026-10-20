@@ -313,6 +313,7 @@ enum FileOperation {
     Trash(Vec<PathBuf>),
     Delete(Vec<PathBuf>),
     EmptyTrash,
+    Extract(PathBuf),
     Undo,
     Redo,
 }
@@ -4202,6 +4203,15 @@ impl FileManager {
                         }
                     } else if modifiers.matches_exact(egui::Modifiers::CTRL) {
                         match key {
+                            Key::N | Key::P => {
+                                menu.cursor = if key == Key::N {
+                                    menu.cursor.saturating_add(count).min(last)
+                                } else {
+                                    menu.cursor.saturating_sub(count)
+                                };
+                                menu.count = 0;
+                                menu.pending_g = false;
+                            }
                             Key::D => {
                                 menu.cursor =
                                     menu.cursor.saturating_add(menu.items.div_ceil(2)).min(last)
@@ -4315,7 +4325,21 @@ impl FileManager {
                 }
             }
         }
-        if !entry.directory && !files::is_trash(&self.current) {
+        if !entry.directory && files::archive_file(&entry.path) && !files::is_trash(&self.current) {
+            ui.separator();
+            if self.entry_menu_button(
+                ui,
+                "Extract here",
+                "package-x-generic",
+                self.operation_job.is_none(),
+                None,
+            ) {
+                self.start_operation(FileOperation::Extract(entry.path.clone()), context);
+                ui.close_menu();
+            }
+            ui.separator();
+        }
+        if multimedia && !files::is_trash(&self.current) {
             ui.separator();
             for format in [
                 conversion::Format::Png,
@@ -6000,6 +6024,7 @@ impl FileManager {
             FileOperation::Delete(paths) if paths.is_empty() => return,
             FileOperation::Delete(_) => "Permanently deleting",
             FileOperation::EmptyTrash => "Emptying trash",
+            FileOperation::Extract(_) => "Extracting",
             FileOperation::Undo => "Undoing",
             FileOperation::Redo => "Redoing",
         };
@@ -6011,6 +6036,7 @@ impl FileManager {
             FileOperation::Rename(paths) | FileOperation::Move(paths) => paths.len(),
             FileOperation::Copy(paths, _) => paths.len(),
             FileOperation::Delete(paths) => paths.len(),
+            FileOperation::Extract(_) => 1,
             _ => trash_paths.len(),
         };
         let preserve_selection = matches!(operation, FileOperation::Undo | FileOperation::Redo);
@@ -6079,6 +6105,19 @@ impl FileManager {
                 FileOperation::Trash(paths) => history.trash(paths, &mut progress),
                 FileOperation::Delete(paths) => history.delete(paths, &mut progress),
                 FileOperation::EmptyTrash => history.empty_trash(&mut progress),
+                FileOperation::Extract(path) => {
+                    progress(0, 1, &path);
+                    let result = files::extract(&path);
+                    history.discard_redo();
+                    progress(1, 1, &path);
+                    operations::Outcome {
+                        changed: true,
+                        error: result
+                            .err()
+                            .map(|error| format!("Cannot extract {}: {error}", path.display())),
+                        ..operations::Outcome::default()
+                    }
+                }
                 FileOperation::Undo => history.undo(&mut progress),
                 FileOperation::Redo => history.redo(&mut progress),
             };

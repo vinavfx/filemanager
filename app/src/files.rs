@@ -868,6 +868,63 @@ pub(crate) fn gio(command: &str, options: &[&str], paths: &[&OsStr]) -> io::Resu
     }
 }
 
+pub fn archive_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    [
+        ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tbz", ".tar.xz", ".txz",
+        ".tar.zst", ".tzst",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
+pub fn extract(path: &Path) -> io::Result<()> {
+    let source = path.canonicalize()?;
+    let parent = source.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The archive has no parent directory.",
+        )
+    })?;
+    let zip = source
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+    let mut command = if zip {
+        let mut command = std::process::Command::new("unzip");
+        command.args(["-n", "-q"]).arg(&source);
+        command
+    } else {
+        let mut command = std::process::Command::new("tar");
+        command
+            .args([
+                "--extract",
+                "--skip-old-files",
+                "--no-same-owner",
+                "--no-same-permissions",
+                "--file",
+            ])
+            .arg(&source);
+        command
+    };
+    let output = command
+        .current_dir(parent)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "Archive extraction failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
 pub fn compress(path: &Path) -> io::Result<PathBuf> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(

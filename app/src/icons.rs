@@ -324,9 +324,22 @@ impl Icons {
             let mut resolver = Resolver::new();
             while let Ok((key, path)) = requests.recv() {
                 let image = if let Some(name) = key.strip_prefix("icon:") {
+                    let names = if let Some(base) = name.strip_suffix("-symbolic") {
+                        vec![name.to_owned(), base.to_owned()]
+                    } else {
+                        vec![name.to_owned()]
+                    };
                     resolver
-                        .lookup(&[name.to_owned()])
+                        .lookup(&names)
                         .and_then(|path| resolver.render(&path))
+                        .map(|mut image| {
+                            if name.ends_with("-symbolic") {
+                                for pixel in &mut image.pixels {
+                                    *pixel = egui::Color32::from_white_alpha(pixel.a());
+                                }
+                            }
+                            image
+                        })
                 } else {
                     resolver.load(&path)
                 };
@@ -392,9 +405,18 @@ impl Icons {
         icon: &str,
         enabled: bool,
     ) -> egui::Response {
+        let icon = if icon == "user-trash" {
+            "user-trash-symbolic"
+        } else {
+            icon
+        };
         let texture = self.request(format!("icon:{icon}"), Path::new(""));
         let button = if let Some(texture) = texture {
-            egui::Button::image_and_text((texture.id(), egui::vec2(16.0, 16.0)), label)
+            let mut image = egui::Image::new((texture.id(), egui::vec2(16.0, 16.0)));
+            if icon.ends_with("-symbolic") {
+                image = image.tint(ui.visuals().text_color());
+            }
+            egui::Button::image_and_text(image, label)
         } else {
             egui::Button::new(format!("   {label}"))
         };
