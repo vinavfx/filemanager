@@ -287,7 +287,15 @@ impl PathCompletion {
     }
 }
 
+#[derive(Default)]
+struct EntryFilter {
+    source: std::sync::Weak<Vec<Entry>>,
+    query: String,
+    entries: Arc<Vec<Entry>>,
+}
+
 struct TreeLayout {
+    query: Option<String>,
     sort: TreeSort,
     descending: bool,
     zoom: f32,
@@ -465,6 +473,7 @@ struct FileManager {
     focus_path: bool,
     search: Option<search::Search>,
     find_query: Option<String>,
+    entry_filter: EntryFilter,
     focus_find: bool,
     address: String,
     path_completion: PathCompletion,
@@ -619,6 +628,7 @@ impl FileManager {
             focus_path: false,
             search: None,
             find_query: None,
+            entry_filter: EntryFilter::default(),
             focus_find: false,
             path_completion: PathCompletion::default(),
             expanded: HashSet::new(),
@@ -2060,9 +2070,7 @@ impl FileManager {
     }
 
     fn pane_shortcuts(&mut self, context: &egui::Context) {
-        if self.new_folder.is_some()
-            || context.memory(|memory| memory.has_focus(egui::Id::new("path-input")))
-        {
+        if self.new_folder.is_some() || self.text_input_focused(context) {
             self.pending_window_command = false;
             return;
         }
@@ -2694,7 +2702,7 @@ impl FileManager {
     }
 
     fn text_input_focused(&self, context: &egui::Context) -> bool {
-        self.find_query.is_some()
+        (self.find_query.is_some() && self.focus_find)
             || context
                 .memory(|memory| memory.focused())
                 .is_some_and(|id| egui::text_edit::TextEditState::load(context, id).is_some())
@@ -3409,34 +3417,38 @@ impl FileManager {
                 egui::TextEdit::singleline(query)
                     .id(egui::Id::new("find-input"))
                     .vertical_align(egui::Align::Center)
-                    .hint_text("Find and select visible items…"),
+                    .hint_text("Filter visible items…"),
             );
             if self.focus_find {
                 response.request_focus();
                 self.focus_find = false;
             }
             if response.changed() {
-                let query = query.to_lowercase();
-                let best = self
+                let query = search::normalize_filter(query);
+                let visible: HashSet<_> = self
                     .visible_paths
                     .iter()
-                    .filter_map(|path| {
-                        let name = path.file_name()?.to_string_lossy().to_lowercase();
-                        search::selection_score(&name, &query).map(|score| (path, score))
+                    .filter(|path| {
+                        path.file_name().is_some_and(|name| {
+                            search::filter_matches(&name.to_string_lossy(), &query)
+                        })
                     })
-                    .min_by_key(|(_, score)| *score)
-                    .map(|(path, _)| path.clone());
-                if best.is_some() {
-                    if best != self.selected {
-                        self.select(best, context);
-                    }
-                    self.center_selection = true;
-                    self.scroll_to_selection = true;
-                }
+                    .cloned()
+                    .collect();
+                let selected = self.selected.clone().filter(|path| visible.contains(path));
+                let selection = self.selection.intersection(&visible).cloned().collect();
+                self.select(selected, context);
+                self.selection = selection;
             }
-            if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter)) {
-                self.find_query = None;
+            if (response.has_focus() || response.lost_focus())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter))
+            {
                 response.surrender_focus();
+                self.sidebar_focused = false;
+                if self.selected.is_none() {
+                    self.select(self.visible_paths.first().cloned(), context);
+                }
+                self.scroll_to_selection = true;
             }
         } else if let Some(search) = &mut self.search {
             let response = ui.add_sized(
@@ -5029,13 +5041,37 @@ impl FileManager {
         }
     }
 
-    fn display_entries(&self) -> Arc<Vec<Entry>> {
+    fn source_entries(&self) -> Arc<Vec<Entry>> {
         self.new_folder
             .as_ref()
             .filter(|dialog| dialog.parent == self.current)
             .and_then(|dialog| dialog.preview.as_ref())
             .cloned()
             .unwrap_or_else(|| Arc::clone(&self.entries))
+    }
+
+    fn display_entries(&mut self) -> Arc<Vec<Entry>> {
+        let source = self.source_entries();
+        let query = self.find_query.as_deref().map(search::normalize_filter);
+        let Some(query) = query.filter(|query| !query.is_empty()) else {
+            return source;
+        };
+        if self.entry_filter.source.as_ptr() != Arc::as_ptr(&source)
+            || self.entry_filter.query != query
+        {
+            self.entry_filter = EntryFilter {
+                source: Arc::downgrade(&source),
+                entries: Arc::new(
+                    source
+                        .iter()
+                        .filter(|entry| search::filter_matches(&entry.name, &query))
+                        .cloned()
+                        .collect(),
+                ),
+                query,
+            };
+        }
+        Arc::clone(&self.entry_filter.entries)
     }
 
     fn marquee_selection(
@@ -5914,7 +5950,8 @@ impl FileManager {
 
     fn tree_layout(&mut self) -> Arc<Vec<(Entry, egui::Pos2)>> {
         if let Some(layout) = &self.tree_layout {
-            if layout.sort == self.settings.tree_sort
+            if layout.query == self.find_query
+                && layout.sort == self.settings.tree_sort
                 && layout.descending == self.settings.tree_descending
                 && layout.zoom == self.settings.tree_zoom
                 && layout.expanded == self.expanded
@@ -5923,9 +5960,10 @@ impl FileManager {
             }
         }
         let mut items = Vec::new();
-        self.tree_items(self.display_entries().as_ref().clone(), 0, &mut items);
+        self.tree_items(self.source_entries().as_ref().clone(), 0, &mut items);
         let items = Arc::new(items);
         self.tree_layout = Some(TreeLayout {
+            query: self.find_query.clone(),
             sort: self.settings.tree_sort,
             descending: self.settings.tree_descending,
             zoom: self.settings.tree_zoom,
@@ -5942,10 +5980,16 @@ impl FileManager {
         items: &mut Vec<(Entry, egui::Pos2)>,
     ) {
         self.sort_tree_entries(&mut entries);
+        let query = self.find_query.as_deref().map(search::normalize_filter);
         for entry in entries {
             let path = entry.path.clone();
-            let y = items.len() as f32 * 32.0 * self.tree_scale();
-            items.push((entry, egui::pos2(depth as f32, y)));
+            if query
+                .as_ref()
+                .is_none_or(|query| search::filter_matches(&entry.name, query))
+            {
+                let y = items.len() as f32 * 32.0 * self.tree_scale();
+                items.push((entry, egui::pos2(depth as f32, y)));
+            }
             if self.expanded.contains(&path) && depth < 64 {
                 let preview = self
                     .new_folder

@@ -182,19 +182,20 @@ mantienen las funciones habituales de edición, como `Ctrl+A` para seleccionar t
 
 ### Búsqueda
 
-| Atajo                          | Contexto                       | Acción                                                                                                  |
-| ------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `Ctrl+F`                       | Panel de archivos              | Busca por nombre entre los elementos visibles y selecciona la mejor coincidencia sin ocultar los demás. |
-| `Ctrl+P`                       | Fuera de la búsqueda recursiva | Abre la búsqueda de nombres y rutas en la carpeta y sus subcarpetas.                                    |
-| `Enter` / `Esc`                | Búsqueda de elementos visibles | Cierra el campo conservando la selección, sin abrir el archivo.                                         |
-| `↑` / `↓`                      | Búsqueda recursiva             | Selecciona el resultado anterior / siguiente.                                                           |
-| `Ctrl+H` / `Ctrl+K` / `Ctrl+P` | Búsqueda recursiva             | Selecciona el resultado anterior sin cambiar la consulta.                                               |
-| `Ctrl+J` / `Ctrl+L` / `Ctrl+N` | Búsqueda recursiva             | Selecciona el resultado siguiente sin cambiar la consulta.                                              |
-| `Enter`                        | Búsqueda recursiva             | Sale de la búsqueda y muestra el resultado seleccionado en su carpeta.                                  |
-| `Esc`                          | Búsqueda recursiva             | Cierra la búsqueda y restaura la dirección.                                                             |
+| Atajo                          | Contexto                       | Acción                                                                                                                     |
+| ------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `Ctrl+F`                       | Panel de archivos              | Filtra por nombre al escribir, ignorando espacios y mayúsculas y admitiendo letras no consecutivas. `Esc` quita el filtro. |
+| `Ctrl+P`                       | Fuera de la búsqueda recursiva | Abre la búsqueda de nombres y rutas en la carpeta y sus subcarpetas.                                                       |
+| `Ctrl+W`                       | Campo de texto                 | Borra la palabra anterior o el texto seleccionado.                                                                         |
+| `Enter` / `Ctrl+M`             | Filtro de elementos visibles   | Devuelve el foco a los archivos sin quitar el filtro ni abrir archivos.                                                    |
+| `↑` / `↓`                      | Búsqueda recursiva             | Selecciona el resultado anterior / siguiente.                                                                              |
+| `Ctrl+H` / `Ctrl+K` / `Ctrl+P` | Búsqueda recursiva             | Selecciona el resultado anterior sin cambiar la consulta.                                                                  |
+| `Ctrl+J` / `Ctrl+L` / `Ctrl+N` | Búsqueda recursiva             | Selecciona el resultado siguiente sin cambiar la consulta.                                                                 |
+| `Enter`                        | Búsqueda recursiva             | Sale de la búsqueda y muestra el resultado seleccionado en su carpeta.                                                     |
+| `Esc`                          | Búsqueda recursiva             | Cierra la búsqueda y restaura la dirección.                                                                                |
 
 **Durante la búsqueda recursiva, `Ctrl+N` no crea carpetas, `Ctrl+H` no alterna los ocultos y `Ctrl+L` no edita la dirección.** Las letras
-sin modificadores sirven para escribir la consulta. En la papelera, `Ctrl+P` utiliza la búsqueda de elementos visibles.
+sin modificadores sirven para escribir la consulta. En la papelera, `Ctrl+P` utiliza el filtro de elementos visibles.
 
 ### Edición de la ruta y equivalencias
 
