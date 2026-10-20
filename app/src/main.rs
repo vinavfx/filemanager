@@ -450,6 +450,8 @@ struct FileManager {
     sidebar_focused: bool,
     pending_window_command: bool,
     sidebar_cursor: Option<usize>,
+    sidebar_cursor_y: Option<f32>,
+    pane_selection_y: Option<f32>,
     scroll_to_bookmark: bool,
     editing_path: bool,
     focus_path: bool,
@@ -593,6 +595,8 @@ impl FileManager {
             sidebar_focused: false,
             pending_window_command: false,
             sidebar_cursor: None,
+            sidebar_cursor_y: None,
+            pane_selection_y: None,
             scroll_to_bookmark: false,
             editing_path: false,
             focus_path: false,
@@ -1965,6 +1969,11 @@ impl FileManager {
             });
         });
         if let Some(sidebar) = sidebar {
+            self.pane_selection_y = if self.sidebar_focused && !sidebar {
+                self.sidebar_cursor_y
+            } else {
+                None
+            };
             self.sidebar_focused = sidebar;
             self.pending_g = false;
             self.pending_z = false;
@@ -2525,6 +2534,31 @@ impl FileManager {
             || items.is_empty()
         {
             return;
+        }
+        if let Some(y) = self.pane_selection_y.take() {
+            let offset = egui::scroll_area::State::load(
+                context,
+                ui.make_persistent_id(egui::Id::new(scroll_id)),
+            )
+            .map_or(0.0, |state| state.offset.y);
+            let top = ui.available_rect_before_wrap().top();
+            let bottom = top + ui.available_height();
+            if let Some((entry, _, _)) = items
+                .iter()
+                .filter(|(_, position, height)| {
+                    position.y + height > offset && position.y < offset + bottom - top
+                })
+                .min_by(|(_, a, a_height), (_, b, b_height)| {
+                    (top + a.y + a_height / 2.0 - offset - y)
+                        .abs()
+                        .total_cmp(&(top + b.y + b_height / 2.0 - offset - y).abs())
+                        .then_with(|| a.x.total_cmp(&b.x))
+                })
+            {
+                self.select(Some(entry.path.clone()), context);
+                self.scroll_to_selection = false;
+                self.center_selection = false;
+            }
         }
         context.input_mut(|input| {
             input.events.retain(|event| {
@@ -3360,6 +3394,9 @@ impl FileManager {
                 5.0,
                 Color32::from_rgba_unmultiplied(128, 128, 128, 100),
             );
+        }
+        if self.sidebar_cursor == Some(index) {
+            self.sidebar_cursor_y = Some(rect.center().y);
         }
         if self.sidebar_focused && self.sidebar_cursor == Some(index) {
             ui.painter().rect_stroke(
