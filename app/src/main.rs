@@ -9,6 +9,7 @@ mod layout;
 mod mounts;
 mod operations;
 mod places;
+mod properties;
 mod search;
 #[path = "../../shared/thumbnail_cache.rs"]
 mod thumbnail_cache;
@@ -1414,6 +1415,12 @@ impl FileManager {
     }
 
     fn show_properties(&mut self, path: &Path) {
+        let parent = self.external_drag.window();
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
         let mut uri = String::from("file://");
         for &byte in path.as_os_str().as_encoded_bytes() {
             if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
@@ -1444,6 +1451,8 @@ impl FileManager {
             })
         {
             self.set_message(Some(format!("Cannot open Caja properties: {error}")));
+        } else {
+            std::thread::spawn(move || properties::center(parent, &name));
         }
     }
 
