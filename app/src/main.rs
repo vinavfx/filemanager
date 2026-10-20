@@ -1387,19 +1387,20 @@ impl FileManager {
                         .chain(
                             directory
                                 .ancestors()
-                                .map(|directory| directory.join("player/start.sh")),
+                                .map(|directory| directory.join("player/target/release/player")),
                         )
                         .find(|candidate| candidate.is_file())
                 })
                 .or_else(|| {
                     Path::new(env!("CARGO_MANIFEST_DIR"))
                         .parent()
-                        .map(|directory| directory.join("player/start.sh"))
+                        .map(|directory| directory.join("player/target/release/player"))
                         .filter(|launcher| launcher.is_file())
                 });
             let Some(executable) = executable else {
                 self.set_message(Some(
-                    "Cannot find Player next to Still Files or at player/start.sh.".into(),
+                    "Cannot find Player next to Still Files or at player/target/release/player."
+                        .into(),
                 ));
                 return;
             };
