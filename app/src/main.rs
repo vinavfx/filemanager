@@ -1494,6 +1494,18 @@ impl FileManager {
         }
     }
 
+    fn directory_background(&mut self, response: &egui::Response, context: &egui::Context) {
+        if response.clicked() || response.secondary_clicked() {
+            self.sidebar_focused = false;
+            self.entry_menu = None;
+            self.select(None, context);
+        }
+        if let Some(paths) = response.dnd_release_payload::<Vec<PathBuf>>() {
+            self.move_paths(&paths, &self.current.clone(), context);
+        }
+        response.context_menu(|ui| self.directory_menu(ui, context));
+    }
+
     fn directory_menu(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
         if files::is_trash(&self.current) {
             if self
@@ -4672,6 +4684,7 @@ impl FileManager {
         origin: egui::Pos2,
         items: impl Iterator<Item = (PathBuf, egui::Rect)>,
     ) {
+        self.directory_background(background, ui.ctx());
         if background.drag_started_by(egui::PointerButton::Primary) {
             let Some(pointer) = ui.input(|input| input.pointer.press_origin()) else {
                 return;
@@ -4797,7 +4810,7 @@ impl FileManager {
                         let background = ui.interact(
                             ui.clip_rect(),
                             ui.id().with("marquee"),
-                            egui::Sense::drag(),
+                            egui::Sense::click_and_drag(),
                         );
                         let mut origin = None;
                         let start = (range.start * columns).min(entries.len());
@@ -5224,6 +5237,11 @@ impl FileManager {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .show_viewport(ui, |ui, _| {
                     ui.set_style(content_style);
+                    let background = ui.interact(
+                        ui.clip_rect(),
+                        ui.id().with("media-background"),
+                        egui::Sense::click(),
+                    );
                     ui.set_min_size(Vec2::new(width + gutter, total_height));
                     let origin = ui.min_rect().min;
                     let mut y = origin.y;
@@ -5373,6 +5391,7 @@ impl FileManager {
                         }
                         y += height;
                     }
+                    self.directory_background(&background, context);
                 });
         });
     }
@@ -6903,7 +6922,7 @@ impl eframe::App for FileManager {
                                             let background = ui.interact(
                                                 ui.clip_rect(),
                                                 ui.id().with("marquee"),
-                                                egui::Sense::drag(),
+                                                egui::Sense::click_and_drag(),
                                             );
                                             let origin = ui.cursor().min
                                                 - Vec2::new(0.0, range.start as f32 * height);
@@ -6946,14 +6965,7 @@ impl eframe::App for FileManager {
                         }
                     }
                 }
-                if background.clicked() || background.secondary_clicked() {
-                    self.sidebar_focused = false;
-                    self.select(None, context);
-                }
-                if let Some(paths) = background.dnd_release_payload::<Vec<PathBuf>>() {
-                    self.move_paths(&paths, &self.current.clone(), context);
-                }
-                background.context_menu(|ui| self.directory_menu(ui, context));
+                self.directory_background(&background, context);
                 self.show_entry_menu(ui, context);
             });
         if !context.input(|input| input.pointer.primary_down()) {
