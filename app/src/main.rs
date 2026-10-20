@@ -3623,64 +3623,135 @@ impl FileManager {
                 response.surrender_focus();
             }
         } else {
-            egui::ScrollArea::horizontal()
-                .id_salt("breadcrumbs")
-                .auto_shrink([false, false])
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .stick_to_right(true)
-                .show(ui, |ui| {
-                    ui.horizontal_centered(|ui| {
-                        if files::is_trash(&self.current) {
-                            ui.add(
-                                egui::Button::new("Trash")
-                                    .selected(true)
-                                    .min_size(Vec2::new(0.0, 32.0)),
-                            );
-                            return;
-                        }
-                        let trail = self.breadcrumb_path.clone();
-                        let mut path = PathBuf::new();
-                        for component in trail.components() {
-                            path.push(component);
-                            let label = component.as_os_str().to_string_lossy();
-                            let response = ui.add(
-                                egui::Button::new(label.as_ref())
-                                    .selected(path == self.current)
-                                    .min_size(Vec2::new(0.0, 32.0)),
-                            );
-                            if response.clicked() {
-                                self.navigate_breadcrumb(path.clone(), context);
+            ui.horizontal_centered(|ui| {
+                if files::is_trash(&self.current) {
+                    ui.add(
+                        egui::Button::new("Trash")
+                            .selected(true)
+                            .min_size(Vec2::new(0.0, 32.0)),
+                    );
+                    return;
+                }
+                let mut path = PathBuf::new();
+                let font = egui::TextStyle::Button.resolve(ui.style());
+                let spacing = ui.spacing().item_spacing.x;
+                let padding = ui.spacing().button_padding.x * 2.0;
+                let trail: Vec<_> = self
+                    .breadcrumb_path
+                    .components()
+                    .map(|component| {
+                        path.push(component);
+                        let label = component.as_os_str().to_string_lossy().into_owned();
+                        let width = ui
+                            .painter()
+                            .layout_no_wrap(label.clone(), font.clone(), ui.visuals().text_color())
+                            .size()
+                            .x
+                            + padding;
+                        (path.clone(), label, width)
+                    })
+                    .collect();
+                let current = trail
+                    .iter()
+                    .position(|(path, _, _)| path == &self.current)
+                    .unwrap_or(trail.len().saturating_sub(1));
+                let Some((_, _, current_width)) = trail.get(current) else {
+                    return;
+                };
+                let menu_width = ui
+                    .painter()
+                    .layout_no_wrap("…".to_owned(), font, ui.visuals().text_color())
+                    .size()
+                    .x
+                    + padding
+                    + spacing;
+                let total_width = trail.iter().map(|(_, _, width)| width).sum::<f32>()
+                    + spacing * trail.len().saturating_sub(1) as f32;
+                let reserved = if total_width > ui.available_width() {
+                    menu_width
+                } else {
+                    0.0
+                };
+                let mut remaining = (ui.available_width() - reserved - current_width).max(0.0);
+                let mut start = current;
+                let mut end = current + 1;
+                while start > 0 && trail[start - 1].2 + spacing <= remaining {
+                    start -= 1;
+                    remaining -= trail[start].2 + spacing;
+                }
+                while end < trail.len() && trail[end].2 + spacing <= remaining {
+                    remaining -= trail[end].2 + spacing;
+                    end += 1;
+                }
+                if start > 0 || end < trail.len() {
+                    ui.menu_button("…", |ui| {
+                        let width = trail
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| !(start..end).contains(index))
+                            .map(|(_, (_, _, width))| *width)
+                            .fold(0.0_f32, f32::max)
+                            .min(360.0);
+                        ui.set_width(width);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.spacing_mut().interact_size.y = 22.0;
+                        for (index, (path, label, _)) in trail.iter().enumerate() {
+                            if (start..end).contains(&index) {
+                                continue;
                             }
-                            if response.secondary_clicked() {
-                                let metadata = std::fs::symlink_metadata(&path).ok();
-                                self.open_entry_menu(
-                                    Entry {
-                                        path: path.clone(),
-                                        name: label.into_owned(),
-                                        directory: true,
-                                        symlink: metadata
-                                            .as_ref()
-                                            .is_some_and(|metadata| metadata.is_symlink()),
-                                        deletion_locked: files::deletion_locked(&path),
-                                        size: metadata
-                                            .as_ref()
-                                            .map_or(0, |metadata| metadata.len()),
-                                        item_count: None,
-                                        has_contents: None,
-                                        modified: metadata
-                                            .and_then(|metadata| metadata.modified().ok()),
-                                        modified_label: String::new(),
-                                        sequence: None,
-                                    },
-                                    response
-                                        .interact_pointer_pos()
-                                        .unwrap_or(response.rect.center()),
-                                    false,
-                                );
+                            if ui
+                                .add(
+                                    egui::Button::new(label)
+                                        .min_size(Vec2::new(width, 22.0))
+                                        .truncate(),
+                                )
+                                .on_hover_text(path.to_string_lossy())
+                                .clicked()
+                            {
+                                self.navigate_breadcrumb(path.clone(), context);
+                                ui.close_menu();
                             }
                         }
                     });
-                });
+                }
+                for (path, label, width) in &trail[start..end] {
+                    let response = ui
+                        .add_sized(
+                            [width.min(ui.available_width()).max(0.0), 32.0],
+                            egui::Button::new(label)
+                                .selected(path == &self.current)
+                                .truncate(),
+                        )
+                        .on_hover_text(label);
+                    if response.clicked() {
+                        self.navigate_breadcrumb(path.clone(), context);
+                    }
+                    if response.secondary_clicked() {
+                        let metadata = std::fs::symlink_metadata(path).ok();
+                        self.open_entry_menu(
+                            Entry {
+                                path: path.clone(),
+                                name: label.clone(),
+                                directory: true,
+                                symlink: metadata
+                                    .as_ref()
+                                    .is_some_and(|metadata| metadata.is_symlink()),
+                                deletion_locked: files::deletion_locked(path),
+                                size: metadata.as_ref().map_or(0, |metadata| metadata.len()),
+                                item_count: None,
+                                has_contents: None,
+                                modified: metadata.and_then(|metadata| metadata.modified().ok()),
+                                modified_label: String::new(),
+                                sequence: None,
+                            },
+                            response
+                                .interact_pointer_pos()
+                                .unwrap_or(response.rect.center()),
+                            false,
+                        );
+                    }
+                }
+            });
         }
     }
 
