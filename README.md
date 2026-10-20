@@ -134,7 +134,9 @@ selección. También funciona al abrirlo con clic derecho.
 | `Ctrl+W`, después `h` o `←` | Enfocar marcadores           | Cambia al panel lateral.                                     |
 | `Ctrl+W`, después `l` o `→` | Enfocar archivos             | Vuelve al panel de archivos.                                 |
 
-En marcadores, `j/k`, `↑/↓`, `Home/End`, `gg/G` y `Ctrl+D/U` permiten navegar. `o`, `Enter` o `Espacio` abren el marcador.
+En marcadores, `j/k`, `↑/↓`, `Home/End`, `gg/G` y `Ctrl+D/U` permiten navegar. `o`, `Enter` o `Espacio` abren el marcador. Los rangos de
+eliminación descritos abajo también funcionan aquí: solo quitan accesos, nunca archivos, y omiten la papelera. `u` recupera un marcador
+eliminado por pulsación.
 
 ### Selección y operaciones con archivos
 
@@ -154,6 +156,24 @@ En marcadores, `j/k`, `↑/↓`, `Home/End`, `gg/G` y `Ctrl+D/U` permiten navega
 | `Ctrl+R`                                | Rehacer                             | Repite la operación deshecha.                                                                                                        |
 | `Enter` durante la edición de un nombre | Confirmar                           | Guarda el nombre o crea la carpeta provisional.                                                                                      |
 | `Esc`                                   | Cancelar o quitar selección         | Cancela primero la edición de nombres; en otros contextos cierra avisos o campos activos, sale del modo visual o quita la selección. |
+
+### Eliminar con movimientos de Vim
+
+Pulsa las teclas en secuencia; `G` significa `Mayús+G`. Los rangos incluyen ambos extremos y siguen el orden visible, también en cuadrícula;
+`j/k` en estas operaciones cuentan elementos, no filas de iconos.
+
+| Secuencia      | Rango enviado a la papelera                                         |
+| -------------- | ------------------------------------------------------------------- |
+| `dG`           | Desde el actual hasta el último.                                    |
+| `dgg`          | Desde el primero hasta el actual.                                   |
+| `d3j` / `d3k`  | Actual y tres elementos hacia abajo / arriba: cuatro en total.      |
+| `3dd` / `d3d`  | Tres elementos desde el actual hacia abajo.                         |
+| `d3G` / `d3gg` | Desde el actual hasta el elemento número 3 (posición absoluta).     |
+| `2d3j`         | Actual y seis elementos hacia abajo: los contadores se multiplican. |
+
+También se admiten `↑/↓` y `Home/End` después de `d`. `Esc` cancela la secuencia; `u` deshace la eliminación de archivos. Una carpeta
+incluida en el rango se envía a la papelera con todo su contenido, aunque esté plegada. `D` (`Mayús+D`) no significa eliminar hasta el
+final: en Vim borra hasta el final de la línea; aquí usa `dG`.
 
 Al salir de selección visual con `Esc`, `v` o `Shift+V`, queda seleccionado el primer elemento del rango. En los campos de texto se
 mantienen las funciones habituales de edición, como `Ctrl+A` para seleccionar texto y `Ctrl+V` para pegarlo.

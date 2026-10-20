@@ -453,6 +453,8 @@ struct FileManager {
     pending_z: bool,
     pending_y: bool,
     pending_d: bool,
+    delete_count: usize,
+    delete_motion: Option<(Key, usize)>,
     sidebar_focused: bool,
     pending_window_command: bool,
     sidebar_cursor: Option<usize>,
@@ -605,6 +607,8 @@ impl FileManager {
             pending_z: false,
             pending_y: false,
             pending_d: false,
+            delete_count: 0,
+            delete_motion: None,
             sidebar_focused: false,
             pending_window_command: false,
             sidebar_cursor: None,
@@ -2130,7 +2134,12 @@ impl FileManager {
     }
 
     fn vim_shortcuts(&mut self, context: &egui::Context) {
-        if self.search.is_some() || self.new_folder.is_some() || self.text_input_focused(context) {
+        if self.search.is_some()
+            || self.new_folder.is_some()
+            || self.confirm_empty_trash
+            || !self.pending_delete.is_empty()
+            || self.text_input_focused(context)
+        {
             self.pending_g = false;
             self.pending_z = false;
             self.pending_y = false;
@@ -2149,6 +2158,18 @@ impl FileManager {
                     self.pending_z = false;
                     self.pending_y = false;
                     self.pending_d = false;
+                    self.motion_count = 0;
+                }
+                if let egui::Event::Text(text) = event {
+                    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
+                        for digit in text.bytes() {
+                            self.motion_count = self
+                                .motion_count
+                                .saturating_mul(10)
+                                .saturating_add((digit - b'0') as usize);
+                        }
+                        return false;
+                    }
                 }
                 let egui::Event::Key {
                     key,
@@ -2165,14 +2186,70 @@ impl FileManager {
                     return !(matches!(key, Key::G | Key::Z | Key::Y)
                         || *key == Key::D && modifiers.matches_exact(egui::Modifiers::NONE));
                 }
+                if modifiers.matches_exact(egui::Modifiers::NONE)
+                    && matches!(
+                        key,
+                        Key::Num0
+                            | Key::Num1
+                            | Key::Num2
+                            | Key::Num3
+                            | Key::Num4
+                            | Key::Num5
+                            | Key::Num6
+                            | Key::Num7
+                            | Key::Num8
+                            | Key::Num9
+                    )
+                {
+                    return false;
+                }
                 let pending_y = std::mem::take(&mut self.pending_y);
                 let pending_z = std::mem::take(&mut self.pending_z);
-                let pending_d = std::mem::take(&mut self.pending_d);
+                if std::mem::take(&mut self.pending_d) {
+                    let plain = modifiers.matches_exact(egui::Modifiers::NONE);
+                    let shifted = modifiers.matches_exact(egui::Modifiers::SHIFT);
+                    let motion = match *key {
+                        Key::G if plain && !self.pending_g => {
+                            self.pending_g = true;
+                            self.pending_d = true;
+                            return false;
+                        }
+                        Key::G if shifted => Some(Key::End),
+                        Key::G if plain => Some(Key::Home),
+                        Key::D
+                        | Key::J
+                        | Key::K
+                        | Key::ArrowDown
+                        | Key::ArrowUp
+                        | Key::Home
+                        | Key::End
+                            if plain && !self.pending_g =>
+                        {
+                            Some(*key)
+                        }
+                        _ => None,
+                    };
+                    let count = std::mem::take(&mut self.motion_count);
+                    let count = if self.delete_count == 0 && count == 0 {
+                        0
+                    } else {
+                        self.delete_count.max(1).saturating_mul(count.max(1))
+                    };
+                    self.pending_g = false;
+                    if let Some(motion) = motion {
+                        if motion == Key::D && count == 0 {
+                            return true;
+                        }
+                        self.delete_motion = Some((motion, count));
+                    }
+                    return *key == Key::Escape;
+                }
                 if *key == Key::D && modifiers.matches_exact(egui::Modifiers::NONE) {
                     self.pending_g = false;
-                    if pending_d || self.visual_line && !self.sidebar_focused {
+                    if self.visual_line && !self.sidebar_focused {
                         return true;
                     }
+                    self.delete_count = std::mem::take(&mut self.motion_count);
                     self.pending_d = true;
                     return false;
                 }
@@ -2228,6 +2305,22 @@ impl FileManager {
                 true
             });
         });
+        if !self.sidebar_focused {
+            if let Some((motion, count)) = self.delete_motion.take() {
+                if let Some(current) = self
+                    .visible_paths
+                    .iter()
+                    .position(|path| self.selected.as_ref() == Some(path))
+                {
+                    let (start, end) =
+                        delete_range(motion, count, current, self.visible_paths.len());
+                    if !files::is_trash(&self.current) {
+                        let paths = self.resolve_trash_paths(&self.visible_paths[start..=end]);
+                        self.start_operation(FileOperation::Trash(paths), context);
+                    }
+                }
+            }
+        }
         for forward in directory_steps {
             let next = if forward {
                 self.breadcrumb_path
@@ -3819,6 +3912,18 @@ impl FileManager {
                 self.scroll_to_bookmark = false;
             } else {
                 self.scroll_to_bookmark |= cursor != previous;
+            }
+            if let Some((motion, count)) = self.delete_motion.take() {
+                let (start, end) = delete_range(motion, count, cursor, entries.len());
+                for index in (start..=end).rev() {
+                    let (bookmark, kind) = &entries[index];
+                    if !matches!(kind, Some(places::Kind::Trash)) {
+                        self.remove_bookmark(bookmark, *kind);
+                        entries.remove(index);
+                    }
+                }
+                cursor = start.min(entries.len().saturating_sub(1));
+                self.scroll_to_bookmark = true;
             }
             if context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::D)) {
                 if let Some((bookmark, kind)) = entries.get(cursor) {
@@ -6069,21 +6174,7 @@ impl FileManager {
                 return;
             }
             let nearby = self.selected.as_ref().and_then(|selected| {
-                let index = self
-                    .visible_paths
-                    .iter()
-                    .position(|path| path == selected)?;
-                let mut previous = self.visible_paths[..=index].iter().rev();
-                let mut next = self.visible_paths[index + 1..].iter();
-                if self.settings.view == View::Media {
-                    next.find(|path| !hidden(path))
-                        .or_else(|| previous.find(|path| !hidden(path)))
-                } else {
-                    previous
-                        .find(|path| !hidden(path))
-                        .or_else(|| next.find(|path| !hidden(path)))
-                }
-                .cloned()
+                Self::nearby_selection(&self.visible_paths, selected, |path| !hidden(path))
             });
             for entry in self
                 .entries
@@ -6334,11 +6425,17 @@ impl FileManager {
     fn trash_selection(&mut self, context: &egui::Context) {
         if !files::is_trash(&self.current) {
             self.visual_line = false;
-            self.start_operation(FileOperation::Trash(self.selected_trash_paths()), context);
+            self.start_operation(
+                FileOperation::Trash(self.resolve_trash_paths(&self.selection)),
+                context,
+            );
         }
     }
 
-    fn selected_trash_paths(&self) -> Vec<PathBuf> {
+    fn resolve_trash_paths<'a>(
+        &self,
+        selection: impl IntoIterator<Item = &'a PathBuf>,
+    ) -> Vec<PathBuf> {
         let sequences: HashMap<_, _> = self
             .entries
             .iter()
@@ -6351,7 +6448,7 @@ impl FileManager {
             })
             .collect();
         let mut paths = Vec::new();
-        for path in &self.selection {
+        for path in selection {
             if let Some(sequence) = sequences.get(path) {
                 paths.extend(sequence.iter().cloned());
             } else {
@@ -6373,13 +6470,21 @@ impl FileManager {
             .collect()
     }
 
-    fn nearby_selection(paths: &[PathBuf], selected: &Path) -> Option<PathBuf> {
+    fn nearby_selection(
+        paths: &[PathBuf],
+        selected: &Path,
+        visible: impl Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
         let index = paths.iter().position(|path| path == selected)?;
-        paths[..=index]
+        if visible(selected) {
+            return Some(selected.to_path_buf());
+        }
+        let index = paths[..=index].iter().position(|path| !visible(path))?;
+        paths
             .iter()
-            .rev()
-            .chain(&paths[index + 1..])
-            .find(|path| std::fs::symlink_metadata(path).is_ok())
+            .filter(|path| visible(path))
+            .take(index + 1)
+            .last()
             .cloned()
     }
 
@@ -6431,10 +6536,11 @@ impl FileManager {
         }
         self.media_cache.clear();
         if outcome.changed {
-            let nearby = self
-                .selected
-                .as_ref()
-                .and_then(|selected| Self::nearby_selection(&self.visible_paths, selected));
+            let nearby = self.selected.as_ref().and_then(|selected| {
+                Self::nearby_selection(&self.visible_paths, selected, |path| {
+                    std::fs::symlink_metadata(path).is_ok()
+                })
+            });
             self.message = None;
             let renamed_selection = self.selected.as_ref().and_then(|selected| {
                 outcome
@@ -7246,6 +7352,18 @@ impl eframe::App for FileManager {
             context.set_cursor_icon(egui::CursorIcon::Grabbing);
         }
     }
+}
+
+fn delete_range(motion: Key, count: usize, current: usize, len: usize) -> (usize, usize) {
+    let target = match motion {
+        Key::Home | Key::End if count > 0 => count.saturating_sub(1).min(len - 1),
+        Key::Home => 0,
+        Key::End => len - 1,
+        Key::K | Key::ArrowUp => current.saturating_sub(count.max(1)),
+        Key::D => current.saturating_add(count.max(1) - 1).min(len - 1),
+        _ => current.saturating_add(count.max(1)).min(len - 1),
+    };
+    (current.min(target), current.max(target))
 }
 
 fn view_button(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
