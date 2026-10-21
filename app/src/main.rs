@@ -2813,7 +2813,11 @@ impl FileManager {
     }
 
     fn number_width(&self) -> f32 {
-        28.0
+        if self.desktop {
+            0.0
+        } else {
+            28.0
+        }
     }
 
     fn paint_relative_number(&self, ui: &egui::Ui, rect: egui::Rect, row: usize, current: usize) {
@@ -5305,8 +5309,25 @@ impl FileManager {
         let height = 126.0 * self.settings.grid_zoom;
         let gutter = self.number_width();
         let available = ui.available_width() - ui.spacing().scroll.allocated_width() - gutter;
-        let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
-        let rows = entries.len().div_ceil(columns);
+        let (columns, rows) = if self.desktop {
+            let rows = ((ui.available_height() + ui.spacing().item_spacing.y)
+                / (height + ui.spacing().item_spacing.y))
+                .floor()
+                .max(1.0) as usize;
+            let rows = rows.min(entries.len().max(1));
+            (entries.len().div_ceil(rows).max(1), rows)
+        } else {
+            let columns = ((available - 16.0 + 8.0) / (width + 8.0)).floor().max(1.0) as usize;
+            (columns, entries.len().div_ceil(columns))
+        };
+        let desktop = self.desktop;
+        let cell = |index: usize| {
+            if desktop {
+                (index / rows, index % rows)
+            } else {
+                (index % columns, index / columns)
+            }
+        };
         let items: Vec<_> = entries
             .iter()
             .enumerate()
@@ -5314,8 +5335,8 @@ impl FileManager {
                 (
                     entry,
                     egui::pos2(
-                        (index % columns) as f32 * (width + ui.spacing().item_spacing.x),
-                        (index / columns) as f32 * (height + ui.spacing().item_spacing.y),
+                        cell(index).0 as f32 * (width + ui.spacing().item_spacing.x),
+                        cell(index).1 as f32 * (height + ui.spacing().item_spacing.y),
                     ),
                     height,
                 )
@@ -5325,18 +5346,35 @@ impl FileManager {
             let content_height =
                 rows as f32 * (height + ui.spacing().item_spacing.y) - ui.spacing().item_spacing.y;
             self.navigate_items(&items, ui, "grid", content_height.max(0.0), context);
-            let current_row = entries
-                .iter()
-                .position(|entry| self.selected.as_ref() == Some(&entry.path))
-                .unwrap_or(0)
-                / columns;
+            let current_row = cell(
+                entries
+                    .iter()
+                    .position(|entry| self.selected.as_ref() == Some(&entry.path))
+                    .unwrap_or(0),
+            )
+            .1;
             let mut scroll = self.entry_scroll_area(ui, "grid");
             if self.scroll_to_selection {
                 if let Some(index) = entries
                     .iter()
                     .position(|entry| self.selected.as_ref() == Some(&entry.path))
                 {
-                    let top = (index / columns) as f32 * (height + ui.spacing().item_spacing.y);
+                    let (column, row) = cell(index);
+                    let top = row as f32 * (height + ui.spacing().item_spacing.y);
+                    if desktop {
+                        let left = 8.0 + column as f32 * (width + ui.spacing().item_spacing.x);
+                        let offset = egui::scroll_area::State::load(
+                            context,
+                            ui.make_persistent_id(egui::Id::new("grid")),
+                        )
+                        .map_or(0.0, |state| state.offset.x);
+                        scroll = scroll.horizontal_scroll_offset(
+                            offset
+                                .min(left)
+                                .max(left + width - ui.available_width())
+                                .max(0.0),
+                        );
+                    }
                     let viewport = ui.available_height();
                     let offset = egui::scroll_area::State::load(
                         context,
@@ -5361,7 +5399,12 @@ impl FileManager {
                     .auto_shrink([false, false])
                     .id_salt("grid")
                     .drag_to_scroll(false)
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .hscroll(desktop)
+                    .scroll_bar_visibility(if desktop {
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                    } else {
+                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+                    })
                     .show_rows(ui, height, rows, |ui, range| {
                         ui.set_style(content_style);
                         let background = ui.interact(
@@ -5370,24 +5413,25 @@ impl FileManager {
                             egui::Sense::click_and_drag(),
                         );
                         let mut origin = None;
-                        let start = (range.start * columns).min(entries.len());
-                        let end = (range.end * columns).min(entries.len());
-                        for (index, row) in entries[start..end].chunks(columns).enumerate() {
+                        for row in range.clone() {
                             ui.horizontal(|ui| {
                                 if gutter > 0.0 {
                                     let (rect, _) = ui.allocate_exact_size(
                                         Vec2::new(gutter, height),
                                         egui::Sense::hover(),
                                     );
-                                    self.paint_relative_number(
-                                        ui,
-                                        rect,
-                                        range.start + index,
-                                        current_row,
-                                    );
+                                    self.paint_relative_number(ui, rect, row, current_row);
                                 }
                                 ui.add_space(8.0);
-                                for entry in row {
+                                for column in 0..columns {
+                                    let index = if desktop {
+                                        column * rows + row
+                                    } else {
+                                        row * columns + column
+                                    };
+                                    let Some(entry) = entries.get(index) else {
+                                        break;
+                                    };
                                     let (rect, response) = ui.allocate_exact_size(
                                         Vec2::new(width, height),
                                         egui::Sense::click_and_drag(),
@@ -5465,9 +5509,9 @@ impl FileManager {
                                 entries.iter().enumerate().map(|(index, entry)| {
                                     let position = origin
                                         + Vec2::new(
-                                            (index % columns) as f32
+                                            cell(index).0 as f32
                                                 * (width + ui.spacing().item_spacing.x),
-                                            (index / columns) as f32
+                                            cell(index).1 as f32
                                                 * (height + ui.spacing().item_spacing.y),
                                         );
                                     (

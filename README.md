@@ -84,10 +84,11 @@ esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo
 
 ## Modo escritorio en X11
 
-`still-files --desktop` añade un escritorio al mismo proceso, exclusivamente en Grid. Las ventanas normales conservan Tree, Grid y Media.
-Muestra la carpeta de escritorio configurada por XDG, sin barras ni bordes, debajo de las ventanas, en todos los espacios de trabajo y sin
-entrada en la barra de tareas. Respeta el espacio reservado por los paneles. Abrir una carpeta crea una ventana normal de Filemanager. Las
-preferencias del escritorio se guardan por separado en `~/.config/still-files/desktop-settings.json` (o bajo `$XDG_CONFIG_HOME`).
+`still-files --desktop` añade un escritorio al mismo proceso, exclusivamente en Grid, sin numeración y con los iconos ordenados de arriba
+abajo desde el margen izquierdo. Las ventanas normales conservan Tree, Grid y Media. Muestra la carpeta de escritorio configurada por XDG,
+sin barras ni bordes, debajo de las ventanas, en todos los espacios de trabajo y sin entrada en la barra de tareas. Respeta el espacio
+reservado por los paneles. Abrir una carpeta crea una ventana normal de Filemanager. Las preferencias del escritorio se guardan por separado
+en `~/.config/still-files/desktop-settings.json` (o bajo `$XDG_CONFIG_HOME`).
 
 No modifica Caja ni configura el inicio automático. En MATE, desactiva primero sus iconos para evitar escritorios superpuestos:
 
