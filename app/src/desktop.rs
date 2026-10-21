@@ -42,6 +42,39 @@ pub fn check_session() -> std::result::Result<(), &'static str> {
     }
 }
 
+fn preference_path() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(".config")
+        })
+        .join("still-files/desktop-enabled")
+}
+
+pub fn is_enabled() -> bool {
+    preference_path().is_file()
+}
+
+pub fn set_enabled(enabled: bool) -> Result<()> {
+    let path = preference_path();
+    if enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, [])?;
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub struct Desktop {
     manager: FileManager,
     connection: RustConnection,

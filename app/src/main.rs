@@ -8308,16 +8308,20 @@ fn main() -> eframe::Result {
         });
         instance::Request::Open(path)
     };
+    if let instance::Request::Desktop(enabled) = &request {
+        desktop::set_enabled(*enabled).map_err(eframe::Error::AppCreation)?;
+    }
     let Some(instance) = instance::Instance::start(&request)
         .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?
     else {
         return Ok(());
     };
-    let (path, start_desktop) = match request {
-        instance::Request::Open(path) => (path, false),
-        instance::Request::Desktop(true) => (None, true),
+    let (path, visible) = match request {
+        instance::Request::Open(path) => (path, true),
+        instance::Request::Desktop(true) => (None, false),
         _ => return Ok(()),
     };
+    let start_desktop = !visible || (desktop::is_enabled() && desktop::check_session().is_ok());
     let icon = Arc::new(
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
             .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?,
@@ -8327,7 +8331,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1120.0, 740.0])
             .with_min_inner_size([760.0, 460.0])
             .with_icon(icon.clone())
-            .with_visible(!start_desktop),
+            .with_visible(visible),
         ..Default::default()
     };
     eframe::run_native(
@@ -8337,10 +8341,14 @@ fn main() -> eframe::Result {
             let requests = instance.listen(context.egui_ctx.clone())?;
             let root = FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
             let desktop = if start_desktop {
-                Some(desktop::Desktop::new(
-                    &context.egui_ctx,
-                    root.external_drag.sibling(),
-                )?)
+                match desktop::Desktop::new(&context.egui_ctx, root.external_drag.sibling()) {
+                    Ok(desktop) => Some(desktop),
+                    Err(error) if visible => {
+                        eprintln!("Cannot restore desktop: {error}");
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             } else {
                 None
             };
@@ -8348,7 +8356,7 @@ fn main() -> eframe::Result {
                 root,
                 desktop,
                 icon,
-                visible: !start_desktop,
+                visible,
                 quitting: false,
                 windows: Vec::new(),
                 next_window: 1,
