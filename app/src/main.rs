@@ -7484,7 +7484,11 @@ impl eframe::App for FileManager {
                 }
                 if self.search.is_some() {
                     self.search_results(ui, context);
-                } else if self.display_entries().is_empty() {
+                } else if if self.settings.view == View::Tree {
+                    self.tree_layout().is_empty()
+                } else {
+                    self.display_entries().is_empty()
+                } {
                     ui.centered_and_justified(|ui| {
                         let message = if self.media_scan.is_some() {
                             "Scanning media…"
