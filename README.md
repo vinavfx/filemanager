@@ -82,6 +82,30 @@ gráfico. Al cerrar todas las ventanas, permanece en segundo plano para acelerar
 siguen cargándose según sea necesario. Para terminar también el proceso residente, ejecuta `still-files --quit`. Después de recompilar, usa
 esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo.
 
+## Modo escritorio en X11
+
+`still-files --desktop` añade un escritorio al mismo proceso, exclusivamente en Grid. Las ventanas normales conservan Tree, Grid y Media.
+Muestra la carpeta de escritorio configurada por XDG, sin barras ni bordes, debajo de las ventanas, en todos los espacios de trabajo y sin
+entrada en la barra de tareas. Respeta el espacio reservado por los paneles. Abrir una carpeta crea una ventana normal de Filemanager. Las
+preferencias del escritorio se guardan por separado en `~/.config/still-files/desktop-settings.json` (o bajo `$XDG_CONFIG_HOME`).
+
+No modifica Caja ni configura el inicio automático. En MATE, desactiva primero sus iconos para evitar escritorios superpuestos:
+
+```bash
+gsettings set org.mate.background show-desktop-icons false
+still-files --desktop
+```
+
+El fondo transparente necesita la composición de ventanas activada. Este modo no está disponible en Wayland. Para desactivarlo sin cerrar
+las ventanas normales y volver al escritorio de Caja:
+
+```bash
+still-files --no-desktop
+gsettings set org.mate.background show-desktop-icons true
+```
+
+`still-files --quit` cierra el proceso completo, incluido el escritorio.
+
 ## Atajos de teclado
 
 `Ctrl+N` significa pulsar ambas teclas juntas. `gg`, `yy`, `dd`, `zz` y `gt` son secuencias: pulsa una tecla y después la otra. `G`, `O` y

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 pub enum Request {
     Open(Option<PathBuf>),
     NavigateStill(PathBuf, bool),
+    Desktop(bool),
     Quit,
 }
 
@@ -69,7 +70,7 @@ impl Instance {
                 Err(error) => return Err(error),
             }
         }
-        if matches!(request, Request::Quit) {
+        if matches!(request, Request::Quit | Request::Desktop(false)) {
             return Ok(None);
         }
         match std::fs::remove_file(&socket) {
@@ -100,6 +101,7 @@ impl Instance {
                 stream.write_all(&[if *forward { 3 } else { 2 }])?;
                 stream.write_all(path.as_os_str().as_bytes())?;
             }
+            Request::Desktop(enabled) => stream.write_all(&[if *enabled { 4 } else { 5 }])?,
             Request::Quit => stream.write_all(&[1])?,
         }
         stream.shutdown(std::net::Shutdown::Write)?;
@@ -145,6 +147,7 @@ impl Instance {
                         PathBuf::from(std::ffi::OsString::from_vec(bytes[1..].to_vec())),
                         bytes[0] == 3,
                     ),
+                    4 | 5 if bytes.len() == 1 => Request::Desktop(bytes[0] == 4),
                     1 if bytes.len() == 1 => Request::Quit,
                     _ => continue,
                 };

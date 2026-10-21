@@ -1,5 +1,6 @@
 mod bookmarks;
 mod conversion;
+mod desktop;
 mod drag;
 mod files;
 mod icons;
@@ -413,6 +414,7 @@ struct EntryMenu {
 }
 
 struct FileManager {
+    desktop: bool,
     external_drag: drag::ExternalDrag,
     directory_refresh: Option<mpsc::Receiver<Result<DirectoryContents, String>>>,
     cached_view: Option<CachedViewContents>,
@@ -506,6 +508,15 @@ impl FileManager {
         external_drag: drag::ExternalDrag,
         requested: Option<PathBuf>,
     ) -> Self {
+        Self::new_with_mode(context, external_drag, requested, false)
+    }
+
+    fn new_with_mode(
+        context: &egui::Context,
+        external_drag: drag::ExternalDrag,
+        requested: Option<PathBuf>,
+        desktop: bool,
+    ) -> Self {
         let mut style = (*context.style()).clone();
         style.spacing.item_spacing = Vec2::new(8.0, 8.0);
         style.spacing.button_padding = Vec2::new(10.0, 7.0);
@@ -515,7 +526,11 @@ impl FileManager {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let config = std::env::var_os("XDG_CONFIG_HOME")
             .map_or_else(|| home.join(".config"), PathBuf::from)
-            .join("still-files/settings.json");
+            .join(if desktop {
+                "still-files/desktop-settings.json"
+            } else {
+                "still-files/settings.json"
+            });
         let (mut settings, config_error) = match std::fs::read(&config) {
             Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
                 Ok(settings) => (settings, None),
@@ -532,7 +547,7 @@ impl FileManager {
                 Some(format!("Cannot read settings: {error}")),
             ),
         };
-        settings.view = View::Tree;
+        settings.view = if desktop { View::Grid } else { View::Tree };
         apply_theme(context, settings.dark_mode);
         let home_places = places::defaults(&home);
         let mut bookmarks = bookmarks::Bookmarks::new(&home);
@@ -561,6 +576,7 @@ impl FileManager {
             home
         };
         let mut app = Self {
+            desktop,
             external_drag,
             directory_refresh: None,
             cached_view: None,
@@ -710,6 +726,9 @@ impl FileManager {
     }
 
     fn set_view(&mut self, view: View, context: &egui::Context) {
+        if self.desktop {
+            return;
+        }
         let recursive = self.settings.recursive();
         self.settings.set_view(view);
         if self.settings.recursive() != recursive {
@@ -1003,6 +1022,21 @@ impl FileManager {
     }
 
     fn navigate(&mut self, path: PathBuf, context: &egui::Context) {
+        if self.desktop {
+            if path != self.current {
+                match std::env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg(path).spawn())
+                {
+                    Ok(mut child) => {
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                    }
+                    Err(error) => self.set_message(Some(format!("Cannot open folder: {error}"))),
+                }
+            }
+            return;
+        }
         if files::is_trash(&path) {
             self.search = None;
             self.thumbnails.cancel();
@@ -2413,7 +2447,18 @@ impl FileManager {
             }
             return;
         }
-        self.pane_shortcuts(context);
+        if self.desktop {
+            if !self.text_input_focused(context) {
+                context.input_mut(|input| {
+                    for key in [Key::F, Key::P, Key::L, Key::W] {
+                        input.consume_key(egui::Modifiers::CTRL, key);
+                    }
+                    input.consume_key(egui::Modifiers::NONE, Key::R);
+                });
+            }
+        } else {
+            self.pane_shortcuts(context);
+        }
         if self.new_folder.is_none() {
             if !self.text_input_focused(context)
                 && context.input_mut(|input| {
@@ -7318,9 +7363,13 @@ impl eframe::App for FileManager {
         {
             self.marquee_selection = None;
         }
-        self.toolbar(context);
-        self.statusbar(context);
-        self.sidebar(context);
+        if self.desktop {
+            self.settings.view = View::Grid;
+        } else {
+            self.toolbar(context);
+            self.statusbar(context);
+            self.sidebar(context);
+        }
         if self.message.is_some() {
             let remaining = self
                 .message_deadline
@@ -7337,7 +7386,15 @@ impl eframe::App for FileManager {
                 .show(context, |ui| self.message_banner(ui));
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&context.style()).inner_margin(0))
+            .frame(
+                egui::Frame::central_panel(&context.style())
+                    .inner_margin(0)
+                    .fill(if self.desktop {
+                        Color32::TRANSPARENT
+                    } else {
+                        context.style().visuals.panel_fill
+                    }),
+            )
             .show(context, |ui| {
                 if self.visual_line {
                     let visuals = ui.visuals_mut();
@@ -8025,6 +8082,7 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
 
 struct ResidentApp {
     root: FileManager,
+    desktop: Option<desktop::Desktop>,
     icon: Arc<egui::IconData>,
     visible: bool,
     quitting: bool,
@@ -8035,6 +8093,14 @@ struct ResidentApp {
 }
 
 impl eframe::App for ResidentApp {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        if self.desktop.is_some() {
+            [0.0; 4]
+        } else {
+            Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+        }
+    }
+
     fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         if self.quitting {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -8046,6 +8112,16 @@ impl eframe::App for ResidentApp {
                     self.quitting = true;
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
                     return;
+                }
+                instance::Request::Desktop(enabled) => {
+                    if enabled && self.desktop.is_none() {
+                        match desktop::Desktop::new(context, self.root.external_drag.sibling()) {
+                            Ok(desktop) => self.desktop = Some(desktop),
+                            Err(error) => eprintln!("Cannot start desktop: {error}"),
+                        }
+                    } else if !enabled {
+                        self.desktop = None;
+                    }
                 }
                 instance::Request::NavigateStill(path, forward) => {
                     if !self.root.navigate_still(&path, forward, context) {
@@ -8093,6 +8169,14 @@ impl eframe::App for ResidentApp {
         if self.visible {
             apply_theme(context, self.root.settings.dark_mode);
             self.root.update(context, frame);
+        } else {
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if self.desktop.is_some() {
+                context.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
+        if let Some(desktop) = &mut self.desktop {
+            desktop.update(context, frame);
         }
         self.windows.retain_mut(|(id, window)| {
             let mut closed = false;
@@ -8120,6 +8204,11 @@ fn main() -> eframe::Result {
     let argument = std::env::args_os().nth(1);
     let request = if argument.as_deref() == Some(std::ffi::OsStr::new("--quit")) {
         instance::Request::Quit
+    } else if argument.as_deref() == Some(std::ffi::OsStr::new("--desktop")) {
+        desktop::check_session().map_err(|error| eframe::Error::AppCreation(error.into()))?;
+        instance::Request::Desktop(true)
+    } else if argument.as_deref() == Some(std::ffi::OsStr::new("--no-desktop")) {
+        instance::Request::Desktop(false)
     } else {
         let path = argument.map(PathBuf::from).map(|path| {
             if path.is_absolute() {
@@ -8135,8 +8224,10 @@ fn main() -> eframe::Result {
     else {
         return Ok(());
     };
-    let instance::Request::Open(path) = request else {
-        return Ok(());
+    let (path, start_desktop) = match request {
+        instance::Request::Open(path) => (path, false),
+        instance::Request::Desktop(true) => (None, true),
+        _ => return Ok(()),
     };
     let icon = Arc::new(
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
@@ -8146,7 +8237,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 740.0])
             .with_min_inner_size([760.0, 460.0])
-            .with_icon(icon.clone()),
+            .with_icon(icon.clone())
+            .with_visible(!start_desktop),
         ..Default::default()
     };
     eframe::run_native(
@@ -8155,10 +8247,19 @@ fn main() -> eframe::Result {
         Box::new(move |context| {
             let requests = instance.listen(context.egui_ctx.clone())?;
             let root = FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
+            let desktop = if start_desktop {
+                Some(desktop::Desktop::new(
+                    &context.egui_ctx,
+                    root.external_drag.sibling(),
+                )?)
+            } else {
+                None
+            };
             Ok(Box::new(ResidentApp {
                 root,
+                desktop,
                 icon,
-                visible: true,
+                visible: !start_desktop,
                 quitting: false,
                 windows: Vec::new(),
                 next_window: 1,
