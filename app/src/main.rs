@@ -8188,6 +8188,7 @@ impl eframe::App for ResidentApp {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        let mut restoring = false;
         while let Ok(request) = self.requests.try_recv() {
             match request {
                 instance::Request::Quit => {
@@ -8234,8 +8235,11 @@ impl eframe::App for ResidentApp {
                             })
                             .unwrap_or_else(|| self.root.current.clone());
                         self.root.navigate(directory, context);
-                        self.root.refresh(context);
+                        if self.root.directory_watch.is_none() {
+                            self.root.refresh(context);
+                        }
                         self.visible = true;
+                        restoring = true;
                         context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                         context.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
@@ -8248,14 +8252,17 @@ impl eframe::App for ResidentApp {
             self.root.external_drag.cancel();
             self.visible = false;
         }
+        if !self.visible && context.cumulative_pass_nr() < 2 {
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         if self.visible {
             apply_theme(context, self.root.settings.dark_mode);
             self.root.update(context, frame);
-        } else {
-            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            if self.desktop.is_some() {
-                context.request_repaint_after(std::time::Duration::from_secs(1));
+            if restoring {
+                context.request_discard("Compose restored window before showing it");
             }
+        } else if self.desktop.is_some() {
+            context.request_repaint_after(std::time::Duration::from_secs(1));
         }
         if let Some(desktop) = &mut self.desktop {
             desktop.update(context, frame);
