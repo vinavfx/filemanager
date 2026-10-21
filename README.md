@@ -96,8 +96,9 @@ gsettings set org.mate.background show-desktop-icons false
 still-files --desktop
 ```
 
-El fondo transparente necesita la composición de ventanas activada. Este modo no está disponible en Wayland. Para desactivarlo sin cerrar
-las ventanas normales y volver al escritorio de Caja:
+El escritorio dibuja el fondo publicado por MATE en X11 y se actualiza cuando cambia, sin necesitar transparencia ni composición. En MATE,
+el menú contextual de las imágenes incluye `Set as desktop wallpaper`: configura esa imagen como fondo con ajuste ampliado. Este modo no
+está disponible en Wayland. Para desactivarlo sin cerrar las ventanas normales y volver al escritorio de Caja:
 
 ```bash
 still-files --no-desktop

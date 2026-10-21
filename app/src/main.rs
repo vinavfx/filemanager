@@ -496,6 +496,7 @@ struct FileManager {
     pending_delete: Vec<PathBuf>,
     trash_focus: Option<bool>,
     compression_job: Option<mpsc::Receiver<Result<PathBuf, String>>>,
+    wallpaper_job: Option<mpsc::Receiver<Result<(), String>>>,
     conversion_job: Option<conversion::Job>,
     conversion_queue: VecDeque<(Entry, conversion::Format)>,
     message: Option<String>,
@@ -664,6 +665,7 @@ impl FileManager {
             pending_delete: Vec::new(),
             trash_focus: Some(false),
             compression_job: None,
+            wallpaper_job: None,
             conversion_job: None,
             conversion_queue: VecDeque::new(),
             message: config_error.or(bookmark_error),
@@ -1390,6 +1392,18 @@ impl FileManager {
         self.open_media(&path, &application);
     }
 
+    fn set_wallpaper(&mut self, path: &Path, context: &egui::Context) {
+        let (sender, receiver) = mpsc::channel();
+        let path = path.to_path_buf();
+        let context = context.clone();
+        self.wallpaper_job = Some(receiver);
+        std::thread::spawn(move || {
+            let result = desktop::set_wallpaper(&path).map_err(|error| error.to_string());
+            let _ = sender.send(result);
+            context.request_repaint();
+        });
+    }
+
     fn choose_media_player(&mut self, path: &Path, application: &str) {
         if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
             self.settings
@@ -1744,6 +1758,17 @@ impl FileManager {
     }
 
     fn poll(&mut self, context: &egui::Context) {
+        if let Some(result) = self
+            .wallpaper_job
+            .as_ref()
+            .and_then(|job| job.try_recv().ok())
+        {
+            self.wallpaper_job = None;
+            self.set_message(Some(match result {
+                Ok(()) => "Desktop wallpaper updated".into(),
+                Err(error) => error,
+            }));
+        }
         if let Some(result) = self
             .conversion_job
             .as_ref()
@@ -4767,6 +4792,25 @@ impl FileManager {
                 }
             }
         }
+        if !entry.directory
+            && files::image_file(&entry.path)
+            && !files::is_trash(&self.current)
+            && std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|value| {
+                value
+                    .split(':')
+                    .any(|name| name.eq_ignore_ascii_case("mate"))
+            })
+            && self.entry_menu_button(
+                ui,
+                "Set as desktop wallpaper",
+                "preferences-desktop-wallpaper",
+                self.wallpaper_job.is_none(),
+                None,
+            )
+        {
+            self.set_wallpaper(&entry.path, context);
+            ui.close_menu();
+        }
         if !entry.directory && files::archive_file(&entry.path) && !files::is_trash(&self.current) {
             ui.separator();
             if self.entry_menu_button(
@@ -5361,7 +5405,9 @@ impl FileManager {
                                         ui.painter().rect_filled(
                                             rect.shrink(2.0),
                                             8.0,
-                                            ui.visuals().selection.bg_fill,
+                                            ui.visuals().selection.bg_fill.gamma_multiply(
+                                                if self.desktop { 0.35 } else { 1.0 },
+                                            ),
                                         );
                                     }
                                     let icon_rect = egui::Rect::from_center_size(
@@ -8093,14 +8139,6 @@ struct ResidentApp {
 }
 
 impl eframe::App for ResidentApp {
-    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
-        if self.desktop.is_some() {
-            [0.0; 4]
-        } else {
-            Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
-        }
-    }
-
     fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         if self.quitting {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
