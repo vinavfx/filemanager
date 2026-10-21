@@ -13,7 +13,10 @@ use std::process::ExitCode;
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
-    let still = first.as_deref().is_some_and(|arg| arg == "--still");
+    let preserve_rotation = first
+        .as_deref()
+        .is_some_and(|arg| arg == "--navigate-still");
+    let still = preserve_rotation || first.as_deref().is_some_and(|arg| arg == "--still");
     let first = if still {
         Some(args.next().ok_or("Missing media path")?)
     } else {
@@ -24,7 +27,7 @@ fn run() -> Result<(), String> {
         .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
         println!(
-            "Usage: player [FILE | SEQUENCE_PATTERN]\n       player --still FILE\n       player --check-media FILE\n       player --quit\n\nClose to keep Player in the background. Quit completely: Ctrl+Q or --quit."
+            "Usage: player [FILE | SEQUENCE_PATTERN]\n       player --still FILE\n       player --navigate-still FILE\n       player --check-media FILE\n       player --quit\n\nClose to keep Player in the background. Quit completely: Ctrl+Q or --quit."
         );
         return Ok(());
     }
@@ -49,13 +52,14 @@ fn run() -> Result<(), String> {
                 .transpose()
                 .map_err(|error| error.to_string())?,
             still,
+            preserve_rotation,
         )
     };
     let Some(instance) = instance::Instance::start(&request).map_err(|error| error.to_string())?
     else {
         return Ok(());
     };
-    let instance::Request::Open(path, still) = request else {
+    let instance::Request::Open(path, still, _) = request else {
         return Ok(());
     };
     initialize_decoder_threads()?;

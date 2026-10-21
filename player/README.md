@@ -35,7 +35,7 @@ velocidades originales y fracciones exactas como `24000/1001`; la lista aparece 
 
 Los botones superiores `−90°`, `0°` y `+90°` son exclusivos: giran a la izquierda, restauran el original o giran a la derecha, sin acumular
 giros ni modificar el archivo. El ajuste al visor contempla el ancho y alto intercambiados; con zoom manual se conserva el centro de la
-imagen.
+imagen. Abrir otro archivo restablece la orientación a `0°`; navegar entre imágenes con `H` / `L` o recargar conserva la rotación actual.
 
 ## Formatos y ajustes
 

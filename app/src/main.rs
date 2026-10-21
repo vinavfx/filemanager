@@ -1438,12 +1438,21 @@ impl FileManager {
         if let Some(next) = next {
             self.select(Some(next.clone()), context);
             self.scroll_to_selection = true;
-            self.open_media(&next, "player");
+            self.open_media_with_rotation(&next, "player", true);
         }
         true
     }
 
     fn open_media(&mut self, path: &Path, application: &str) {
+        self.open_media_with_rotation(path, application, false);
+    }
+
+    fn open_media_with_rotation(
+        &mut self,
+        path: &Path,
+        application: &str,
+        preserve_rotation: bool,
+    ) {
         let executable = if application == "player" {
             let executable = std::env::current_exe()
                 .ok()
@@ -1483,7 +1492,11 @@ impl FileManager {
                 .chain(self.tree_cache.values().flatten())
                 .any(|entry| entry.path == path && entry.sequence.is_some())
         {
-            command.arg("--still");
+            command.arg(if preserve_rotation {
+                "--navigate-still"
+            } else {
+                "--still"
+            });
         }
         if matches!(application, "vlc" | "mpv") {
             command.arg("--");

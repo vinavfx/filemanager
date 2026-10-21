@@ -109,16 +109,19 @@ impl Player {
             actual_rate: 0.0,
         };
         if let Some(path) = path {
-            player.open_with_mode(path, still);
+            player.open_with_mode(path, still, false);
         }
         Ok(player)
     }
 
     pub fn open(&mut self, path: PathBuf) {
-        self.open_with_mode(path, false);
+        self.open_with_mode(path, false, false);
     }
 
-    pub fn open_with_mode(&mut self, path: PathBuf, still: bool) {
+    pub fn open_with_mode(&mut self, path: PathBuf, still: bool, preserve_rotation: bool) {
+        if !preserve_rotation {
+            self.rotation = 0;
+        }
         if let Ok(mut renderer) = self.renderer.lock() {
             renderer.active = true;
         }
@@ -1006,7 +1009,7 @@ impl Player {
                     }
                     Key::R => {
                         if let Some(path) = self.path.clone() {
-                            self.open(path);
+                            self.open_with_mode(path, false, true);
                         }
                     }
                     Key::OpenBracket if !modifiers.shift => {

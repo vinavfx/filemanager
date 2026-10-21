@@ -30,7 +30,7 @@ pub fn navigate_still(path: PathBuf, forward: bool) {
 }
 
 pub enum Request {
-    Open(Option<PathBuf>, bool),
+    Open(Option<PathBuf>, bool, bool),
     Quit,
 }
 
@@ -110,8 +110,14 @@ impl Instance {
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         match request {
-            Request::Open(path, still) => {
-                stream.write_all(&[if *still { 2 } else { 0 }])?;
+            Request::Open(path, still, preserve_rotation) => {
+                stream.write_all(&[if *preserve_rotation {
+                    3
+                } else if *still {
+                    2
+                } else {
+                    0
+                }])?;
                 if let Some(path) = path {
                     stream.write_all(path.as_os_str().as_bytes())?;
                 }
@@ -150,7 +156,7 @@ impl Instance {
                     continue;
                 }
                 let request = match bytes[0] {
-                    0 | 2 => Request::Open(
+                    0 | 2 | 3 => Request::Open(
                         if bytes.len() == 1 {
                             None
                         } else {
@@ -158,7 +164,8 @@ impl Instance {
                                 bytes[1..].to_vec(),
                             )))
                         },
-                        bytes[0] == 2,
+                        bytes[0] != 0,
+                        bytes[0] == 3,
                     ),
                     1 if bytes.len() == 1 => Request::Quit,
                     _ => continue,
