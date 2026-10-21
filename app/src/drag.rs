@@ -62,10 +62,6 @@ impl ExternalDrag {
         }
     }
 
-    pub fn window(&self) -> Option<Window> {
-        self.window
-    }
-
     pub fn sibling(&self) -> Self {
         Self {
             window: self.window,

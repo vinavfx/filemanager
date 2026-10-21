@@ -492,6 +492,7 @@ struct FileManager {
     bookmark_undo: Vec<(bookmarks::Bookmark, Option<places::Kind>, usize)>,
     bookmark_redo: Vec<(bookmarks::Bookmark, Option<places::Kind>, usize)>,
     new_folder: Option<NameDialog>,
+    properties: Option<properties::Properties>,
     confirm_empty_trash: bool,
     pending_delete: Vec<PathBuf>,
     trash_focus: Option<bool>,
@@ -661,6 +662,7 @@ impl FileManager {
             bookmark_undo: Vec::new(),
             bookmark_redo: Vec::new(),
             new_folder: None,
+            properties: None,
             confirm_empty_trash: false,
             pending_delete: Vec::new(),
             trash_focus: Some(false),
@@ -1526,45 +1528,16 @@ impl FileManager {
         }
     }
 
-    fn show_properties(&mut self, path: &Path) {
-        let parent = self.external_drag.window();
-        let name = path
-            .file_name()
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .into_owned();
-        let mut uri = String::from("file://");
-        for &byte in path.as_os_str().as_encoded_bytes() {
-            if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
-                uri.push(char::from(byte));
-            } else {
-                uri.push_str(&format!("%{byte:02X}"));
+    fn show_properties(&mut self, path: &Path, context: &egui::Context) {
+        self.properties = Some(properties::Properties::new(path, context));
+        context.request_repaint();
+    }
+
+    fn properties_window(&mut self, context: &egui::Context) {
+        if let Some(properties) = &mut self.properties {
+            if properties.show(context) {
+                self.properties = None;
             }
-        }
-        if let Err(error) = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.mate.Caja",
-                "--object-path",
-                "/org/freedesktop/FileManager1",
-                "--method",
-                "org.freedesktop.FileManager1.ShowItemProperties",
-            ])
-            .arg(format!("['{uri}']"))
-            .arg("")
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .map(|mut child| {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            })
-        {
-            self.set_message(Some(format!("Cannot open Caja properties: {error}")));
-        } else {
-            std::thread::spawn(move || properties::center(parent, &name));
         }
     }
 
@@ -1678,7 +1651,7 @@ impl FileManager {
             .button(ui, "Properties", "document-properties", true)
             .clicked()
         {
-            self.show_properties(&self.current.clone());
+            self.show_properties(&self.current.clone(), ui.ctx());
             ui.close_menu();
         }
     }
@@ -2201,7 +2174,8 @@ impl FileManager {
     }
 
     fn vim_shortcuts(&mut self, context: &egui::Context) {
-        if self.search.is_some()
+        if self.properties.is_some()
+            || self.search.is_some()
             || self.new_folder.is_some()
             || self.confirm_empty_trash
             || !self.pending_delete.is_empty()
@@ -2875,6 +2849,7 @@ impl FileManager {
             || self.confirm_empty_trash
             || !self.pending_delete.is_empty()
             || self.text_input_focused(context)
+            || self.properties.is_some()
             || items.is_empty()
         {
             return;
@@ -4060,6 +4035,7 @@ impl FileManager {
             })
             .min(entries.len().saturating_sub(1));
         if self.sidebar_focused
+            && self.properties.is_none()
             && self.new_folder.is_none()
             && !self.confirm_empty_trash
             && self.pending_delete.is_empty()
@@ -4899,7 +4875,7 @@ impl FileManager {
             ui.close_menu();
         }
         if self.entry_menu_button(ui, "Properties", "document-properties", true, None) {
-            self.show_properties(&entry.path);
+            self.show_properties(&entry.path, ui.ctx());
             ui.close_menu();
         }
     }
@@ -7443,7 +7419,10 @@ impl eframe::App for FileManager {
         self.receive_external_files(context);
         if self.entry_menu.is_some() {
             self.entry_menu_shortcuts(context);
-        } else if !self.confirm_empty_trash && self.pending_delete.is_empty() {
+        } else if self.properties.is_none()
+            && !self.confirm_empty_trash
+            && self.pending_delete.is_empty()
+        {
             self.shortcuts(context);
         }
         let previous_view = std::mem::take(&mut self.prepared_view);
@@ -7638,6 +7617,7 @@ impl eframe::App for FileManager {
             if let Some(frame) = &self.directory_frame {
                 self.preparing_directory = true;
                 context.graphics_mut(|graphics| graphics.clone_from(&frame.graphics));
+                self.properties_window(context);
                 return;
             }
         }
@@ -7652,6 +7632,7 @@ impl eframe::App for FileManager {
                 .cloned()
                 .collect(),
         });
+        self.properties_window(context);
         if egui::DragAndDrop::has_payload_of_type::<Vec<PathBuf>>(context) {
             context.set_cursor_icon(egui::CursorIcon::Grabbing);
         }
