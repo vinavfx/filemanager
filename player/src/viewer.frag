@@ -1,6 +1,7 @@
 #version 330 core
 uniform sampler2D image_texture;
 uniform float image_gamma;
+uniform vec3 display_controls;
 uniform int channel;
 uniform int rotation;
 uniform bool smooth_preview;
@@ -42,11 +43,14 @@ void main() {
     vec4 pixel = smooth_preview
         ? notch_sample(position)
         : texture(image_texture, position);
-    vec3 color = pow(max(pixel.rgb, vec3(0.0)), vec3(1.0 / image_gamma));
+    vec3 source = channel == 4 ? vec3(pixel.a) : pixel.rgb;
+    float source_gamma = channel == 4 ? 1.0 : image_gamma;
+    vec3 color = pow(max(source * display_controls.x, vec3(0.0)), vec3(1.0 / source_gamma));
+    color = pow(color, vec3(1.0 / display_controls.y));
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = mix(vec3(luminance), color, display_controls.z);
     if (channel > 0 && channel < 4) {
         color = vec3(color[channel - 1]);
-    } else if (channel == 4) {
-        color = vec3(pixel.a);
     }
     fragment_color = vec4(color, 1.0);
 }

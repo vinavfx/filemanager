@@ -3,6 +3,13 @@ use eframe::egui::{self, Rect, Vec2};
 use eframe::glow::{self, HasContext};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Copy)]
+pub struct DisplaySettings {
+    pub channel: i32,
+    pub rotation: i32,
+    pub controls: [f32; 3],
+}
+
 pub struct Renderer {
     program: glow::Program,
     vertex_array: glow::VertexArray,
@@ -79,8 +86,7 @@ impl Renderer {
         frame: Arc<Frame>,
         origin: Vec2,
         size: Vec2,
-        channel: i32,
-        rotation: i32,
+        display: DisplaySettings,
     ) -> Result<(), String> {
         unsafe {
             gl.active_texture(glow::TEXTURE0);
@@ -135,6 +141,13 @@ impl Renderer {
                     .as_ref(),
                 frame.gamma,
             );
+            gl.uniform_3_f32(
+                gl.get_uniform_location(self.program, "display_controls")
+                    .as_ref(),
+                display.controls[0],
+                display.controls[1],
+                display.controls[2],
+            );
             gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "smooth_preview")
                     .as_ref(),
@@ -142,11 +155,11 @@ impl Renderer {
             );
             gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "channel").as_ref(),
-                channel,
+                display.channel,
             );
             gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "rotation").as_ref(),
-                rotation,
+                display.rotation,
             );
             gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "image_texture")
@@ -167,8 +180,7 @@ impl Renderer {
         rect: Rect,
         origin: Vec2,
         size: Vec2,
-        channel: i32,
-        rotation: i32,
+        display: DisplaySettings,
     ) -> egui::PaintCallback {
         let size = size / rect.size();
         let origin = origin / rect.size();
@@ -181,7 +193,7 @@ impl Renderer {
                     && let Some(frame) = frame.upgrade()
                 {
                     renderer.error = renderer
-                        .draw(painter.gl(), frame, origin, size, channel, rotation)
+                        .draw(painter.gl(), frame, origin, size, display)
                         .err();
                 }
             })),

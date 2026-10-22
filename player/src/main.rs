@@ -6,6 +6,7 @@ mod renderer;
 mod resident;
 #[path = "../../shared/thumbnail_cache.rs"]
 mod thumbnail_cache;
+mod viewer_controls;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

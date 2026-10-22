@@ -1,8 +1,8 @@
 # Player
 
 Visor en Rust para Linux, basado en la navegación de DJV 1.3.0 y las preferencias utilizadas durante el desarrollo. Arriba, zoom y
-orientación; abajo, timeline con caché real y, debajo de él, una barra con reversa, parada, avance, bucle, FPS y fotograma actual. Sin
-menús, audio, paneles ni herramientas adicionales.
+orientación, ganancia, gamma y saturación; abajo, timeline con caché real y, debajo de él, una barra con reversa, parada, avance, bucle, FPS
+y fotograma actual. Sin menús, audio, paneles ni herramientas adicionales.
 
 ## Ubicación en el repositorio
 
@@ -36,6 +36,11 @@ velocidades originales y fracciones exactas como `24000/1001`; la lista aparece 
 Los botones superiores `−90°`, `0°` y `+90°` son exclusivos: giran a la izquierda, restauran el original o giran a la derecha, sin acumular
 giros ni modificar el archivo. El ajuste al visor contempla el ancho y alto intercambiados; con zoom manual se conserva el centro de la
 imagen. Abrir otro archivo restablece la orientación a `0°`; navegar entre imágenes con `H` / `L` o recargar conserva la rotación actual.
+
+La misma barra superior incluye los controles de `dot_comp`: ganancia (`f/8`), gamma (`γ`) y saturación (`S`), con campo numérico y regla
+deslizante, sin ocupar altura adicional. En ventanas estrechas, la barra permite desplazarse horizontalmente. Un doble clic en la regla
+restablece el valor a `1`; pulsar la etiqueta alterna entre `1` y el último ajuste. Las flechas de ganancia reducen o aumentan la exposición
+un paso. Solo afectan a la visualización, sin modificar los archivos.
 
 ## Formatos y ajustes
 

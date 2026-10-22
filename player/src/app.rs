@@ -1,6 +1,7 @@
 use crate::media::{Event, Frame, Loader, Media, Request};
 use crate::playback::{Direction, Playback, Rate};
-use crate::renderer::Renderer;
+use crate::renderer::{DisplaySettings, Renderer};
+use crate::viewer_controls::ViewerControls;
 use eframe::egui::{
     self, Align2, Color32, FontId, Key, PointerButton, Pos2, Rect, Sense, Stroke, Vec2,
     ViewportCommand,
@@ -38,6 +39,7 @@ pub struct Player {
     fullscreen_previous_ui: bool,
     hud: bool,
     channel: i32,
+    controls: ViewerControls,
     stored: Option<Arc<Frame>>,
     preview: Option<Arc<Frame>>,
     preview_size: Option<Vec2>,
@@ -92,6 +94,7 @@ impl Player {
             fullscreen_previous_ui: true,
             hud: false,
             channel: 0,
+            controls: ViewerControls::default(),
             stored: None,
             preview: None,
             preview_size: None,
@@ -361,56 +364,63 @@ impl Player {
         egui::TopBottomPanel::top("toolbar")
             .exact_height(36.0)
             .show(context, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label("Zoom");
-                    let zoom_id = ui.make_persistent_id("zoom_input");
-                    if !ui.memory(|memory| {
-                        memory.has_focus(zoom_id) || memory.had_focus_last_frame(zoom_id)
-                    }) {
-                        self.zoom_text = format!("{:.3}", self.zoom);
-                    }
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.zoom_text)
-                            .id(zoom_id)
-                            .desired_width(60.0),
-                    );
-                    if response.lost_focus() {
-                        let value = if let Some(percent) = self.zoom_text.trim().strip_suffix('%') {
-                            percent.parse::<f32>().ok().map(|value| value / 100.0)
-                        } else {
-                            self.zoom_text.trim().parse().ok()
-                        };
-                        if let Some(value) = value.filter(|value| value.is_finite() && *value > 0.0)
-                        {
-                            self.set_zoom(value, self.viewer.center());
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.label("Zoom");
+                        let zoom_id = ui.make_persistent_id("zoom_input");
+                        if !ui.memory(|memory| {
+                            memory.has_focus(zoom_id) || memory.had_focus_last_frame(zoom_id)
+                        }) {
+                            self.zoom_text = format!("{:.3}", self.zoom);
                         }
-                    }
-                    if ui
-                        .selectable_label(self.fit && self.fit_fill, "Fit")
-                        .on_hover_text("Fill the viewer without black bars (Ctrl+F)")
-                        .clicked()
-                    {
-                        self.fit_fill = !(self.fit && self.fit_fill);
-                        self.fit_view();
-                    }
-                    ui.separator();
-                    for (rotation, label) in [(-90, "−90°"), (0, "0°"), (90, "+90°")] {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.zoom_text)
+                                .id(zoom_id)
+                                .desired_width(60.0),
+                        );
+                        if response.lost_focus() {
+                            let value =
+                                if let Some(percent) = self.zoom_text.trim().strip_suffix('%') {
+                                    percent.parse::<f32>().ok().map(|value| value / 100.0)
+                                } else {
+                                    self.zoom_text.trim().parse().ok()
+                                };
+                            if let Some(value) =
+                                value.filter(|value| value.is_finite() && *value > 0.0)
+                            {
+                                self.set_zoom(value, self.viewer.center());
+                            }
+                        }
                         if ui
-                            .selectable_label(self.rotation == rotation, label)
+                            .selectable_label(self.fit && self.fit_fill, "Fit")
+                            .on_hover_text("Fill the viewer without black bars (Ctrl+F)")
                             .clicked()
                         {
-                            self.set_rotation(rotation);
+                            self.fit_fill = !(self.fit && self.fit_fill);
+                            self.fit_view();
                         }
-                    }
-                    ui.separator();
-                    for (channel, label) in [(0, "RGB"), (1, "R"), (2, "G"), (3, "B"), (4, "A")] {
-                        if ui
-                            .selectable_label(self.channel == channel, label)
-                            .clicked()
+                        ui.separator();
+                        for (rotation, label) in [(-90, "−90°"), (0, "0°"), (90, "+90°")] {
+                            if ui
+                                .selectable_label(self.rotation == rotation, label)
+                                .clicked()
+                            {
+                                self.set_rotation(rotation);
+                            }
+                        }
+                        ui.separator();
+                        for (channel, label) in [(0, "RGB"), (1, "R"), (2, "G"), (3, "B"), (4, "A")]
                         {
-                            self.channel = if self.channel == channel { 0 } else { channel };
+                            if ui
+                                .selectable_label(self.channel == channel, label)
+                                .clicked()
+                            {
+                                self.channel = if self.channel == channel { 0 } else { channel };
+                            }
                         }
-                    }
+                        ui.separator();
+                        self.controls.show(ui);
+                    });
                 });
             });
     }
@@ -714,8 +724,11 @@ impl Player {
                         rect,
                         *origin,
                         *size,
-                        self.channel,
-                        self.rotation,
+                        DisplaySettings {
+                            channel: self.channel,
+                            rotation: self.rotation,
+                            controls: self.controls.values,
+                        },
                     ));
                 }
                 if !image_ready && (self.loading || self.media.is_some()) && self.error.is_none() {
