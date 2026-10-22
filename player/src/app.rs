@@ -80,8 +80,8 @@ impl Player {
             path: None,
             picker: None,
             frame_text: "0".into(),
-            rate_text: "24".into(),
-            zoom_text: "1".into(),
+            rate_text: "24.00".into(),
+            zoom_text: "1.00".into(),
             zoom: 1.0,
             rotation: 0,
             origin: Vec2::ZERO,
@@ -210,7 +210,7 @@ impl Player {
                 }
                 Event::Loaded(id, media) if id == self.generation => {
                     self.playback.load(media.count, media.rate);
-                    self.rate_text = media.rate.label();
+                    self.rate_text = format!("{:.2}", media.rate.value());
                     self.frame_text = media.number(0).to_string();
                     context.send_viewport_cmd(ViewportCommand::Title(format!(
                         "{} - Player",
@@ -375,7 +375,7 @@ impl Player {
                         if !ui.memory(|memory| {
                             memory.has_focus(zoom_id) || memory.had_focus_last_frame(zoom_id)
                         }) {
-                            self.zoom_text = format!("{:.3}", self.zoom);
+                            self.zoom_text = format!("{:.2}", self.zoom);
                         }
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut self.zoom_text)
@@ -383,7 +383,7 @@ impl Player {
                                 .horizontal_align(egui::Align::Center)
                                 .desired_width(60.0),
                         );
-                        if response.lost_focus() {
+                        if response.lost_focus() && self.zoom_text != format!("{:.2}", self.zoom) {
                             let value =
                                 if let Some(percent) = self.zoom_text.trim().strip_suffix('%') {
                                     percent.parse::<f32>().ok().map(|value| value / 100.0)
@@ -431,11 +431,13 @@ impl Player {
     }
 
     fn apply_rate(&mut self) {
-        if let Some(rate) = Rate::parse(&self.rate_text) {
+        if self.rate_text != format!("{:.2}", self.playback.rate.value())
+            && let Some(rate) = Rate::parse(&self.rate_text)
+        {
             self.playback.rate = rate;
             self.playback.reset_clock();
         }
-        self.rate_text = self.playback.rate.label();
+        self.rate_text = format!("{:.2}", self.playback.rate.value());
     }
 
     fn timeline(&mut self, context: &egui::Context) {
@@ -953,7 +955,7 @@ impl Player {
                         .clamp(1.0, 1000.0);
                     if let Some(rate) = Rate::parse(&format!("{value:.0}")) {
                         self.playback.rate = rate;
-                        self.rate_text = rate.label();
+                        self.rate_text = format!("{:.2}", rate.value());
                         self.playback.reset_clock();
                     }
                 } else {

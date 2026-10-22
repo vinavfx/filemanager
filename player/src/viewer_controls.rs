@@ -24,13 +24,16 @@ impl ViewerControls {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 ui.spacing_mut().button_padding = Vec2::new(3.0, 0.0);
                 ui.spacing_mut().interact_size.y = 20.0;
-                let width = ((ui.available_width() - 6.0) / 3.0).clamp(134.0, 223.0);
+                let width = ((ui.available_width() - 36.0) / 3.0).clamp(134.0, 223.0);
                 ui.horizontal(|ui| {
                     for (index, (label, name)) in
                         [("f/8", "Gain"), ("γ", "Gamma"), ("S", "Saturation")]
                             .into_iter()
                             .enumerate()
                     {
+                        if index > 0 {
+                            ui.add(egui::Separator::default().spacing(12.0));
+                        }
                         ui.push_id(index, |ui| {
                             ui.allocate_ui_with_layout(
                                 Vec2::new(width, 20.0),
@@ -94,13 +97,7 @@ impl ViewerControls {
                                             egui::DragValue::new(&mut self.values[index])
                                                 .range(minimum..=f32::MAX)
                                                 .speed(0.01)
-                                                .max_decimals(5)
-                                                .custom_formatter(|value, _| {
-                                                    egui::emath::format_with_decimals_in_range(
-                                                        value,
-                                                        0..=5,
-                                                    )
-                                                }),
+                                                .custom_formatter(|value, _| format!("{value:.2}")),
                                         )
                                         .on_hover_text(format!(
                                             "{name}: drag or double-click to enter a value"
