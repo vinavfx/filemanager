@@ -764,7 +764,7 @@ impl Player {
                     && let Some(media) = &self.media
                 {
                     let painter = ui.painter().with_clip_rect(rect);
-                    let width = (rect.width() - 64.0).clamp(1.0, 340.0);
+                    let width = (rect.width() - 48.0).clamp(1.0, 290.0);
                     let title = painter.layout(
                         media
                             .path
@@ -772,31 +772,31 @@ impl Player {
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                        FontId::proportional(17.0),
+                        FontId::proportional(15.0),
                         Color32::from_rgb(235, 240, 248),
                         width,
                     );
-                    let size = egui::vec2(width + 32.0, title.size().y + 144.0);
-                    let position = rect.max - Vec2::splat(16.0) - size;
-                    let content = position + Vec2::splat(16.0);
+                    let size = egui::vec2(width + 24.0, title.size().y + 120.0);
+                    let position = rect.center() - size / 2.0;
+                    let content = position + Vec2::splat(12.0);
                     let panel = Rect::from_min_size(position, size);
                     painter.rect_filled(
                         panel,
-                        10.0,
-                        Color32::from_rgba_unmultiplied(22, 26, 33, 225),
+                        0.0,
+                        Color32::from_rgba_unmultiplied(22, 26, 33, 165),
                     );
                     painter.rect_stroke(
                         panel,
-                        10.0,
+                        0.0,
                         Stroke::new(1.0, Color32::from_white_alpha(35)),
                         egui::StrokeKind::Inside,
                     );
-                    let rows_y = content.y + title.size().y + 22.0;
+                    let rows_y = content.y + title.size().y + 18.0;
                     painter.galley(content, title, Color32::WHITE);
                     painter.line_segment(
                         [
                             egui::pos2(content.x, rows_y - 10.0),
-                            egui::pos2(panel.right() - 16.0, rows_y - 10.0),
+                            egui::pos2(panel.right() - 12.0, rows_y - 10.0),
                         ],
                         Stroke::new(1.0, Color32::from_white_alpha(25)),
                     );
@@ -809,19 +809,19 @@ impl Player {
                     .into_iter()
                     .enumerate()
                     {
-                        let row = egui::pos2(content.x, rows_y + index as f32 * 25.0);
+                        let row = egui::pos2(content.x, rows_y + index as f32 * 21.0);
                         painter.text(
                             row,
                             Align2::LEFT_TOP,
                             label,
-                            FontId::proportional(15.0),
+                            FontId::proportional(13.0),
                             Color32::from_rgb(155, 167, 185),
                         );
                         painter.text(
-                            egui::pos2(panel.right() - 16.0, row.y),
+                            egui::pos2(panel.right() - 12.0, row.y),
                             Align2::RIGHT_TOP,
                             value,
-                            FontId::monospace(15.0),
+                            FontId::monospace(13.0),
                             Color32::from_rgb(205, 225, 250),
                         );
                     }
