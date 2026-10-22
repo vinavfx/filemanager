@@ -8219,6 +8219,12 @@ impl eframe::App for ResidentApp {
                         self.next_window += 1;
                         let mut window =
                             FileManager::new(context, self.root.external_drag.sibling(), path);
+                        let source = self
+                            .windows
+                            .last()
+                            .map_or(&self.root, |(_, manager)| manager);
+                        window.icons.reuse_from(&source.icons);
+                        window.thumbnails.reuse_from(&source.thumbnails);
                         window.copied_files = self.root.copied_files.clone();
                         self.windows.push((id, window));
                     } else {

@@ -429,6 +429,13 @@ impl Thumbnails {
         }
     }
 
+    pub fn reuse_from(&mut self, other: &Self) {
+        self.cache.clone_from(&other.cache);
+        self.cache_bytes = other.cache_bytes;
+        self.fingerprints.clone_from(&other.fingerprints);
+        self.last_used.clone_from(&other.last_used);
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

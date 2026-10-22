@@ -358,6 +358,11 @@ impl Icons {
         }
     }
 
+    pub fn reuse_from(&mut self, other: &Self) {
+        self.cache.clone_from(&other.cache);
+        self.order.clone_from(&other.order);
+    }
+
     pub fn poll(&mut self, context: &egui::Context) {
         for _ in 0..2 {
             let Ok((key, image)) = self.receiver.try_recv() else {
