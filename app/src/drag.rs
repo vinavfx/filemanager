@@ -111,7 +111,7 @@ struct Session {
     source: Window,
     uris: String,
     text: String,
-    preview: bool,
+    preview: Option<(u16, u16)>,
     depth: u8,
     visual: Visualid,
     alpha_mask: u32,
@@ -242,21 +242,25 @@ impl Session {
             source,
             uris,
             text: quoted.join(" "),
-            preview: false,
+            preview: None,
             depth,
             visual,
             alpha_mask,
         };
         if let Some(image) = preview {
             match session.create_preview(&image, screen) {
-                Ok(()) => session.preview = true,
+                Ok(size) => session.preview = Some(size),
                 Err(error) => eprintln!("Cannot display the drag preview: {error}"),
             }
         }
         Ok(session)
     }
 
-    fn create_preview(&self, image: &eframe::egui::ColorImage, screen: usize) -> Result<()> {
+    fn create_preview(
+        &self,
+        image: &eframe::egui::ColorImage,
+        screen: usize,
+    ) -> Result<(u16, u16)> {
         let connection = &self.connection;
         connection.shape_query_version()?.reply()?;
         let screen = &connection.setup().roots[screen];
@@ -413,7 +417,7 @@ impl Session {
             .check()?;
         connection.free_gc(gc)?.check()?;
         connection.free_pixmap(pixmap)?.check()?;
-        Ok(())
+        Ok((width, height))
     }
 
     fn property(&self, window: Window, property: Atom, kind: AtomEnum) -> Result<Option<u32>> {
@@ -426,7 +430,6 @@ impl Session {
 
     fn target(&self) -> Result<Option<Target>> {
         let mut window = self.root;
-        let mut target = None;
         for _ in 0..32 {
             if window == self.origin {
                 return Ok(None);
@@ -442,11 +445,11 @@ impl Session {
                 .unwrap_or(window);
             if let Some(version) = self.property(proxy, self.atoms.XdndAware, AtomEnum::ATOM)? {
                 if version >= 3 {
-                    target = Some(Target {
+                    return Ok(Some(Target {
                         window,
                         proxy,
                         version: version.min(5),
-                    });
+                    }));
                 }
             }
             let child = self.connection.query_pointer(window)?.reply()?.child;
@@ -455,7 +458,7 @@ impl Session {
             }
             window = child;
         }
-        Ok(target)
+        Ok(None)
     }
 
     fn send(&self, target: Target, message: Atom, data: [u32; 5]) -> Result<()> {
@@ -532,7 +535,7 @@ impl Session {
         let mut accepted = false;
         let mut pending = false;
         let mut position = None;
-        let mut released = None;
+        let mut released: Option<(Instant, u32)> = None;
         let mut dropped = None;
         let mut preview_position = None;
         loop {
@@ -567,15 +570,15 @@ impl Session {
                     return Ok(());
                 }
                 let pointer = self.connection.query_pointer(self.root)?.reply()?;
-                if self.preview {
+                if let Some((width, height)) = self.preview {
                     if pointer.mask.contains(KeyButMask::BUTTON1) {
                         let coordinates = (pointer.root_x, pointer.root_y);
                         if preview_position != Some(coordinates) {
                             self.connection.configure_window(
                                 self.source,
                                 &ConfigureWindowAux::new()
-                                    .x(i32::from(pointer.root_x) + 16)
-                                    .y(i32::from(pointer.root_y) + 16)
+                                    .x(i32::from(pointer.root_x) - i32::from(width) / 2)
+                                    .y(i32::from(pointer.root_y) - i32::from(height) / 2)
                                     .stack_mode(StackMode::ABOVE),
                             )?;
                             if preview_position.is_none() {
@@ -590,7 +593,11 @@ impl Session {
                         self.connection.flush()?;
                     }
                 }
-                let current = self.target()?;
+                let current = if released.is_none() {
+                    self.target()?
+                } else {
+                    target
+                };
                 if current != target {
                     if let Some(target) = target {
                         self.send(target, self.atoms.XdndLeave, [self.source, 0, 0, 0, 0])?;
@@ -615,8 +622,26 @@ impl Session {
                 }
                 let coordinates =
                     ((pointer.root_x as u16 as u32) << 16) | pointer.root_y as u16 as u32;
-                if !pointer.mask.contains(KeyButMask::BUTTON1) {
-                    let time = *released.get_or_insert_with(Instant::now);
+                let coordinates = released.map_or(coordinates, |(_, position)| position);
+                if !pending && position != Some(coordinates) {
+                    if let Some(target) = target {
+                        self.send(
+                            target,
+                            self.atoms.XdndPosition,
+                            [
+                                self.source,
+                                0,
+                                coordinates,
+                                CURRENT_TIME,
+                                self.atoms.XdndActionCopy,
+                            ],
+                        )?;
+                        pending = true;
+                        position = Some(coordinates);
+                    }
+                }
+                if !pointer.mask.contains(KeyButMask::BUTTON1) || released.is_some() {
+                    let (time, _) = *released.get_or_insert_with(|| (Instant::now(), coordinates));
                     if let Some(target) = target {
                         if pending && time.elapsed() < Duration::from_millis(500) {
                             std::thread::sleep(Duration::from_millis(10));
@@ -635,22 +660,6 @@ impl Session {
                         }
                     } else {
                         return Ok(());
-                    }
-                } else if !pending && position != Some(coordinates) {
-                    if let Some(target) = target {
-                        self.send(
-                            target,
-                            self.atoms.XdndPosition,
-                            [
-                                self.source,
-                                0,
-                                coordinates,
-                                CURRENT_TIME,
-                                self.atoms.XdndActionCopy,
-                            ],
-                        )?;
-                        pending = true;
-                        position = Some(coordinates);
                     }
                 }
             }
