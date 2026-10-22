@@ -77,7 +77,7 @@ Los atajos se desactivan al editar texto para no interceptar la escritura.
 | Duplicar / reducir a la mitad / restablecer zoom      | `=` / `-` / `0`                   |
 | Pantalla completa / ajustar imagen al visor           | `U` / `F`                         |
 | Llenar el visor sin franjas (recorta sin deformar)    | `Ctrl+F`                          |
-| Mostrar u ocultar interfaz / HUD                      | Acento grave / `Ctrl+H`           |
+| Mostrar u ocultar interfaz / HUD                      | Acento grave / `Q`                |
 | Canal rojo / verde / azul / alfa / predeterminado     | `R` / `G` / `B` / `A` / `C`       |
 | Guardar / mostrar fotograma de referencia             | `Mayús+E` / `E`                   |
 | Abrir / cerrar archivo / salir                        | `Ctrl+O` / `Ctrl+W` / `Ctrl+Q`    |

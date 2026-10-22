@@ -996,7 +996,6 @@ impl Player {
                     Key::Q if !modifiers.shift => self.quit_requested = true,
                     Key::E if !modifiers.shift => self.hide_requested = true,
                     Key::W if !modifiers.shift => self.close(gl),
-                    Key::H if !modifiers.shift => self.hud = !self.hud,
                     Key::F if !modifiers.shift => {
                         self.fit_fill = true;
                         self.fit_view();
@@ -1075,6 +1074,7 @@ impl Player {
                     self.playback.set_direction(Direction::Stop);
                     self.playback.seek(self.playback.frame as i64 + 1, false);
                 }
+                Key::Q => self.hud = !self.hud,
                 Key::Space if !modifiers.shift => self.playback.toggle(),
                 Key::Minus if modifiers.shift => self.playback.seek(0, false),
                 Key::Num4 if modifiers.shift => self
