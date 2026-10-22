@@ -24,6 +24,7 @@ pub struct Player {
     error: Option<String>,
     path: Option<PathBuf>,
     picker: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
+    confirm_save: bool,
     frame_text: String,
     rate_text: String,
     zoom_text: String,
@@ -79,6 +80,7 @@ impl Player {
             error: None,
             path: None,
             picker: None,
+            confirm_save: false,
             frame_text: "0".into(),
             rate_text: "24.00".into(),
             zoom_text: "1.00".into(),
@@ -128,6 +130,7 @@ impl Player {
         if let Ok(mut renderer) = self.renderer.lock() {
             renderer.active = true;
         }
+        self.confirm_save = false;
         self.generation += 1;
         self.path = Some(path.clone());
         self.preview = None;
@@ -149,6 +152,7 @@ impl Player {
             renderer.clear(gl);
         }
         self.picker = None;
+        self.confirm_save = false;
         self.generation += 1;
         self.loader.send(Request::Close(self.generation));
         self.media = None;
@@ -395,6 +399,16 @@ impl Player {
             .show(context, |ui| {
                 egui::ScrollArea::horizontal().show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
+                        let can_save = self.media.as_ref().is_some_and(Media::is_still)
+                            && self.loader.frame(self.generation, 0).is_some();
+                        if ui
+                            .add_enabled(can_save, egui::Button::new("Save image"))
+                            .on_hover_text("Overwrite the image with the current gain, gamma, saturation and rotation")
+                            .clicked()
+                        {
+                            self.confirm_save = true;
+                        }
+                        ui.separator();
                         ui.label("Zoom");
                         let zoom_id = ui.make_persistent_id("zoom_input");
                         if !ui.memory(|memory| {
@@ -453,6 +467,60 @@ impl Player {
                     });
                 });
             });
+    }
+
+    fn save_dialog(&mut self, context: &egui::Context) {
+        if !self.confirm_save {
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("save_image_confirmation"))
+            .frame(
+                egui::Frame::popup(&context.style())
+                    .shadow(egui::epaint::Shadow::NONE)
+                    .inner_margin(16),
+            )
+            .show(context, |ui| {
+                ui.set_width(320.0);
+                ui.label(egui::RichText::new("Overwrite image?").strong());
+                ui.add_space(4.0);
+                ui.label(
+                    "Save the current adjustments to the original image? This cannot be undone.",
+                );
+                ui.add_space(10.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let overwrite = egui::Button::new("Overwrite").min_size(egui::vec2(84.0, 26.0));
+                    if ui.add(overwrite).clicked() {
+                        self.confirm_save = false;
+                        if let Some(media) = self.media.as_ref().filter(|media| media.is_still())
+                            && let Some(frame) = self.loader.frame(self.generation, 0)
+                        {
+                            let path = media.path.clone();
+                            match crate::media::save_image(
+                                &path,
+                                &frame,
+                                self.controls.values,
+                                self.rotation,
+                            ) {
+                                Ok(()) => {
+                                    self.controls = ViewerControls::default();
+                                    self.open_with_mode(path, true, false);
+                                }
+                                Err(error) => self.error = Some(error),
+                            }
+                        }
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(72.0, 26.0)))
+                        .clicked()
+                    {
+                        self.confirm_save = false;
+                    }
+                });
+            });
+        if response.should_close() {
+            self.confirm_save = false;
+        }
     }
 
     fn apply_rate(&mut self) {
@@ -1238,7 +1306,10 @@ impl eframe::App for Player {
             self.timeline_dragging = false;
         }
         self.viewer(context);
-        self.shortcuts(context, frame.gl().map(AsRef::as_ref));
+        if !self.confirm_save {
+            self.shortcuts(context, frame.gl().map(AsRef::as_ref));
+        }
+        self.save_dialog(context);
         if self.media.is_some()
             && self
                 .loader

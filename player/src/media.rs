@@ -820,6 +820,80 @@ fn decode_image(path: &Path) -> Result<Frame, String> {
     })
 }
 
+pub fn save_image(
+    path: &Path,
+    frame: &Frame,
+    controls: [f32; 3],
+    rotation: i32,
+) -> Result<(), String> {
+    let format = image::ImageFormat::from_path(path).map_err(|error| error.to_string())?;
+    if !format.can_write() {
+        return Err("Saving this image format is not supported".into());
+    }
+    let [gain, gamma, saturation] = controls;
+    let mut pixels: Vec<f32> = match &frame.pixels {
+        Pixels::Bytes(pixels) => pixels.iter().map(|&value| value as f32 / 255.0).collect(),
+        Pixels::Float(pixels) => pixels.clone(),
+    };
+    for pixel in pixels.chunks_exact_mut(4) {
+        for value in &mut pixel[..3] {
+            *value = (*value * gain)
+                .max(0.0)
+                .powf(1.0 / frame.gamma)
+                .powf(1.0 / gamma);
+        }
+        let luminance = pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722;
+        for value in &mut pixel[..3] {
+            *value = (luminance + (*value - luminance) * saturation)
+                .max(0.0)
+                .powf(frame.gamma);
+        }
+    }
+    let buffer = image::Rgba32FImage::from_raw(frame.width, frame.height, pixels)
+        .ok_or("Invalid image data")?;
+    let image = image::DynamicImage::ImageRgba32F(buffer);
+    let image = match rotation {
+        -90 => image.rotate270(),
+        90 => image.rotate90(),
+        _ => image,
+    };
+    let image = match format {
+        image::ImageFormat::OpenExr => image,
+        image::ImageFormat::Hdr => image::DynamicImage::ImageRgb32F(image.into_rgb32f()),
+        image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(image.into_rgb8()),
+        image::ImageFormat::Png | image::ImageFormat::Tiff | image::ImageFormat::Pnm
+            if matches!(frame.pixels, Pixels::Float(_)) =>
+        {
+            image::DynamicImage::ImageRgba16(image.into_rgba16())
+        }
+        _ => image::DynamicImage::ImageRgba8(image.into_rgba8()),
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let mut name = path.file_name().ok_or("Invalid image path")?.to_os_string();
+    name.push(format!(".{}.{}.tmp", std::process::id(), timestamp));
+    let temporary = path.with_file_name(name);
+    let result = (|| {
+        let permissions = std::fs::metadata(path)?.permissions();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        image
+            .write_to(&mut file, format)
+            .map_err(std::io::Error::other)?;
+        file.set_permissions(permissions)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| format!("Cannot save image: {error}"))
+}
+
 pub fn check_media(path: &Path) -> Result<(), String> {
     let media = inspect(path, false)?;
     println!(
