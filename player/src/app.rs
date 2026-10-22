@@ -52,9 +52,9 @@ pub struct Player {
     drag_mode: u8,
     timeline_dragging: bool,
     timeline_rect: Rect,
-    measured_start: Instant,
+    measured_start: Option<Instant>,
     measured_frames: usize,
-    actual_rate: f64,
+    actual_rate: Option<f64>,
 }
 
 impl Player {
@@ -107,9 +107,9 @@ impl Player {
             drag_mode: 0,
             timeline_dragging: false,
             timeline_rect: Rect::NOTHING,
-            measured_start: Instant::now(),
+            measured_start: None,
             measured_frames: 0,
-            actual_rate: 0.0,
+            actual_rate: None,
         };
         if let Some(path) = path {
             player.open_with_mode(path, still, false);
@@ -224,8 +224,9 @@ impl Player {
                     } else {
                         self.fit = true;
                     }
-                    self.measured_start = Instant::now();
+                    self.measured_start = None;
                     self.measured_frames = 0;
+                    self.actual_rate = None;
                 }
                 Event::Error(id, error) if id == self.generation => {
                     self.error = Some(error);
@@ -253,7 +254,22 @@ impl Player {
     }
 
     fn tick(&mut self) {
-        if self.timeline_dragging || !self.playback.due() {
+        if self.playback.direction == Direction::Stop {
+            self.measured_start = None;
+            self.measured_frames = 0;
+            self.actual_rate = None;
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now
+            .duration_since(*self.measured_start.get_or_insert(now))
+            .as_secs_f64();
+        if elapsed >= 1.0 {
+            self.actual_rate = Some(self.measured_frames as f64 / elapsed);
+            self.measured_start = Some(now);
+            self.measured_frames = 0;
+        }
+        if self.loading || self.timeline_dragging || !self.playback.due() {
             return;
         }
         let next = self.playback.next_frame();
@@ -271,12 +287,6 @@ impl Player {
             self.measured_frames += 1;
         } else {
             self.request(frame);
-        }
-        let elapsed = self.measured_start.elapsed().as_secs_f64();
-        if elapsed >= 1.0 {
-            self.actual_rate = self.measured_frames as f64 / elapsed;
-            self.measured_start = Instant::now();
-            self.measured_frames = 0;
         }
     }
 
@@ -322,16 +332,31 @@ impl Player {
                     }
                     ui.separator();
                     ui.label("FPS");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.rate_text)
-                            .horizontal_align(egui::Align::Center)
-                            .desired_width(78.0),
+                    let rate_id = ui.make_persistent_id("rate_input");
+                    let editing = ui.memory(|memory| memory.has_focus(rate_id));
+                    let playing = self.playback.direction != Direction::Stop;
+                    let measured = self.actual_rate.filter(|_| playing && !editing);
+                    let mut text = measured.map_or_else(
+                        || self.rate_text.clone(),
+                        |rate| format!("{:.1}", rate.min(self.playback.rate.value())),
                     );
+                    let mut input = egui::TextEdit::singleline(&mut text)
+                        .id(rate_id)
+                        .desired_width(78.0);
+                    if measured.is_some_and(|rate| rate < self.playback.rate.value() * 0.98) {
+                        input = input.text_color(Color32::RED);
+                    }
+                    let response = ui.add(input);
+                    if editing && response.changed() {
+                        self.rate_text = text;
+                    }
                     if response.lost_focus() {
                         self.apply_rate();
                     }
                     response.on_hover_text(format!(
-                        "{}\nOr enter an exact fraction, such as 24000/1001",
+                        "Target: {} FPS\nActual: {}\n{}\nOr enter an exact fraction, such as 24000/1001",
+                        self.playback.rate.label(),
+                        self.actual_rate.map_or_else(|| "Pending".into(), |rate| format!("{rate:.1} FPS")),
                         Rate::PRESETS.join(", ")
                     ));
                     ui.label("Frame");
@@ -436,6 +461,9 @@ impl Player {
         {
             self.playback.rate = rate;
             self.playback.reset_clock();
+            self.measured_start = None;
+            self.measured_frames = 0;
+            self.actual_rate = None;
         }
         self.rate_text = format!("{:.2}", self.playback.rate.value());
     }
@@ -811,7 +839,11 @@ impl Player {
                         ("Resolution", format!("{} × {}", media.width, media.height)),
                         ("Frame", media.number(self.playback.frame).to_string()),
                         ("Target FPS", format!("{:.2}", self.playback.rate.value())),
-                        ("Actual FPS", format!("{:.2}", self.actual_rate)),
+                        (
+                            "Actual FPS",
+                            self.actual_rate
+                                .map_or_else(|| "Pending".into(), |rate| format!("{rate:.2}")),
+                        ),
                     ]
                     .into_iter()
                     .enumerate()
@@ -1123,7 +1155,13 @@ impl Player {
                 Key::Semicolon if !modifiers.shift => {
                     self.playback.set_loop(self.playback.loop_mode.next());
                 }
-                Key::I if modifiers.shift => self.playback.in_point = 0,
+                Key::I => {
+                    self.playback.in_point = if modifiers.shift {
+                        0
+                    } else {
+                        self.playback.frame
+                    }
+                }
                 Key::Num1 if !modifiers.shift && !repeat => self.set_rotation(-90),
                 Key::Num2 if !modifiers.shift && !repeat => self.set_rotation(0),
                 Key::Num3 if !modifiers.shift && !repeat => self.set_rotation(90),
