@@ -322,8 +322,11 @@ impl Player {
                     }
                     ui.separator();
                     ui.label("FPS");
-                    let response =
-                        ui.add(egui::TextEdit::singleline(&mut self.rate_text).desired_width(78.0));
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.rate_text)
+                            .horizontal_align(egui::Align::Center)
+                            .desired_width(78.0),
+                    );
                     if response.lost_focus() {
                         self.apply_rate();
                     }
@@ -346,6 +349,7 @@ impl Player {
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.frame_text)
                             .id(frame_id)
+                            .horizontal_align(egui::Align::Center)
                             .desired_width(78.0),
                     );
                     if response.lost_focus()
@@ -376,6 +380,7 @@ impl Player {
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut self.zoom_text)
                                 .id(zoom_id)
+                                .horizontal_align(egui::Align::Center)
                                 .desired_width(60.0),
                         );
                         if response.lost_focus() {
@@ -1242,6 +1247,11 @@ fn configure_style(context: &egui::Context) {
     style.visuals.widgets.inactive.bg_fill = Color32::from_gray(64);
     style.visuals.selection.bg_fill = Color32::from_rgb(178, 153, 76);
     style.visuals.override_text_color = Some(Color32::from_gray(230));
+    let corner_radius = style.visuals.widgets.inactive.corner_radius;
+    style.visuals.widgets.noninteractive.corner_radius = corner_radius;
+    style.visuals.widgets.hovered.corner_radius = corner_radius;
+    style.visuals.widgets.active.corner_radius = corner_radius;
+    style.visuals.widgets.open.corner_radius = corner_radius;
     for font in style.text_styles.values_mut() {
         font.size = 12.0;
     }

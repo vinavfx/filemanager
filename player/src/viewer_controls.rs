@@ -77,6 +77,17 @@ impl ViewerControls {
                                     let mut input_ui =
                                         ui.new_child(egui::UiBuilder::new().max_rect(input_rect));
                                     input_ui.set_clip_rect(input_rect.intersect(ui.clip_rect()));
+                                    let background = input_ui.visuals().extreme_bg_color;
+                                    let widgets = &mut input_ui.visuals_mut().widgets;
+                                    for visuals in [
+                                        &mut widgets.inactive,
+                                        &mut widgets.hovered,
+                                        &mut widgets.active,
+                                        &mut widgets.open,
+                                    ] {
+                                        visuals.weak_bg_fill = background;
+                                        visuals.expansion = 0.0;
+                                    }
                                     input_ui
                                         .add_sized(
                                             input_rect.size(),
