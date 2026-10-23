@@ -126,6 +126,7 @@ impl Player {
     pub fn open_with_mode(&mut self, path: PathBuf, still: bool, preserve_rotation: bool) {
         if !preserve_rotation {
             self.rotation = 0;
+            self.controls = ViewerControls::default();
         }
         if let Ok(mut renderer) = self.renderer.lock() {
             renderer.active = true;
