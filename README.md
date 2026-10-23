@@ -82,6 +82,21 @@ gráfico. Al cerrar todas las ventanas, permanece en segundo plano para acelerar
 siguen cargándose según sea necesario. Para terminar también el proceso residente, ejecuta `still-files --quit`. Después de recompilar, usa
 esa orden antes de volver a abrir la aplicación para cargar el ejecutable nuevo.
 
+### Apertura por argumentos
+
+```bash
+still-files --root /ruta/proyecto --select plates/shot.1001.exr --tree --sequences --center
+```
+
+- `--root`: carpeta raíz; también admite la ruta posicional habitual.
+- `--select`: archivo o carpeta existente dentro de la raíz; las rutas relativas parten de ella.
+- `--tree`: vista de árbol, expandiendo los antecesores de la selección.
+- `--sequences`: agrupa los fotogramas y selecciona la secuencia que contiene el archivo indicado.
+- `--center`: centra la selección en el área visible, hasta donde permiten sus extremos.
+
+Las opciones se pueden combinar y funcionan también con el proceso residente. No requieren integraciones específicas de otras aplicaciones.
+Consulta `still-files --help` para ver la sintaxis.
+
 ## Modo escritorio en X11
 
 `still-files --desktop` añade un escritorio al mismo proceso, exclusivamente en Grid, sin numeración y con los iconos ordenados de arriba

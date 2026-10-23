@@ -1,4 +1,5 @@
 mod bookmarks;
+mod cli;
 mod conversion;
 mod desktop;
 mod drag;
@@ -3424,6 +3425,71 @@ impl FileManager {
                 context.clone(),
             ));
         }
+    }
+
+    fn apply_open_options(&mut self, options: instance::OpenOptions, context: &egui::Context) {
+        if options.tree {
+            self.settings.set_view(View::Tree);
+        }
+        if options.sequences {
+            self.settings.sequences = true;
+        }
+        if options.select.as_ref().is_some_and(|path| {
+            path.strip_prefix(&options.root).is_ok_and(|relative| {
+                relative
+                    .components()
+                    .any(|part| part.as_os_str().as_encoded_bytes().starts_with(b"."))
+            })
+        }) {
+            self.settings.hidden = true;
+        }
+        *self.settings.recursive_mut() = false;
+        self.search = None;
+        self.sidebar_focused = false;
+        let entries =
+            match files::entries(&options.root, self.settings.hidden, self.settings.sequences) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    self.set_message(Some(format!("Cannot open directory: {error}")));
+                    return;
+                }
+            };
+        self.breadcrumb_path = options.root.clone();
+        self.load_directory(options.root.clone(), entries, context);
+        if let Some(path) = options.select {
+            if self.settings.view == View::Tree {
+                self.expanded.clear();
+                self.tree_cache.clear();
+                self.tree_layout = None;
+                let mut parents = Vec::new();
+                let mut parent = path.parent();
+                while let Some(directory) = parent {
+                    if directory == options.root || !directory.starts_with(&options.root) {
+                        break;
+                    }
+                    parents.push(directory.to_path_buf());
+                    parent = directory.parent();
+                }
+                for directory in parents.into_iter().rev() {
+                    self.expand_directory(&directory);
+                }
+            }
+            let selected = self
+                .tree_layout()
+                .iter()
+                .find(|(entry, _)| {
+                    entry.path == path
+                        || entry
+                            .sequence
+                            .as_ref()
+                            .is_some_and(|frames| frames.contains(&path))
+                })
+                .map(|(entry, _)| entry.path.clone());
+            self.select(selected, context);
+            self.scroll_to_selection = true;
+            self.center_selection = options.center;
+        }
+        self.save();
     }
 
     fn reveal_search_result(&mut self, path: PathBuf, context: &egui::Context) {
@@ -8188,7 +8254,15 @@ impl eframe::App for ResidentApp {
         }
         let mut restoring = false;
         while let Ok(request) = self.requests.try_recv() {
+            let (request, options) = match request {
+                instance::Request::OpenConfigured(options) => (
+                    instance::Request::Open(Some(options.root.clone())),
+                    Some(options),
+                ),
+                request => (request, None),
+            };
             match request {
+                instance::Request::OpenConfigured(_) => unreachable!(),
                 instance::Request::Quit => {
                     self.quitting = true;
                     context.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -8219,6 +8293,9 @@ impl eframe::App for ResidentApp {
                         self.next_window += 1;
                         let mut window =
                             FileManager::new(context, self.root.external_drag.sibling(), path);
+                        if let Some(options) = options {
+                            window.apply_open_options(options, context);
+                        }
                         let source = self
                             .windows
                             .last()
@@ -8239,6 +8316,9 @@ impl eframe::App for ResidentApp {
                             })
                             .unwrap_or_else(|| self.root.current.clone());
                         self.root.navigate(directory, context);
+                        if let Some(options) = options {
+                            self.root.apply_open_options(options, context);
+                        }
                         if self.root.directory_watch.is_none() {
                             self.root.refresh(context);
                         }
@@ -8294,24 +8374,19 @@ impl eframe::App for ResidentApp {
 }
 
 fn main() -> eframe::Result {
-    let argument = std::env::args_os().nth(1);
-    let request = if argument.as_deref() == Some(std::ffi::OsStr::new("--quit")) {
-        instance::Request::Quit
-    } else if argument.as_deref() == Some(std::ffi::OsStr::new("--desktop")) {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--help")) {
+        println!(
+            "Usage: still-files [PATH] [--root PATH] [--select PATH] \
+             [--tree] [--sequences] [--center]\n\
+             Commands: --desktop, --no-desktop, --quit\n\
+             Relative selections are resolved from the root."
+        );
+        return Ok(());
+    }
+    let request = cli::request().map_err(|error| eframe::Error::AppCreation(error.into()))?;
+    if matches!(request, instance::Request::Desktop(true)) {
         desktop::check_session().map_err(|error| eframe::Error::AppCreation(error.into()))?;
-        instance::Request::Desktop(true)
-    } else if argument.as_deref() == Some(std::ffi::OsStr::new("--no-desktop")) {
-        instance::Request::Desktop(false)
-    } else {
-        let path = argument.map(PathBuf::from).map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                std::env::current_dir().unwrap_or_default().join(path)
-            }
-        });
-        instance::Request::Open(path)
-    };
+    }
     if let instance::Request::Desktop(enabled) = &request {
         desktop::set_enabled(*enabled).map_err(eframe::Error::AppCreation)?;
     }
@@ -8320,9 +8395,12 @@ fn main() -> eframe::Result {
     else {
         return Ok(());
     };
-    let (path, visible) = match request {
-        instance::Request::Open(path) => (path, true),
-        instance::Request::Desktop(true) => (None, false),
+    let (path, visible, open_options) = match request {
+        instance::Request::Open(path) => (path, true, None),
+        instance::Request::OpenConfigured(options) => {
+            (Some(options.root.clone()), true, Some(options))
+        }
+        instance::Request::Desktop(true) => (None, false, None),
         _ => return Ok(()),
     };
     let start_desktop = !visible || (desktop::is_enabled() && desktop::check_session().is_ok());
@@ -8343,7 +8421,11 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |context| {
             let requests = instance.listen(context.egui_ctx.clone())?;
-            let root = FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
+            let mut root =
+                FileManager::new(&context.egui_ctx, drag::ExternalDrag::new(context), path);
+            if let Some(options) = open_options {
+                root.apply_open_options(options, &context.egui_ctx);
+            }
             let desktop = if start_desktop {
                 match desktop::Desktop::new(&context.egui_ctx, root.external_drag.sibling()) {
                     Ok(desktop) => Some(desktop),

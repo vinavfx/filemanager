@@ -1,5 +1,5 @@
 use fs2::FileExt;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -8,8 +8,18 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct OpenOptions {
+    pub root: PathBuf,
+    pub select: Option<PathBuf>,
+    pub tree: bool,
+    pub sequences: bool,
+    pub center: bool,
+}
+
 pub enum Request {
     Open(Option<PathBuf>),
+    OpenConfigured(OpenOptions),
     NavigateStill(PathBuf, bool),
     Desktop(bool),
     Quit,
@@ -45,7 +55,7 @@ impl Instance {
         std::env::var_os("WAYLAND_DISPLAY").hash(&mut display);
         let name = format!("{:x}", display.finish());
         let socket = runtime.join(format!("{name}.sock"));
-        let lock = OpenOptions::new()
+        let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -101,6 +111,10 @@ impl Instance {
                 stream.write_all(&[if *forward { 3 } else { 2 }])?;
                 stream.write_all(path.as_os_str().as_bytes())?;
             }
+            Request::OpenConfigured(options) => {
+                stream.write_all(&[6])?;
+                serde_json::to_writer(&mut stream, options)?;
+            }
             Request::Desktop(enabled) => stream.write_all(&[if *enabled { 4 } else { 5 }])?,
             Request::Quit => stream.write_all(&[1])?,
         }
@@ -147,6 +161,10 @@ impl Instance {
                         PathBuf::from(std::ffi::OsString::from_vec(bytes[1..].to_vec())),
                         bytes[0] == 3,
                     ),
+                    6 => match serde_json::from_slice(&bytes[1..]) {
+                        Ok(options) => Request::OpenConfigured(options),
+                        Err(_) => continue,
+                    },
                     4 | 5 if bytes.len() == 1 => Request::Desktop(bytes[0] == 4),
                     1 if bytes.len() == 1 => Request::Quit,
                     _ => continue,
