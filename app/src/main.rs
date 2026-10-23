@@ -8255,10 +8255,23 @@ impl eframe::App for ResidentApp {
         let mut restoring = false;
         while let Ok(request) = self.requests.try_recv() {
             let (request, options) = match request {
-                instance::Request::OpenConfigured(options) => (
-                    instance::Request::Open(Some(options.root.clone())),
-                    Some(options),
-                ),
+                instance::Request::OpenConfigured(options) => {
+                    let target = if self.visible {
+                        Some((egui::ViewportId::ROOT, &mut self.root))
+                    } else {
+                        self.windows.last_mut().map(|(id, window)| (*id, window))
+                    };
+                    if let Some((id, window)) = target {
+                        window.apply_open_options(options, context);
+                        context.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
+                        context.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                        continue;
+                    }
+                    (
+                        instance::Request::Open(Some(options.root.clone())),
+                        Some(options),
+                    )
+                }
                 request => (request, None),
             };
             match request {
@@ -8325,6 +8338,7 @@ impl eframe::App for ResidentApp {
                         self.visible = true;
                         restoring = true;
                         context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         context.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                 }
