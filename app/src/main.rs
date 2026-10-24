@@ -8344,7 +8344,8 @@ impl eframe::App for ResidentApp {
                 }
             }
         }
-        if context.input(|input| input.viewport().close_requested()) {
+        let closing = context.input(|input| input.viewport().close_requested());
+        if closing {
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.root.external_drag.cancel();
@@ -8353,7 +8354,7 @@ impl eframe::App for ResidentApp {
         if !self.visible && context.cumulative_pass_nr() < 2 {
             context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
-        if self.visible {
+        if self.visible || closing {
             apply_theme(context, self.root.settings.dark_mode);
             self.root.update(context, frame);
             if restoring {
@@ -8376,10 +8377,8 @@ impl eframe::App for ResidentApp {
                     .with_icon(self.icon.clone()),
                 |context, _| {
                     closed = context.input(|input| input.viewport().close_requested());
-                    if !closed {
-                        apply_theme(context, window.settings.dark_mode);
-                        window.update(context, frame);
-                    }
+                    apply_theme(context, window.settings.dark_mode);
+                    window.update(context, frame);
                 },
             );
             !closed

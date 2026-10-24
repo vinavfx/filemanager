@@ -388,6 +388,11 @@ impl WinitApp for GlowWinitApp<'_> {
                 running.app.as_mut(),
                 Some(&running.glutin.borrow().window(ViewportId::ROOT)),
             );
+            for viewport in running.glutin.borrow().viewports.values() {
+                if let Some(window) = &viewport.window {
+                    window.set_visible(false);
+                }
+            }
             running.app.on_exit(Some(running.painter.borrow().gl()));
             running.painter.borrow_mut().destroy();
         }
@@ -1287,8 +1292,15 @@ impl GlutinWindowContext {
         viewport_output: &ViewportIdMap<ViewportOutput>,
     ) {
         // GC old viewports
-        self.viewports
-            .retain(|id, _| viewport_output.contains_key(id));
+        self.viewports.retain(|id, viewport| {
+            let keep = viewport_output.contains_key(id);
+            if !keep {
+                if let Some(window) = &viewport.window {
+                    window.set_visible(false);
+                }
+            }
+            keep
+        });
         self.viewport_from_window
             .retain(|_, id| viewport_output.contains_key(id));
         self.window_from_viewport
